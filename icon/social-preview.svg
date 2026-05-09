@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" font-family="-apple-system, system-ui, 'Helvetica Neue', sans-serif">
+  <!-- background -->
+  <rect width="1280" height="640" fill="#FAF8F2"/>
+
+  <!-- left: the squircle logo (scaled-down version of icon/parakey.svg) -->
+  <g transform="translate(80, 80)">
+    <rect width="480" height="480" rx="109" fill="#10B981"/>
+    <rect x="174" y="103" width="131" height="206" rx="65" fill="#FFFFFF"/>
+    <rect x="231" y="309" width="19" height="47" fill="#FFFFFF"/>
+    <rect x="146" y="356" width="187" height="21" rx="10" fill="#FFFFFF"/>
+  </g>
+
+  <!-- right: title + tagline -->
+  <g transform="translate(640, 0)">
+    <text x="0" y="270" font-size="120" font-weight="700" fill="#0F172A">Parakey</text>
+    <text x="0" y="330" font-size="32" font-weight="500" fill="#475569">Push-to-talk dictation</text>
+    <text x="0" y="370" font-size="32" font-weight="500" fill="#475569">for Apple Silicon Macs</text>
+
+    <!-- footer chip -->
+    <g transform="translate(0, 440)">
+      <text x="0" y="0" font-size="22" font-weight="500" fill="#10B981">Local · Private · Free · MIT</text>
+      <text x="0" y="40" font-size="20" font-weight="400" fill="#64748B" letter-spacing="0.5">brew install --cask rcourtman/parakey/parakey</text>
+    </g>
+  </g>
+</svg>

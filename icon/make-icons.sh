@@ -29,6 +29,12 @@ rsvg-convert -w 22 -h 22 parakey-menubar.svg --output 'parakey-menubar.png'
 rsvg-convert -w 44 -h 44 parakey-menubar.svg --output 'parakey-menubar@2x.png'
 echo "  built parakey-menubar.png + parakey-menubar@2x.png"
 
+# --- GitHub Social Preview --------------------------------------------------
+# 1280x640 PNG used as the repo's social-share card. Upload via
+# Settings → General → Social preview on github.com.
+rsvg-convert -w 1280 -h 640 social-preview.svg --output social-preview.png
+echo "  built social-preview.png"
+
 # Clean up the iconset; we only need the .icns
 rm -rf "$ICONSET"
 echo "Done."
