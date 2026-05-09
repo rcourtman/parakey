@@ -8,9 +8,9 @@ Hold a hotkey, talk, release — your speech is transcribed locally with
 the cursor. Lives in the menu bar. Auto-starts at login.
 
 - **No cloud.** Audio never leaves your Mac.
-- **No subscription.** MIT-licensed, ~400 lines of Python.
-- **Lightweight.** One menu bar app, one launch agent, one model on
-  disk.
+- **No subscription.** MIT-licensed, single Python source file.
+- **Menu-bar only by default.** One status item, no dock clutter
+  (with an opt-in toggle if you want a dock icon).
 - **Apple Silicon only.** The transcription runs on Metal via MLX.
 
 ## Requirements
@@ -115,15 +115,25 @@ on release.
 The menu bar icon reflects state: 🎙 idle / 🔴 recording / ⏳
 transcribing / ⏸ paused.
 
-Menu items:
+Menu structure:
 
-- **Status** — current state
-- **Last** — preview of the most recent transcript
-- **Copy last transcription** — re-copy if a paste landed in the wrong
-  place
-- **Hotkey** — submenu to pick the dictation key (Right Control / Right
-  Option / Right Command / F5 / F6 / F13 / F18 / F19)
-- **Trigger mode** — *Press and hold* or *Press to toggle*
+- **Status row** — what Parakey is doing right now (idle / recording /
+  transcribing / paused / loading).
+- **Permission rows** (only when something's missing) — a clickable
+  ⚠ row per ungranted permission. Click → grant → row turns ✓ →
+  rows disappear once all three are granted.
+- **Recent transcripts** — the most recent one inline (click to copy
+  it back to the clipboard); a **Recent** submenu appears once
+  you've dictated more than once and holds the previous four. The
+  whole transcript history is in-memory only and clears when you
+  quit Parakey.
+- **Settings** ▶
+  - **Hotkey** — Right Control (default), Right Option, Right
+    Command, F5, F6, F13, F18, F19
+  - **Trigger mode** — *Press and hold* or *Press to toggle*
+  - **Mute system audio while recording** — on by default; turn off
+    if you'd rather music keep playing while you dictate
+  - **Show Parakey in Dock** — off by default (menu-bar only)
 - **Pause / Resume** — temporarily disable the hotkey
 - **About Parakey**
 - **Quit** — clean shutdown (no auto-restart)
@@ -153,20 +163,19 @@ For a profile of where time is spent, run:
 
 ## Customise
 
-The two settings most users want are in the menu bar itself:
+Most settings live in the menu's **Settings** submenu (described
+above). All four — **Hotkey**, **Trigger mode**, **Mute system audio
+while recording**, **Show Parakey in Dock** — persist across restarts
+via `NSUserDefaults`
+(`~/Library/Preferences/com.local.parakey.plist`).
 
-- **Hotkey** — Right Control (default), Right Option, Right Command, F5,
-  F6, F13, F18, F19
-- **Trigger mode** — *Press and hold* (default) or *Press to toggle*
-  (click on / click off)
-
-Both persist across restarts via `NSUserDefaults`
-(`~/Library/Preferences/com.local.parakey.plist`) and you can also set
-them via `defaults`:
+Power users can also poke them via `defaults` directly:
 
 ```sh
 defaults write com.local.parakey hotkey_keycode -int 105   # F13
 defaults write com.local.parakey trigger_mode toggle
+defaults write com.local.parakey mute_while_recording -bool false
+defaults write com.local.parakey show_in_dock -bool true
 launchctl kickstart -k gui/$(id -u)/com.local.parakey
 ```
 
@@ -187,10 +196,12 @@ After editing, restart with `launchctl kickstart -k gui/$(id -u)/com.local.parak
 system Python, slightly leaky on macOS-bundle identity.
 
 `release.sh` is the *distribution* path — produces a self-contained,
-signed, optionally-notarised `Parakey.app` you can attach to a GitHub
-Release. The bundle embeds Python and every dependency, so the running
-executable lives inside `Parakey.app` and macOS identifies it as
-Parakey throughout (TCC, Activity Monitor, notifications, etc.).
+signed, **notarised**, drag-installable `Parakey.app`. The bundle
+embeds Python and every dependency, so the running executable lives
+inside `Parakey.app` and macOS identifies it as Parakey throughout
+(TCC, Activity Monitor, notifications, etc.). Once notarisation is
+set up (one-time, see below), every run signs + uploads + staples
+automatically.
 
 ```sh
 ./release.sh
@@ -238,27 +249,39 @@ keychain is used, falling back to ad-hoc.
 
 ## Logging
 
-Logs land in `~/parakey/parakey.log` (rotated to `.log.1` at 1 MB).
-Transcript content is **not** written to disk — only timing and length
-metadata.
+Two log files depending on which install path you used:
 
-If you need to debug a specific transcription, set `LOG_TRANSCRIPTS =
-True` in `parakey.py`, restart, reproduce, then flip it back.
+- `~/parakey/parakey.log` — the dev install (`./install.sh`) writes
+  here; rotated to `.log.1` at 1 MB.
+- `~/Library/Logs/Parakey.log` — the bundled `.app` (`./release.sh`,
+  or a downloaded release) writes here.
+
+Transcript content is **not** written to disk in either case — only
+timing and length metadata. If you need to debug a specific
+transcription, set `LOG_TRANSCRIPTS = True` in `parakey.py`, restart,
+reproduce, then flip it back.
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| Hotkey does nothing, no tink | Input Monitoring not granted to Parakey.app |
+| Hotkey does nothing, no tink | Input Monitoring not granted (check the menu — the row will reappear as ⚠) |
 | Tink but no paste | Accessibility not granted |
-| No audio captured | Microphone not granted, or wrong default input device |
-| Slow first transcription | Model load + Metal kernel warmup happens at startup, but the first time after a fresh install also pulls the model from Hugging Face |
-| Music doesn't pause, only quietens | Parakey mutes the system *output*, it doesn't pause Spotify/Music. The audio resumes on release. |
+| Mic captures silence (transcripts come back as 0 chars) | Microphone not granted |
+| Menu bar shows "loading…" for several minutes on first launch | First-run model download from Hugging Face (~600 MB). One-time. |
+| Music doesn't pause, only quietens | Parakey mutes system *output*, it doesn't pause Spotify/Music. Resumes on release. |
+| The Parakey.app you downloaded won't open | Confirm Apple Silicon + macOS 13+. If it's an older release before notarisation was set up, you may hit a Gatekeeper warning — right-click → Open → Open. |
 
-After granting any of the three permissions, restart the agent:
+The in-menu permission rows surface most permission issues directly —
+if you see ⚠ rows, click them. If you've toggled permissions in
+Settings outside the app, the rows update within ~100 ms.
+
+If you've edited bundle internals or settings via `defaults` and need
+a clean restart:
 
 ```sh
-launchctl kickstart -k gui/$(id -u)/com.local.parakey
+launchctl kickstart -k gui/$(id -u)/com.local.parakey   # dev install
+# or just quit + relaunch Parakey.app from /Applications/         (bundled)
 ```
 
 ## Uninstall
