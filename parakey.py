@@ -7,6 +7,7 @@ at the cursor. Lives in the menu bar.
 """
 from __future__ import annotations
 
+import collections
 import os
 import sys
 import threading
@@ -87,6 +88,7 @@ def load_sound(path: str):
 MUTE_AFTER_TINK_SECONDS = 0.18  # let the start sound finish before muting
 MAX_RECORDING_SECONDS = 120     # auto-release if hotkey is held longer
 LOG_TRANSCRIPTS = False         # do not write transcript text to disk
+HISTORY_SIZE = 5                # rolling in-memory transcript history (lost on restart)
 
 V_KEYCODE = 0x09  # macOS virtual keycode for "v"
 
@@ -206,11 +208,28 @@ class Parakey(rumps.App):
         # Stable menu keys (rumps tracks items by their initial title;
         # the visible title can change later without affecting lookup).
         self._status_key = "(starting up)"
-        self._copy_key = "(transcript)"
 
         self.status_item = rumps.MenuItem(self._status_key)
-        self.copy_last_item = rumps.MenuItem(self._copy_key, callback=self.copy_last)
-        self._history_visible = False  # copy_last_item is hidden until first transcript
+
+        # Rolling in-memory history. Deque auto-evicts the oldest when
+        # full. Cleared on app quit — nothing persisted to disk.
+        self.history: collections.deque = collections.deque(maxlen=HISTORY_SIZE)
+
+        # Pre-allocated menu slots for the history. Slot 0 lives inline
+        # in the main menu (one-click access to the most recent thing).
+        # Slots 1..N live inside a "Recent" submenu, lazy-added as they
+        # fill so the submenu never shows empty placeholder rows.
+        self.history_slots: list[rumps.MenuItem] = []
+        for i in range(HISTORY_SIZE):
+            slot = rumps.MenuItem(
+                f"(transcript {i})",
+                callback=self._make_history_copy_callback(i),
+            )
+            self.history_slots.append(slot)
+        self.recent_submenu_item = rumps.MenuItem("Recent")
+        self._inline_slot_inserted = False
+        self._submenu_inserted = False
+        self._submenu_slots_added = 0  # how many of slots 1..N are in the submenu
 
         self.pause_item = rumps.MenuItem("Pause", callback=self.toggle_pause)
         self.about_item = rumps.MenuItem("About Parakey", callback=self.show_about)
@@ -259,7 +278,6 @@ class Parakey(rumps.App):
         self.frames: list[np.ndarray] = []
         self.ready = False
         self.error: str | None = None
-        self.last_text: str = ""
         self.load_status = "starting…"
         self.saved_muted: "bool | None" = None
         self.mute_timer: "threading.Timer | None" = None
@@ -425,7 +443,7 @@ class Parakey(rumps.App):
             preview = repr(text) if LOG_TRANSCRIPTS else f"{len(text)} chars"
             log(f"{dur:.1f}s audio → {dt:.2f}s → {preview}")
             if text:
-                self.last_text = text
+                self.history.appendleft(text)
                 paste_text(text + " ")
                 self._restore_mute()  # unmute before done sound
                 self.done_sound.stop()
@@ -447,18 +465,16 @@ class Parakey(rumps.App):
 
     # ---- Menu actions ------------------------------------------------------
 
-    def copy_last(self, _sender) -> None:
-        if not self.last_text:
-            return
-        pb = NSPasteboard.generalPasteboard()
-        pb.clearContents()
-        pb.setString_forType_(self.last_text, NSPasteboardTypeString)
-        log(f"copied {len(self.last_text)} chars to clipboard")
-        rumps.notification(
-            title="Parakey",
-            subtitle="Copied to clipboard",
-            message=self.last_text[:120],
-        )
+    def _make_history_copy_callback(self, slot_idx: int):
+        """Returns a click handler that copies the transcript at slot_idx."""
+        def callback(_sender) -> None:
+            if slot_idx < len(self.history):
+                text = self.history[slot_idx]
+                pb = NSPasteboard.generalPasteboard()
+                pb.clearContents()
+                pb.setString_forType_(text, NSPasteboardTypeString)
+                log(f"copied {len(text)} chars from history slot {slot_idx}")
+        return callback
 
     def select_hotkey(self, sender) -> None:
         for name, key, code in HOTKEY_CHOICES:
@@ -552,16 +568,36 @@ class Parakey(rumps.App):
             verb = "Hold" if self.trigger_mode == TRIGGER_HOLD else "Press"
             self.status_item.title = f"{verb} {hk_name} to dictate"
 
-        # Transcript copy item: hidden until the first dictation arrives.
-        if self.last_text:
-            preview = self.last_text if len(self.last_text) <= 50 else self.last_text[:47] + "…"
+        # Rolling transcript history. Most recent lives inline in the main
+        # menu. Older entries live inside a "Recent" submenu so the main
+        # menu stays compact. Both surfaces are lazy-built — they don't
+        # appear until there's content to show.
+        n = len(self.history)
+
+        # Inline slot 0
+        if n >= 1 and not self._inline_slot_inserted:
+            self.menu.insert_after(self._status_key, self.history_slots[0])
+            self._inline_slot_inserted = True
+
+        # "Recent" submenu (visible only once there's a 2nd transcript)
+        if n >= 2 and not self._submenu_inserted:
+            self.menu.insert_after("(transcript 0)", self.recent_submenu_item)
+            self._submenu_inserted = True
+
+        # Add older slots into the submenu as they fill up
+        target_submenu_count = max(0, n - 1)
+        for i in range(self._submenu_slots_added, target_submenu_count):
+            self.recent_submenu_item.add(self.history_slots[i + 1])
+        self._submenu_slots_added = max(self._submenu_slots_added, target_submenu_count)
+
+        # Update each slot's visible title (the deque shifts as new
+        # transcripts arrive; menu keys stay stable as "(transcript N)").
+        for i in range(n):
+            text = self.history[i]
+            preview = text if len(text) <= 50 else text[:47] + "…"
             quoted = f"“{preview}”"
-            if not self._history_visible:
-                self.copy_last_item.title = quoted
-                self.menu.insert_after(self._status_key, self.copy_last_item)
-                self._history_visible = True
-            elif self.copy_last_item.title != quoted:
-                self.copy_last_item.title = quoted
+            if self.history_slots[i].title != quoted:
+                self.history_slots[i].title = quoted
 
 
 def main() -> int:
