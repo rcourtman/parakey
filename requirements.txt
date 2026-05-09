@@ -1,0 +1,9 @@
+# Top-level Python deps for Parakey.
+# `pip install -r requirements.txt` resolves the rest transitively.
+parakeet-mlx
+sounddevice
+numpy
+pynput
+rumps
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz

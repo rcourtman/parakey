@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs (may contain transcript history from before LOG_TRANSCRIPTS was added)
+*.log
+*.log.[0-9]*
+
+# macOS cruft
+.DS_Store
+
+# Local generated bundle / agent (created by install.sh on the target machine)
+build/

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Parakey</string>
+    <key>CFBundleDisplayName</key>
+    <string>Parakey</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.local.parakey</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <key>CFBundleExecutable</key>
+    <string>parakey</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Parakey records audio while you hold the dictation hotkey, then transcribes it locally on your Mac.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Parakey uses System Events to paste transcribed text at your cursor.</string>
+</dict>
+</plist>
