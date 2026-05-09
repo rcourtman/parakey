@@ -29,6 +29,18 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
+# --- 0. Pre-clean -----------------------------------------------------------
+# Kill any leftover Parakey instance launched from a previous build's
+# dist/ directory. Spotlight indexes that path and the user can
+# accidentally launch it from there, leading to two menu-bar icons.
+# (We deliberately do NOT touch /Applications/Parakey.app — that's
+# the brew-installed copy and may be in active use.)
+if pgrep -f "$PROJECT_DIR/dist/Parakey.app" >/dev/null 2>&1; then
+    say "Stopping leftover Parakey instance from previous build"
+    pkill -f "$PROJECT_DIR/dist/Parakey.app" 2>/dev/null || true
+    sleep 1
+fi
+
 # --- 1. PyInstaller build ---------------------------------------------------
 say "Building bundle with PyInstaller"
 [[ -d "$PROJECT_DIR/.venv" ]] || die "venv missing — run install.sh first"
@@ -104,7 +116,23 @@ fi
 say "Packaging Parakey.zip"
 rm -f "$ZIP_OUT"
 /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP_OUT"
+
+# --- 5. Post-clean ----------------------------------------------------------
+# Remove the unzipped dist/Parakey.app and the PyInstaller intermediate
+# build/ directory. The .zip is the canonical release artifact; leaving
+# the .app behind invites Spotlight / Launch Services to launch it
+# instead of the installed /Applications/Parakey.app, producing the
+# duplicate-instances bug we hit in v0.1.1 testing.
+say "Cleaning intermediate build artefacts"
+# PyInstaller produces both dist/Parakey/ (the COLLECT directory)
+# and dist/Parakey.app (the BUNDLE wrapping it). Both can be
+# launched, so both go.
+rm -rf "$APP" "$PROJECT_DIR/dist/Parakey" "$PROJECT_DIR/build"
+
 say "Done"
 echo
-echo "  $APP"
 echo "  $ZIP_OUT  ($(du -h "$ZIP_OUT" | cut -f1))"
+echo
+echo "  Distribute the zip; the unpacked .app has been removed to avoid"
+echo "  accidentally running it instead of the installed copy in"
+echo "  /Applications/."
