@@ -173,6 +173,7 @@ class Settings:
     KEY_HOTKEY_KEYCODE = "hotkey_keycode"
     KEY_TRIGGER_MODE = "trigger_mode"
     KEY_MUTE_WHILE_RECORDING = "mute_while_recording"
+    KEY_SHOW_IN_DOCK = "show_in_dock"
 
     def __init__(self) -> None:
         # Two paths depending on how we're running:
@@ -226,6 +227,16 @@ class Settings:
         self.defaults.setBool_forKey_(bool(value), self.KEY_MUTE_WHILE_RECORDING)
         self.defaults.synchronize()
 
+    @property
+    def show_in_dock(self) -> bool:
+        # Default off — menu-bar-only matches the convention for utilities.
+        return bool(self.defaults.boolForKey_(self.KEY_SHOW_IN_DOCK))
+
+    @show_in_dock.setter
+    def show_in_dock(self, value: bool) -> None:
+        self.defaults.setBool_forKey_(bool(value), self.KEY_SHOW_IN_DOCK)
+        self.defaults.synchronize()
+
 
 # ---- App --------------------------------------------------------------------
 
@@ -246,6 +257,7 @@ class Parakey(rumps.App):
         self.hotkey_keycode = hkcode
         self.trigger_mode = self.settings.trigger_mode
         self.mute_while_recording = self.settings.mute_while_recording
+        self.show_in_dock = self.settings.show_in_dock
 
         # Stable menu keys (rumps tracks items by their initial title;
         # the visible title can change later without affecting lookup).
@@ -320,6 +332,11 @@ class Parakey(rumps.App):
         )
         self.mute_item.state = 1 if self.mute_while_recording else 0
 
+        self.dock_item = rumps.MenuItem(
+            "Show Parakey in Dock", callback=self.toggle_dock_setting
+        )
+        self.dock_item.state = 1 if self.show_in_dock else 0
+
         # Start without the permission rows in the menu; _tick inserts
         # them lazily if any permission is missing, and removes them
         # once all three are granted.
@@ -331,6 +348,7 @@ class Parakey(rumps.App):
                     {"Hotkey": self.hotkey_items},
                     {"Trigger mode": list(self.trigger_items.values())},
                     self.mute_item,
+                    self.dock_item,
                 ]
             },
             None,
@@ -562,6 +580,27 @@ class Parakey(rumps.App):
         sender.state = 1 if self.mute_while_recording else 0
         log(f"mute while recording: {self.mute_while_recording}")
 
+    def toggle_dock_setting(self, sender) -> None:
+        self.show_in_dock = not self.show_in_dock
+        self.settings.show_in_dock = self.show_in_dock
+        sender.state = 1 if self.show_in_dock else 0
+        self._apply_dock_visibility()
+        log(f"show in dock: {self.show_in_dock}")
+
+    def _apply_dock_visibility(self) -> None:
+        """Switch between Regular (dock visible) and Accessory (menu-bar only)."""
+        from AppKit import (
+            NSApp,
+            NSApplicationActivationPolicyRegular,
+            NSApplicationActivationPolicyAccessory,
+        )
+        target = (
+            NSApplicationActivationPolicyRegular
+            if self.show_in_dock else
+            NSApplicationActivationPolicyAccessory
+        )
+        NSApp.setActivationPolicy_(target)
+
     def select_trigger_mode(self, sender) -> None:
         for mode, label in TRIGGER_DISPLAY.items():
             if label == sender.title:
@@ -624,11 +663,16 @@ class Parakey(rumps.App):
                 time.sleep(6)
                 from AppKit import NSApp as _NSApp
                 from PyObjCTools.AppHelper import callAfter
-                callAfter(
-                    _NSApp.setActivationPolicy_,
-                    NSApplicationActivationPolicyAccessory,
+                # Restore to whatever the user wants long-term:
+                # Regular if they've opted into a dock icon,
+                # Accessory otherwise (menu-bar only, no dock).
+                target = (
+                    NSApplicationActivationPolicyRegular
+                    if self.show_in_dock else
+                    NSApplicationActivationPolicyAccessory
                 )
-                log(f"  restored Accessory activation policy after {name}")
+                callAfter(_NSApp.setActivationPolicy_, target)
+                log(f"  restored activation policy after {name}")
 
             threading.Thread(target=_restore_policy, daemon=True).start()
         return handler
@@ -827,6 +871,15 @@ class Parakey(rumps.App):
                     item.title = new_title
                 item.set_callback(None if granted else self._perm_callbacks[name])
 
+    _dock_policy_applied = False
+
+    def _apply_dock_visibility_once(self) -> None:
+        """Sync the activation policy with self.show_in_dock at startup."""
+        if self._dock_policy_applied:
+            return
+        self._apply_dock_visibility()
+        self._dock_policy_applied = True
+
     def _set_tooltip_once(self) -> None:
         """Set the menu bar tooltip to 'Parakey' once the NSStatusItem exists."""
         if self._tooltip_set:
@@ -845,6 +898,7 @@ class Parakey(rumps.App):
     @rumps.timer(0.1)
     def _tick(self, _sender) -> None:
         self._set_tooltip_once()
+        self._apply_dock_visibility_once()
         self._update_permission_rows()
         # Menu bar title (with the brand icon shown via self.icon).
         if self.error:
