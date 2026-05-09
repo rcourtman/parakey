@@ -33,6 +33,9 @@ MIN_CLIP_SECONDS = 0.25
 START_SOUND = "/System/Library/Sounds/Tink.aiff"
 DONE_SOUND = "/System/Library/Sounds/Pop.aiff"
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+MENUBAR_ICON_PATH = os.path.join(PROJECT_DIR, "icon", "parakey-menubar.png")
+
 # Hotkey choices: (display name, pynput Key, macOS virtual keycode).
 # Keycode is needed separately for the Quartz event-tap suppression.
 HOTKEY_CHOICES: list[tuple[str, "keyboard.Key", int]] = [
@@ -59,12 +62,15 @@ def hotkey_for_keycode(keycode: int):
             return entry
     return HOTKEY_CHOICES[0]
 
-ICON_LOAD = "Parakey…"
-ICON_IDLE = "🎙"
-ICON_REC = "🔴"
-ICON_BUSY = "⏳"
-ICON_PAUSED = "⏸"
-ICON_ERROR = "⚠️"
+# State labels shown next to the menu bar icon. Empty for idle so the
+# brand mark stands alone; short text for the rest so the bar isn't
+# cluttered.
+LABEL_LOAD = "loading…"
+LABEL_IDLE = ""
+LABEL_REC = "🔴"  # emoji preserves its red colour even when the icon is templated
+LABEL_BUSY = "…"
+LABEL_PAUSED = "paused"
+LABEL_ERROR = "!"
 
 
 def log(msg: str) -> None:
@@ -132,6 +138,7 @@ SETTINGS_SUITE = "com.local.parakey"
 class Settings:
     KEY_HOTKEY_KEYCODE = "hotkey_keycode"
     KEY_TRIGGER_MODE = "trigger_mode"
+    KEY_MUTE_WHILE_RECORDING = "mute_while_recording"
 
     def __init__(self) -> None:
         # We can't rely on standardUserDefaults() because the running Python
@@ -164,24 +171,47 @@ class Settings:
         self.defaults.setObject_forKey_(value, self.KEY_TRIGGER_MODE)
         self.defaults.synchronize()
 
+    @property
+    def mute_while_recording(self) -> bool:
+        if self.defaults.objectForKey_(self.KEY_MUTE_WHILE_RECORDING) is None:
+            return True  # default on
+        return bool(self.defaults.boolForKey_(self.KEY_MUTE_WHILE_RECORDING))
+
+    @mute_while_recording.setter
+    def mute_while_recording(self, value: bool) -> None:
+        self.defaults.setBool_forKey_(bool(value), self.KEY_MUTE_WHILE_RECORDING)
+        self.defaults.synchronize()
+
 
 # ---- App --------------------------------------------------------------------
 
 class Parakey(rumps.App):
     def __init__(self) -> None:
-        super().__init__("Parakey", title=ICON_LOAD, quit_button=None)
+        icon = MENUBAR_ICON_PATH if os.path.exists(MENUBAR_ICON_PATH) else None
+        super().__init__(
+            "Parakey",
+            title=LABEL_LOAD,
+            icon=icon,
+            template=True,           # auto-tint for light/dark mode
+            quit_button=None,
+        )
 
         self.settings = Settings()
         _, hk, hkcode = hotkey_for_keycode(self.settings.hotkey_keycode)
         self.hotkey = hk
         self.hotkey_keycode = hkcode
         self.trigger_mode = self.settings.trigger_mode
+        self.mute_while_recording = self.settings.mute_while_recording
 
-        self.status_item = rumps.MenuItem("Status: starting…")
-        self.last_item = rumps.MenuItem("Last: —")
-        self.copy_last_item = rumps.MenuItem(
-            "Copy last transcription", callback=self.copy_last
-        )
+        # Stable menu keys (rumps tracks items by their initial title;
+        # the visible title can change later without affecting lookup).
+        self._status_key = "(starting up)"
+        self._copy_key = "(transcript)"
+
+        self.status_item = rumps.MenuItem(self._status_key)
+        self.copy_last_item = rumps.MenuItem(self._copy_key, callback=self.copy_last)
+        self._history_visible = False  # copy_last_item is hidden until first transcript
+
         self.pause_item = rumps.MenuItem("Pause", callback=self.toggle_pause)
         self.about_item = rumps.MenuItem("About Parakey", callback=self.show_about)
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
@@ -200,13 +230,21 @@ class Parakey(rumps.App):
         for mode, item in self.trigger_items.items():
             item.state = 1 if mode == self.trigger_mode else 0
 
+        self.mute_item = rumps.MenuItem(
+            "Mute system audio while recording", callback=self.toggle_mute_setting
+        )
+        self.mute_item.state = 1 if self.mute_while_recording else 0
+
         self.menu = [
             self.status_item,
-            self.last_item,
-            self.copy_last_item,
             None,
-            {"Hotkey": self.hotkey_items},
-            {"Trigger mode": list(self.trigger_items.values())},
+            {
+                "Settings": [
+                    {"Hotkey": self.hotkey_items},
+                    {"Trigger mode": list(self.trigger_items.values())},
+                    self.mute_item,
+                ]
+            },
             None,
             self.pause_item,
             None,
@@ -301,9 +339,11 @@ class Parakey(rumps.App):
         self.start_sound.play()
         if self.mute_timer is not None:
             self.mute_timer.cancel()
-        self.mute_timer = threading.Timer(MUTE_AFTER_TINK_SECONDS, self._engage_mute)
-        self.mute_timer.daemon = True
-        self.mute_timer.start()
+            self.mute_timer = None
+        if self.mute_while_recording:
+            self.mute_timer = threading.Timer(MUTE_AFTER_TINK_SECONDS, self._engage_mute)
+            self.mute_timer.daemon = True
+            self.mute_timer.start()
         if self.max_duration_timer is not None:
             self.max_duration_timer.cancel()
         self.max_duration_timer = threading.Timer(
@@ -348,6 +388,8 @@ class Parakey(rumps.App):
         self._stop_recording()
 
     def _engage_mute(self) -> None:
+        if not self.mute_while_recording:
+            return
         with self.lock:
             if not self.recording:
                 return
@@ -429,6 +471,12 @@ class Parakey(rumps.App):
         for item in self.hotkey_items:
             item.state = 1 if item.title == sender.title else 0
 
+    def toggle_mute_setting(self, sender) -> None:
+        self.mute_while_recording = not self.mute_while_recording
+        self.settings.mute_while_recording = self.mute_while_recording
+        sender.state = 1 if self.mute_while_recording else 0
+        log(f"mute while recording: {self.mute_while_recording}")
+
     def select_trigger_mode(self, sender) -> None:
         for mode, label in TRIGGER_DISPLAY.items():
             if label == sender.title:
@@ -480,34 +528,40 @@ class Parakey(rumps.App):
 
     @rumps.timer(0.1)
     def _tick(self, _sender) -> None:
+        # Menu bar title (with the brand icon shown via self.icon).
         if self.error:
-            self.title = ICON_ERROR
-            self.status_item.title = f"Status: error — {self.error}"
+            self.title = LABEL_ERROR
+            self.status_item.title = f"Error: {self.error}"
             return
         if not self.ready:
-            self.title = ICON_LOAD
-            self.status_item.title = f"Status: {self.load_status}"
+            self.title = LABEL_LOAD
+            self.status_item.title = self.load_status[:1].upper() + self.load_status[1:]
             return
         if self.busy:
-            self.title = ICON_BUSY
-            self.status_item.title = "Status: transcribing"
+            self.title = LABEL_BUSY
+            self.status_item.title = "Transcribing"
         elif self.recording:
-            self.title = ICON_REC
-            self.status_item.title = "Status: recording"
+            self.title = LABEL_REC
+            self.status_item.title = "Recording"
         elif self.paused:
-            self.title = ICON_PAUSED
-            self.status_item.title = "Status: paused"
+            self.title = LABEL_PAUSED
+            self.status_item.title = "Paused"
         else:
-            self.title = ICON_IDLE
+            self.title = LABEL_IDLE
             hk_name, _, _ = hotkey_for_keycode(self.hotkey_keycode)
-            verb = "hold" if self.trigger_mode == TRIGGER_HOLD else "press"
-            self.status_item.title = f"Status: ready ({verb} {hk_name})"
+            verb = "Hold" if self.trigger_mode == TRIGGER_HOLD else "Press"
+            self.status_item.title = f"{verb} {hk_name} to dictate"
+
+        # Transcript copy item: hidden until the first dictation arrives.
         if self.last_text:
             preview = self.last_text if len(self.last_text) <= 50 else self.last_text[:47] + "…"
-            self.last_item.title = f"Last: {preview}"
-            self.copy_last_item.set_callback(self.copy_last)
-        else:
-            self.copy_last_item.set_callback(None)
+            quoted = f"“{preview}”"
+            if not self._history_visible:
+                self.copy_last_item.title = quoted
+                self.menu.insert_after(self._status_key, self.copy_last_item)
+                self._history_visible = True
+            elif self.copy_last_item.title != quoted:
+                self.copy_last_item.title = quoted
 
 
 def main() -> int:

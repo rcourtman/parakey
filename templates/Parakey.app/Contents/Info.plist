@@ -14,6 +14,8 @@
     <string>0.1</string>
     <key>CFBundleExecutable</key>
     <string>parakey</string>
+    <key>CFBundleIconFile</key>
+    <string>Parakey</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key>

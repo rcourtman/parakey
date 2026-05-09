@@ -49,6 +49,11 @@ mkdir -p "$APP_DEST/Contents/MacOS" "$APP_DEST/Contents/Resources"
 cp "$PROJECT_DIR/templates/Parakey.app/Contents/Info.plist"  "$APP_DEST/Contents/Info.plist"
 cp "$PROJECT_DIR/templates/Parakey.app/Contents/MacOS/parakey" "$APP_DEST/Contents/MacOS/parakey"
 chmod +x "$APP_DEST/Contents/MacOS/parakey"
+if [[ -f "$PROJECT_DIR/icon/Parakey.icns" ]]; then
+    cp "$PROJECT_DIR/icon/Parakey.icns" "$APP_DEST/Contents/Resources/Parakey.icns"
+else
+    warn "icon/Parakey.icns missing — bundle will use generic icon"
+fi
 plutil -lint "$APP_DEST/Contents/Info.plist" >/dev/null
 
 # --- LaunchAgent ------------------------------------------------------------

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Menu bar template image. Black silhouette on transparent background;
+  macOS auto-tints based on system theme. Designed at 100x100 viewBox
+  with the artwork filling the canvas tightly so it stays crisp at the
+  ~22pt menu bar size.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <g fill="#000000">
+    <!-- Capsule -->
+    <rect x="35" y="10" width="30" height="55" rx="15"/>
+    <!-- Stem -->
+    <rect x="48.5" y="65" width="3" height="15"/>
+    <!-- Base -->
+    <rect x="22" y="80" width="56" height="6" rx="3"/>
+  </g>
+</svg>
