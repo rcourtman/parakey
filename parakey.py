@@ -274,9 +274,10 @@ class Parakey(rumps.App):
         self._submenu_slots_added = 0  # how many of slots 1..N are in the submenu
         self._tooltip_set = False
 
-        # Permission rows shown directly in the main menu. The user
-        # clicks one to register + open the relevant Privacy pane;
-        # _tick polls grant status and updates the title (✓ / ⚠️).
+        # Permission rows shown directly in the main menu. They appear
+        # below the status row only while any of the three permissions
+        # is still missing; once all three are granted the rows
+        # collapse out of the menu so it stays clean.
         self._perm_pane_map = {
             "Microphone":       "Privacy_Microphone",
             "Accessibility":    "Privacy_Accessibility",
@@ -285,13 +286,16 @@ class Parakey(rumps.App):
         self._perm_callbacks = {
             name: self._make_perm_handler(name) for name in self._perm_pane_map
         }
+        # Stable menu keys (rumps tracks items by their initial title).
+        self._perm_keys = {name: f"(perm:{name})" for name in self._perm_pane_map}
         self.perm_items = {
             name: rumps.MenuItem(
-                f"(perm:{name})",  # stable menu key; visible title set in _tick
+                self._perm_keys[name],
                 callback=self._perm_callbacks[name],
             )
             for name in self._perm_pane_map
         }
+        self._perm_rows_visible = False  # toggled in _update_permission_rows
 
         self.pause_item = rumps.MenuItem("Pause", callback=self.toggle_pause)
         self.about_item = rumps.MenuItem("About Parakey", callback=self.show_about)
@@ -316,12 +320,11 @@ class Parakey(rumps.App):
         )
         self.mute_item.state = 1 if self.mute_while_recording else 0
 
+        # Start without the permission rows in the menu; _tick inserts
+        # them lazily if any permission is missing, and removes them
+        # once all three are granted.
         self.menu = [
             self.status_item,
-            None,
-            self.perm_items["Microphone"],
-            self.perm_items["Accessibility"],
-            self.perm_items["Input Monitoring"],
             None,
             {
                 "Settings": [
@@ -775,18 +778,54 @@ class Parakey(rumps.App):
     # ---- UI tick (main thread, 10 Hz) --------------------------------------
 
     def _update_permission_rows(self) -> None:
-        """Refresh each permission row's title + clickability based on grant state."""
-        for name, item in self.perm_items.items():
-            granted = self._check_permission(name)
-            new_title = (
-                f"✓  {name} permission granted"
-                if granted else
-                f"⚠  Grant {name} permission…"
-            )
-            if item.title != new_title:
-                item.title = new_title
-            # Disable click when granted so the row reads as informational.
-            item.set_callback(None if granted else self._perm_callbacks[name])
+        """Show/hide the three permission rows based on grant state.
+
+        Visible only while any permission is missing — once all three
+        are granted the rows collapse out of the menu. Each row's
+        title is also kept in sync (✓ vs ⚠) for the brief window
+        where some are granted but not all.
+        """
+        states = {name: self._check_permission(name) for name in self.perm_items}
+        any_missing = not all(states.values())
+
+        if any_missing and not self._perm_rows_visible:
+            # Set titles before insert so the menu never briefly shows
+            # the placeholder "(perm:Microphone)" key.
+            for name, item in self.perm_items.items():
+                granted = states[name]
+                item.title = (
+                    f"✓  {name} permission granted"
+                    if granted else
+                    f"⚠  Grant {name} permission…"
+                )
+            # Insert in order, each anchored to the previous item's
+            # stable initial title.
+            anchor = self._status_key
+            for name in ("Microphone", "Accessibility", "Input Monitoring"):
+                self.menu.insert_after(anchor, self.perm_items[name])
+                anchor = self._perm_keys[name]
+            self._perm_rows_visible = True
+
+        elif (not any_missing) and self._perm_rows_visible:
+            for name in self.perm_items:
+                try:
+                    del self.menu[self._perm_keys[name]]
+                except KeyError:
+                    pass
+            self._perm_rows_visible = False
+
+        # Keep titles + callbacks current while rows are showing.
+        if self._perm_rows_visible:
+            for name, item in self.perm_items.items():
+                granted = states[name]
+                new_title = (
+                    f"✓  {name} permission granted"
+                    if granted else
+                    f"⚠  Grant {name} permission…"
+                )
+                if item.title != new_title:
+                    item.title = new_title
+                item.set_callback(None if granted else self._perm_callbacks[name])
 
     def _set_tooltip_once(self) -> None:
         """Set the menu bar tooltip to 'Parakey' once the NSStatusItem exists."""
