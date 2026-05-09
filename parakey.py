@@ -17,13 +17,25 @@ import mlx.core as mx
 import numpy as np
 import rumps
 import sounddevice as sd
-from AppKit import NSPasteboard, NSPasteboardTypeString, NSSound
-from Foundation import NSAppleScript, NSUserDefaults
+from AppKit import NSAlert, NSImage, NSPasteboard, NSPasteboardTypeString, NSSound
+from Foundation import NSAppleScript, NSBundle, NSUserDefaults
 from pynput import keyboard
 import Quartz
 
 from parakeet_mlx import from_pretrained
 from parakeet_mlx.audio import get_logmel
+
+# Tell the running process to identify as "Parakey" instead of "Python".
+# The Homebrew Python interpreter ships in its own .app bundle, so by
+# default macOS surfaces "Python" in tooltips, About dialogs, and
+# notifications. Mutating mainBundle()'s info dictionary in-place fixes
+# the user-visible bits. (CFBundleIdentifier — used by TCC — is not
+# affected by this trick; a full fix would mean bundling Python via
+# py2app so the running executable lives inside Parakey.app.)
+_info = NSBundle.mainBundle().infoDictionary()
+if _info is not None:
+    _info["CFBundleName"] = "Parakey"
+    _info["CFBundleDisplayName"] = "Parakey"
 
 # ---- Config -----------------------------------------------------------------
 
@@ -230,6 +242,7 @@ class Parakey(rumps.App):
         self._inline_slot_inserted = False
         self._submenu_inserted = False
         self._submenu_slots_added = 0  # how many of slots 1..N are in the submenu
+        self._tooltip_set = False
 
         self.pause_item = rumps.MenuItem("Pause", callback=self.toggle_pause)
         self.about_item = rumps.MenuItem("About Parakey", callback=self.show_about)
@@ -514,16 +527,24 @@ class Parakey(rumps.App):
 
     def show_about(self, sender) -> None:
         hotkey_name, _, _ = hotkey_for_keycode(self.hotkey_keycode)
-        rumps.alert(
-            title="Parakey",
-            message=(
-                "Lightweight push-to-talk dictation.\n\n"
-                f"Hotkey: {hotkey_name}\n"
-                f"Mode: {TRIGGER_DISPLAY[self.trigger_mode]}\n"
-                f"Model: {MODEL_ID}\n"
-                f"Sample rate: {SAMPLE_RATE} Hz"
-            ),
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Parakey")
+        alert.setInformativeText_(
+            "Lightweight push-to-talk dictation for Apple Silicon Macs.\n"
+            "\n"
+            f"Hotkey:  {hotkey_name}\n"
+            f"Mode:    {TRIGGER_DISPLAY[self.trigger_mode]}\n"
+            f"Model:   {MODEL_ID}\n"
+            "\n"
+            "Maintained by Richard Courtman.\n"
+            "github.com/rcourtman/parakey · MIT licensed"
         )
+        icon_path = os.path.join(PROJECT_DIR, "icon", "Parakey.icns")
+        if os.path.exists(icon_path):
+            img = NSImage.alloc().initWithContentsOfFile_(icon_path)
+            if img is not None:
+                alert.setIcon_(img)
+        alert.runModal()
 
     def quit_app(self, sender) -> None:
         log("quitting")
@@ -542,8 +563,24 @@ class Parakey(rumps.App):
 
     # ---- UI tick (main thread, 10 Hz) --------------------------------------
 
+    def _set_tooltip_once(self) -> None:
+        """Set the menu bar tooltip to 'Parakey' once the NSStatusItem exists."""
+        if self._tooltip_set:
+            return
+        try:
+            ns = getattr(self._nsapp, "nsstatusitem", None)
+            if ns is not None:
+                btn = ns.button()
+                if btn is not None:
+                    btn.setToolTip_("Parakey")
+                    self._tooltip_set = True
+        except Exception as e:
+            log(f"tooltip set failed: {e}")
+            self._tooltip_set = True  # don't keep retrying
+
     @rumps.timer(0.1)
     def _tick(self, _sender) -> None:
+        self._set_tooltip_once()
         # Menu bar title (with the brand icon shown via self.icon).
         if self.error:
             self.title = LABEL_ERROR
