@@ -66,8 +66,9 @@ Steps:
 7. The rows turn ✓ as I grant each, and disappear from the menu
    once all three are granted.
 
-Then I can hold Right Option to dictate (or change the key from
-Settings → Hotkey in the menu bar).
+Then the menu bar's status row will tell me which key to hold to
+dictate. I can change it from Settings → Hotkey if I'd prefer
+something else.
 ````
 
 ## Install (manually)
