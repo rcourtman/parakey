@@ -19,7 +19,33 @@ the cursor. Lives in the menu bar. Auto-starts at login.
 - macOS 13 (Ventura) or later
 - [Homebrew](https://brew.sh/) for installing `python` and `ffmpeg`
 
-## Install
+## Install (with an AI assistant)
+
+Paste this into Claude Code, Cursor, Codex, or any shell-capable agent
+running on the target Mac:
+
+````text
+Install Parakey on this Mac.
+
+Repo: https://github.com/rcourtman/parakey
+
+1. Verify this is an Apple Silicon Mac on macOS 13+. If not, stop and
+   tell me — Parakey requires Apple Silicon.
+2. Ensure Homebrew, python, and ffmpeg are installed
+   (`brew install python ffmpeg`). Skip what's already there.
+3. Clone the repo to ~/parakey (or `git pull` if it exists).
+4. Run `./install.sh` from that directory and report the output.
+5. After the installer finishes, stop and tell me to grant Microphone,
+   Accessibility, and Input Monitoring permissions to **Parakey.app**
+   in System Settings → Privacy & Security.
+6. Once I confirm those are granted, run
+   `launchctl kickstart -k gui/$(id -u)/com.local.parakey` and verify
+   the menu bar shows 🎙.
+
+Hold Right Control to dictate.
+````
+
+## Install (manually)
 
 ```sh
 brew install python ffmpeg
