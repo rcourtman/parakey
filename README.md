@@ -1,4 +1,7 @@
-# Parakey
+<h1>
+  <img src="icon/parakey.svg" alt="" width="48" align="absmiddle">
+  Parakey
+</h1>
 
 **Push-to-talk dictation for macOS Apple Silicon. Hold a key, speak,
 let go — text appears at the cursor in well under a second.**
