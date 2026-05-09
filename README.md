@@ -10,8 +10,11 @@ No cloud, no subscription, no preferences window.
   typical 3-second clip. Local inference on your Mac's GPU; no
   network round-trip.
 - **Private** — audio is captured in memory, transcribed locally,
-  and discarded. Nothing leaves your Mac. No telemetry, no accounts,
-  transcripts are never written to disk.
+  and discarded. Nothing leaves your Mac during dictation. No
+  telemetry, no accounts, transcripts are never written to disk.
+  (One-time exception: the first launch downloads the speech model
+  from Hugging Face. Hugging Face's own usage telemetry is disabled
+  by Parakey at startup via `HF_HUB_DISABLE_TELEMETRY=1`.)
 - **Free** — MIT-licensed open source. No trials, no premium tier,
   no upsell.
 - **Minimal** — one menu-bar icon. No dock clutter by default. No
@@ -49,7 +52,7 @@ Steps:
 5. After install.sh finishes, tell me that the menu bar icon will
    appear shortly (it loads a 600 MB model from Hugging Face on
    first launch — this takes 1–5 minutes on a typical connection,
-   one-time only). Don't try to press Right Control yet.
+   one-time only). Don't try to press the dictation key yet.
 6. Tell me to click the menu bar 🎙 once it appears. There will be
    three rows labelled "⚠ Grant Microphone permission…", "⚠ Grant
    Accessibility permission…", "⚠ Grant Input Monitoring
@@ -60,7 +63,8 @@ Steps:
 7. The rows turn ✓ as I grant each, and disappear from the menu
    once all three are granted.
 
-Then I can hold Right Control to dictate.
+Then I can hold Right Option to dictate (or change the key from
+Settings → Hotkey in the menu bar).
 ````
 
 ## Install (manually)
@@ -90,7 +94,7 @@ The first time Parakey runs, it downloads the Parakeet-TDT-0.6B model
 one-time download — subsequent launches start in seconds. During the
 download the menu bar icon shows a "loading…" indicator; there's no
 progress bar (yet), so allow 1–5 minutes on a typical connection
-before pressing Right Control.
+before pressing your dictation key.
 
 ### Permissions
 
@@ -113,9 +117,10 @@ No restart needed.
 
 ## Usage
 
-Hold **Right Control**, talk, release. The transcript is pasted at the
-cursor with a trailing space. A short tink confirms recording started;
-a pop confirms it landed.
+Hold **Right Option** (the default — change in Settings → Hotkey if
+you'd prefer something else), talk, release. The transcript is pasted
+at the cursor with a trailing space. A short tink confirms recording
+started; a pop confirms it landed.
 
 While the hotkey is held, system audio output is muted (so background
 music doesn't bleed into the recording or distract you). It's restored
@@ -137,7 +142,7 @@ Menu structure:
   whole transcript history is in-memory only and clears when you
   quit Parakey.
 - **Settings** ▶
-  - **Hotkey** — Right Control (default), Right Option, Right
+  - **Hotkey** — Right Option (default), Right Control, Right
     Command, F5, F6, F13, F18, F19
   - **Trigger mode** — *Press and hold* or *Press to toggle*
   - **Mute system audio while recording** — on by default; turn off
@@ -161,8 +166,8 @@ A 2-minute hard cap auto-releases if the hotkey is held too long.
    subprocess overhead.
 5. System audio is unmuted and a confirmation sound plays.
 
-The Right Control keystroke itself is suppressed via the same event tap
-so it doesn't trigger any other application shortcuts.
+The chosen hotkey itself is suppressed via the same event tap so it
+doesn't trigger any other application shortcuts.
 
 For a profile of where time is spent, run:
 

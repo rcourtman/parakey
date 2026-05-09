@@ -7,8 +7,14 @@ at the cursor. Lives in the menu bar.
 """
 from __future__ import annotations
 
-import collections
 import os
+# Disable Hugging Face Hub's anonymous usage telemetry. parakeet-mlx
+# pulls models via huggingface_hub on first launch; without this opt-out
+# the library would send a small ping every download. Set before any
+# huggingface-touching import below.
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+import collections
 import sys
 import threading
 import time
@@ -68,7 +74,8 @@ HOTKEY_CHOICES: list[tuple[str, "keyboard.Key", int]] = [
     ("F18",           keyboard.Key.f18,    79),
     ("F19",           keyboard.Key.f19,    80),
 ]
-DEFAULT_HOTKEY_KEYCODE = 62  # Right Control
+DEFAULT_HOTKEY_KEYCODE = 61  # Right Option (universal across Apple keyboards;
+                             # MacBooks and Magic Keyboards have no Right Control)
 
 TRIGGER_HOLD = "hold"
 TRIGGER_TOGGLE = "toggle"
