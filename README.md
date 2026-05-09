@@ -1,17 +1,26 @@
 # Parakey
 
-**Lightweight push-to-talk dictation for macOS Apple Silicon. Local, fast,
-no subscription.**
+**Push-to-talk dictation for macOS Apple Silicon. Hold a key, speak,
+let go — text appears at the cursor in well under a second.**
 
-Hold a hotkey, talk, release — your speech is transcribed locally with
-[Parakeet-MLX](https://github.com/senstella/parakeet-mlx) and pasted at
-the cursor. Lives in the menu bar. Auto-starts at login.
+Local transcription via [Parakeet-MLX](https://github.com/senstella/parakeet-mlx).
+No cloud, no subscription, no preferences window.
 
-- **No cloud.** Audio never leaves your Mac.
-- **No subscription.** MIT-licensed, single Python source file.
-- **Menu-bar only by default.** One status item, no dock clutter
-  (with an opt-in toggle if you want a dock icon).
-- **Apple Silicon only.** The transcription runs on Metal via MLX.
+- **Fast** — under 200 ms from key release to pasted text on a
+  typical 3-second clip. Local inference on your Mac's GPU; no
+  network round-trip.
+- **Private** — audio is captured in memory, transcribed locally,
+  and discarded. Nothing leaves your Mac. No telemetry, no accounts,
+  transcripts are never written to disk.
+- **Free** — MIT-licensed open source. No trials, no premium tier,
+  no upsell.
+- **Minimal** — one menu-bar icon. No dock clutter by default. No
+  preferences window — every setting lives in the menu's Settings
+  submenu.
+- **Focused** — push-to-talk dictation. No AI rewriting, no cloud
+  sync, no extras.
+
+Apple Silicon only. macOS 13+.
 
 ## Requirements
 
