@@ -23,6 +23,10 @@ die() { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 
 say "Project directory: $PROJECT_DIR"
 
+# Detect first install vs upgrade so we only run the permissions flow once.
+IS_FIRST_INSTALL=0
+[[ ! -e "$APP_DEST" ]] && IS_FIRST_INSTALL=1
+
 # --- Dependency checks ------------------------------------------------------
 say "Checking system dependencies"
 command -v python3 >/dev/null || die "python3 not found. Install via brew: brew install python"
@@ -86,20 +90,42 @@ for attempt in 1 2 3 4 5; do
 done
 
 # --- Done -------------------------------------------------------------------
-cat <<EOF
+if [[ "$IS_FIRST_INSTALL" == "1" ]]; then
+    say "First install — opening Privacy & Security panes"
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"  >/dev/null 2>&1 || true
+    sleep 0.4
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" >/dev/null 2>&1 || true
+    sleep 0.4
+    open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent" >/dev/null 2>&1 || true
 
-Parakey is installed and running.
+    cat <<EOF
 
-If this is the first install on this Mac, grant the following permissions
-to Parakey.app in System Settings → Privacy & Security:
+================================================================
+NEXT STEP — grant Parakey.app three permissions
 
-  - Microphone
-  - Accessibility
-  - Input Monitoring
+The three Privacy & Security panes have been opened for you. In each
+one, add Parakey.app from ~/Applications/ and toggle it ON:
 
-Then restart with:
-  launchctl kickstart -k gui/\$(id -u)/com.local.parakey
+  1. Microphone
+  2. Accessibility
+  3. Input Monitoring
 
-Hold Right Control to dictate.
+When all three are toggled on, run:
+
+    launchctl kickstart -k gui/\$(id -u)/com.local.parakey
+
+Then hold Right Control to dictate. You should hear a tink when
+recording starts and a pop when the transcript is pasted.
+================================================================
 
 EOF
+else
+    cat <<EOF
+
+Parakey is installed and running. Hold Right Control to dictate.
+
+To restart manually:
+    launchctl kickstart -k gui/\$(id -u)/com.local.parakey
+
+EOF
+fi

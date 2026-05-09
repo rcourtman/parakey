@@ -25,24 +25,30 @@ Paste this into Claude Code, Cursor, Codex, or any shell-capable agent
 running on the target Mac:
 
 ````text
-Install Parakey on this Mac.
+Install Parakey from https://github.com/rcourtman/parakey on this Mac.
 
-Repo: https://github.com/rcourtman/parakey
+This is a public GitHub repo — clone it, don't search locally first.
 
-1. Verify this is an Apple Silicon Mac on macOS 13+. If not, stop and
-   tell me — Parakey requires Apple Silicon.
-2. Ensure Homebrew, python, and ffmpeg are installed
-   (`brew install python ffmpeg`). Skip what's already there.
-3. Clone the repo to ~/parakey (or `git pull` if it exists).
-4. Run `./install.sh` from that directory and report the output.
-5. After the installer finishes, stop and tell me to grant Microphone,
-   Accessibility, and Input Monitoring permissions to **Parakey.app**
-   in System Settings → Privacy & Security.
-6. Once I confirm those are granted, run
-   `launchctl kickstart -k gui/$(id -u)/com.local.parakey` and verify
+Steps:
+1. Confirm this Mac is Apple Silicon (uname -m == arm64) and macOS 13+.
+   If not, stop.
+2. Install Homebrew if missing, then `brew install python ffmpeg`
+   (skip whichever are already installed).
+3. `git clone https://github.com/rcourtman/parakey.git ~/parakey`
+   (or `git -C ~/parakey pull` if it already exists).
+4. `cd ~/parakey && ./install.sh`. The installer is idempotent and
+   prints a NEXT STEP block when done.
+5. install.sh will open three Privacy & Security panes for me on a
+   first install. Stop here. Tell me to add Parakey.app from
+   ~/Applications/ to each pane and toggle it on:
+     - Microphone
+     - Accessibility
+     - Input Monitoring
+6. Once I tell you all three are granted, run
+   `launchctl kickstart -k gui/$(id -u)/com.local.parakey` and confirm
    the menu bar shows 🎙.
 
-Hold Right Control to dictate.
+Then I can hold Right Control to dictate.
 ````
 
 ## Install (manually)
