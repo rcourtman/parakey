@@ -42,36 +42,59 @@ running on the target Mac:
 ````text
 Install Parakey from https://github.com/rcourtman/parakey on this Mac.
 
-This is a GitHub repo — clone it, don't search locally first.
+Parakey is distributed as a notarised Homebrew Cask. Don't clone the
+repo or build from source — `brew install --cask` is the canonical
+end-user install path.
 
 Steps:
 1. Confirm this Mac is Apple Silicon (uname -m == arm64) and macOS 13+.
-   If not, stop.
-2. Install Homebrew if missing, then `brew install python ffmpeg`
-   (skip whichever are already installed).
-3. `git clone https://github.com/rcourtman/parakey.git ~/parakey`
-   (or `git -C ~/parakey pull` if it already exists).
-4. `cd ~/parakey && ./install.sh`. The installer is idempotent.
-5. After install.sh finishes, tell me that the menu bar icon will
-   appear shortly (it loads a 600 MB model from Hugging Face on
-   first launch — this takes 1–5 minutes on a typical connection,
-   one-time only). Don't try to press the dictation key yet.
-6. Tell me to click the menu bar 🎙 once it appears. There will be
-   three rows labelled "⚠ Grant Microphone permission…", "⚠ Grant
-   Accessibility permission…", "⚠ Grant Input Monitoring
-   permission…". Tell me to click each one — Parakey will trigger
-   the macOS prompt and/or open the right Settings pane. I should
-   click Allow on the macOS dialog, or toggle Parakey on in the
-   Settings pane, for each of the three.
-7. The rows turn ✓ as I grant each, and disappear from the menu
-   once all three are granted.
+   If not, stop and tell me — Parakey is Apple Silicon only.
+2. Install Homebrew if missing (the installer at https://brew.sh).
+3. Run:
+     brew install --cask rcourtman/parakey/parakey
+4. Launch the app:
+     open /Applications/Parakey.app
+5. Tell me the menu bar 🎙 icon will appear shortly. First launch
+   downloads a 600 MB speech model from Hugging Face — this takes
+   1–5 minutes on a typical connection, one-time only. Don't try the
+   dictation key yet.
+6. Once the icon appears, tell me to click it. Three rows will be
+   visible: "⚠ Grant Microphone permission…", "⚠ Grant Accessibility
+   permission…", "⚠ Grant Input Monitoring permission…". Tell me to
+   click each one — Parakey will trigger the macOS prompt and/or
+   open the right Settings pane. I should click Allow on the macOS
+   dialog, or toggle Parakey on in Settings, for each of the three.
+7. Rows turn ✓ as I grant each, and disappear from the menu once
+   all three are granted.
 
 Then the menu bar's status row will tell me which key to hold to
 dictate. I can change it from Settings → Hotkey if I'd prefer
-something else.
+something else. To upgrade later: `brew upgrade --cask parakey`.
 ````
 
-## Install (manually)
+## Install (one-liner)
+
+```sh
+brew install --cask rcourtman/parakey/parakey
+open /Applications/Parakey.app
+```
+
+That's it — the cask is signed and notarised, no Gatekeeper warnings.
+First launch downloads the speech model (~600 MB, one-time). Click
+the 🎙 menu bar icon to grant the three macOS privacy permissions
+when it asks.
+
+To upgrade: `brew upgrade --cask parakey`.
+
+To uninstall:
+
+```sh
+brew uninstall --zap --cask parakey   # also removes preferences + logs
+```
+
+## Install (from source, for contributors)
+
+If you want to hack on the code:
 
 ```sh
 brew install python ffmpeg
@@ -80,16 +103,15 @@ cd ~/parakey
 ./install.sh
 ```
 
-`install.sh` is idempotent — re-run it any time you pull updates. It
-will:
+`install.sh` is idempotent — re-run it any time. It creates a venv
+at `~/parakey/.venv`, builds a dev `~/Applications/Parakey.app`
+backed by the source tree, and loads a LaunchAgent so it auto-starts
+at login. Edit `parakey.py`, then
+`launchctl kickstart -k gui/$(id -u)/com.local.parakey` to pick up
+changes.
 
-1. Create a venv at `~/parakey/.venv` and install Python deps.
-2. Build `~/Applications/Parakey.app` from the templates.
-3. Generate `~/Library/LaunchAgents/com.local.parakey.plist`.
-4. Codesign the bundle. If you have a Developer ID Application
-   certificate, it'll be used automatically; otherwise the bundle is
-   ad-hoc signed (which still works, just less stable across rebuilds).
-5. Load the LaunchAgent so Parakey starts now and at every login.
+To produce a notarised release build like the one shipped on Homebrew:
+`./release.sh` (see *Building a release* further down).
 
 ### First launch
 
