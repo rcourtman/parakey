@@ -27,7 +27,7 @@ running on the target Mac:
 ````text
 Install Parakey from https://github.com/rcourtman/parakey on this Mac.
 
-This is a public GitHub repo — clone it, don't search locally first.
+This is a GitHub repo — clone it, don't search locally first.
 
 Steps:
 1. Confirm this Mac is Apple Silicon (uname -m == arm64) and macOS 13+.
@@ -36,17 +36,20 @@ Steps:
    (skip whichever are already installed).
 3. `git clone https://github.com/rcourtman/parakey.git ~/parakey`
    (or `git -C ~/parakey pull` if it already exists).
-4. `cd ~/parakey && ./install.sh`. The installer is idempotent and
-   prints a NEXT STEP block when done.
-5. install.sh will open three Privacy & Security panes for me on a
-   first install. Stop here. Tell me to add Parakey.app from
-   ~/Applications/ to each pane and toggle it on:
-     - Microphone
-     - Accessibility
-     - Input Monitoring
-6. Once I tell you all three are granted, run
-   `launchctl kickstart -k gui/$(id -u)/com.local.parakey` and confirm
-   the menu bar shows 🎙.
+4. `cd ~/parakey && ./install.sh`. The installer is idempotent.
+5. After install.sh finishes, tell me that the menu bar icon will
+   appear shortly (it loads a 600 MB model from Hugging Face on
+   first launch — this takes 1–5 minutes on a typical connection,
+   one-time only). Don't try to press Right Control yet.
+6. Tell me to click the menu bar 🎙 once it appears. There will be
+   three rows labelled "⚠ Grant Microphone permission…", "⚠ Grant
+   Accessibility permission…", "⚠ Grant Input Monitoring
+   permission…". Tell me to click each one — Parakey will trigger
+   the macOS prompt and/or open the right Settings pane. I should
+   click Allow on the macOS dialog, or toggle Parakey on in the
+   Settings pane, for each of the three.
+7. The rows turn ✓ as I grant each, and disappear from the menu
+   once all three are granted.
 
 Then I can hold Right Control to dictate.
 ````
@@ -71,24 +74,33 @@ will:
    ad-hoc signed (which still works, just less stable across rebuilds).
 5. Load the LaunchAgent so Parakey starts now and at every login.
 
-The first time the app runs it downloads the Parakeet-TDT-0.6B model
-(~600 MB) into `~/.cache/huggingface/`. Subsequent launches are
-instant.
+### First launch
+
+The first time Parakey runs, it downloads the Parakeet-TDT-0.6B model
+(~600 MB) from Hugging Face into `~/.cache/huggingface/`. This is a
+one-time download — subsequent launches start in seconds. During the
+download the menu bar icon shows a "loading…" indicator; there's no
+progress bar (yet), so allow 1–5 minutes on a typical connection
+before pressing Right Control.
 
 ### Permissions
 
-After the first install, macOS will need three permissions granted to
-**Parakey.app** in **System Settings → Privacy & Security**:
+Parakey needs three macOS privacy permissions: **Microphone**,
+**Accessibility**, and **Input Monitoring**. Until they're all
+granted, the menu bar dropdown shows three rows like
+**⚠ Grant Microphone permission…** just below the status row.
 
-- **Microphone** — to record while the hotkey is held
-- **Accessibility** — to send Cmd+V via Quartz events
-- **Input Monitoring** — for the global hotkey listener
+For each missing permission:
 
-If a prompt is missed, add Parakey.app manually in each pane, then:
+1. Click the ⚠ row in the menu — Parakey triggers the OS-level
+   request (you may see a native "Parakey wants access" dialog) and
+   opens the relevant Settings pane as a fallback.
+2. Toggle Parakey on in the Settings pane if it isn't already.
+3. The row updates to ✓ as soon as macOS reflects the new state, and
+   once all three are granted the rows collapse out of the menu
+   entirely.
 
-```sh
-launchctl kickstart -k gui/$(id -u)/com.local.parakey
-```
+No restart needed.
 
 ## Usage
 
