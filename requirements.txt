@@ -7,3 +7,4 @@ pynput
 rumps
 pyobjc-framework-Cocoa
 pyobjc-framework-Quartz
+pyobjc-framework-AVFoundation

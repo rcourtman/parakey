@@ -39,6 +39,28 @@ rm -rf "$PROJECT_DIR/build" "$PROJECT_DIR/dist"
 [[ -d "$APP" ]] || die "PyInstaller produced no Parakey.app"
 say "Built $(du -sh "$APP" | cut -f1) bundle"
 
+# --- 1.5 Embedded Python.framework Info.plist tweaks ------------------------
+# Two goals:
+#   1. Identify as Parakey (not Python) when macOS walks framework metadata
+#      for tooltips / dock attribution / Privacy panes.
+#   2. Preserve NSMicrophoneUsageDescription on whichever Info.plist macOS
+#      consults when AVCaptureDevice.requestAccess decides whether to show
+#      its prompt — without this, a PyInstaller-bundled app gets denied
+#      silently because the framework's plist looks "incomplete."
+PY_INFO="$APP/Contents/Frameworks/Python.framework/Versions/3.14/Resources/Info.plist"
+if [[ -f "$PY_INFO" ]]; then
+    say "Patching embedded Python.framework Info.plist (identity + usage descriptions)"
+    plutil -replace CFBundleIdentifier  -string "com.local.parakey.python" "$PY_INFO"
+    plutil -replace CFBundleName        -string "Parakey" "$PY_INFO"
+    plutil -replace CFBundleDisplayName -string "Parakey" "$PY_INFO"
+    plutil -replace NSMicrophoneUsageDescription -string \
+        "Parakey records audio while you hold the dictation hotkey, then transcribes it locally on your Mac." \
+        "$PY_INFO"
+    plutil -replace NSAppleEventsUsageDescription -string \
+        "Parakey uses System Events to paste transcribed text at your cursor." \
+        "$PY_INFO"
+fi
+
 # --- 2. Codesign ------------------------------------------------------------
 if [[ -n "$CODESIGN_IDENTITY" ]]; then
     CERT="$CODESIGN_IDENTITY"
@@ -49,7 +71,10 @@ fi
 [[ -n "$CERT" ]] || die "No Developer ID Application cert in keychain"
 
 say "Signing bundle (cert $CERT)"
-codesign --force --deep --sign "$CERT" --options runtime --timestamp "$APP"
+codesign --force --deep --sign "$CERT" \
+    --options runtime \
+    --entitlements "$PROJECT_DIR/entitlements.plist" \
+    --timestamp "$APP"
 codesign --verify --deep --strict "$APP" >/dev/null
 say "Signature OK ($(codesign --display --verbose=2 "$APP" 2>&1 | awk -F= '/^Authority/ {print $2; exit}'))"
 

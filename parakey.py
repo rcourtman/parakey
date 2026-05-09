@@ -17,8 +17,15 @@ import mlx.core as mx
 import numpy as np
 import rumps
 import sounddevice as sd
-from AppKit import NSAlert, NSImage, NSPasteboard, NSPasteboardTypeString, NSSound
-from Foundation import NSAppleScript, NSBundle, NSUserDefaults
+from AppKit import (
+    NSAlert,
+    NSImage,
+    NSPasteboard,
+    NSPasteboardTypeString,
+    NSSound,
+    NSWorkspace,
+)
+from Foundation import NSAppleScript, NSBundle, NSURL, NSUserDefaults
 from pynput import keyboard
 import Quartz
 
@@ -86,9 +93,22 @@ LABEL_PAUSED = "paused"
 LABEL_ERROR = "!"
 
 
+_LOG_PATH = os.path.expanduser("~/Library/Logs/Parakey.log")
+try:
+    os.makedirs(os.path.dirname(_LOG_PATH), exist_ok=True)
+except OSError:
+    pass
+
+
 def log(msg: str) -> None:
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(line, flush=True)
+    # Bundled .apps run with no console; mirror to a file we can tail.
+    try:
+        with open(_LOG_PATH, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
 
 
 # ---- Helpers ----------------------------------------------------------------
@@ -254,6 +274,25 @@ class Parakey(rumps.App):
         self._submenu_slots_added = 0  # how many of slots 1..N are in the submenu
         self._tooltip_set = False
 
+        # Permission rows shown directly in the main menu. The user
+        # clicks one to register + open the relevant Privacy pane;
+        # _tick polls grant status and updates the title (✓ / ⚠️).
+        self._perm_pane_map = {
+            "Microphone":       "Privacy_Microphone",
+            "Accessibility":    "Privacy_Accessibility",
+            "Input Monitoring": "Privacy_ListenEvent",
+        }
+        self._perm_callbacks = {
+            name: self._make_perm_handler(name) for name in self._perm_pane_map
+        }
+        self.perm_items = {
+            name: rumps.MenuItem(
+                f"(perm:{name})",  # stable menu key; visible title set in _tick
+                callback=self._perm_callbacks[name],
+            )
+            for name in self._perm_pane_map
+        }
+
         self.pause_item = rumps.MenuItem("Pause", callback=self.toggle_pause)
         self.about_item = rumps.MenuItem("About Parakey", callback=self.show_about)
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
@@ -279,6 +318,10 @@ class Parakey(rumps.App):
 
         self.menu = [
             self.status_item,
+            None,
+            self.perm_items["Microphone"],
+            self.perm_items["Accessibility"],
+            self.perm_items["Input Monitoring"],
             None,
             {
                 "Settings": [
@@ -535,6 +578,164 @@ class Parakey(rumps.App):
         sender.title = "Resume" if self.paused else "Pause"
         log(f"{'paused' if self.paused else 'resumed'}")
 
+    # ---- Permissions --------------------------------------------------------
+
+    def _make_perm_handler(self, name: str):
+        """Click handler. Tries to drive the user to the right place:
+
+        - If the permission is undetermined, trigger the macOS native
+          dialog ("Parakey wants Microphone access. Allow / Don't
+          Allow"). Don't open Settings — that would steal focus from
+          the dialog.
+        - If the permission was previously denied (or there's no
+          native dialog flow, e.g. Input Monitoring), open the
+          relevant Settings pane and let the user toggle there.
+        """
+        def handler(_sender) -> None:
+            from AppKit import (
+                NSApp,
+                NSApplicationActivationPolicyRegular,
+                NSApplicationActivationPolicyAccessory,
+            )
+            # LSUIElement (menu-bar-only) apps aren't normally allowed
+            # to be the frontmost app, which means macOS's permission
+            # dialog has no foreground host to attach to and doesn't
+            # appear. Temporarily promote to a Regular app for ~6s
+            # while the request is in flight, then drop back.
+            log(f"perm click: {name}")
+            NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+            NSApp.activateIgnoringOtherApps_(True)
+
+            should_open_settings = self._needs_settings_pane(name)
+            self._request_permission(name)
+
+            if should_open_settings:
+                time.sleep(0.3)
+                url = NSURL.URLWithString_(
+                    "x-apple.systempreferences:com.apple.preference.security?"
+                    + self._perm_pane_map[name]
+                )
+                NSWorkspace.sharedWorkspace().openURL_(url)
+
+            def _restore_policy():
+                time.sleep(6)
+                from AppKit import NSApp as _NSApp
+                from PyObjCTools.AppHelper import callAfter
+                callAfter(
+                    _NSApp.setActivationPolicy_,
+                    NSApplicationActivationPolicyAccessory,
+                )
+                log(f"  restored Accessory activation policy after {name}")
+
+            threading.Thread(target=_restore_policy, daemon=True).start()
+        return handler
+
+    def _needs_settings_pane(self, name: str) -> bool:
+        """True if the permission can't be resolved by a native dialog —
+        either previously denied, or the API doesn't show one."""
+        try:
+            if name == "Microphone":
+                from AVFoundation import AVCaptureDevice
+                status = int(AVCaptureDevice.authorizationStatusForMediaType_("soun"))
+                # 0 NotDetermined, 1 Restricted, 2 Denied, 3 Authorized.
+                # Native dialog only appears when NotDetermined.
+                return status != 0
+            if name == "Accessibility":
+                from ApplicationServices import AXIsProcessTrusted
+                # AXIsProcessTrustedWithOptions(prompt=True) shows a native
+                # dialog with an "Open System Settings" button when the
+                # status is unknown. If already explicitly granted, nothing
+                # to do; if denied, the dialog still appears, so let it
+                # handle it.
+                return AXIsProcessTrusted()
+            if name == "Input Monitoring":
+                # No reliable native prompt for this one — always send the
+                # user to Settings.
+                return True
+        except Exception:
+            pass
+        return True
+
+    def _check_permission(self, name: str) -> bool:
+        """Return True if the named permission is genuinely granted.
+
+        Each check uses the API macOS itself uses for TCC accounting,
+        not a heuristic. If those report 'not granted' but audio still
+        seems to flow, that's a real macOS-bundle-identity bug — we
+        surface the status honestly rather than lying.
+        """
+        try:
+            if name == "Microphone":
+                from AVFoundation import AVCaptureDevice
+                # AVAuthorizationStatusAuthorized = 3
+                return int(AVCaptureDevice.authorizationStatusForMediaType_("soun")) == 3
+            if name == "Accessibility":
+                from ApplicationServices import AXIsProcessTrusted
+                return bool(AXIsProcessTrusted())
+            if name == "Input Monitoring":
+                import ctypes, ctypes.util
+                iokit = ctypes.CDLL(ctypes.util.find_library("IOKit"))
+                iokit.IOHIDCheckAccess.argtypes = [ctypes.c_uint32]
+                iokit.IOHIDCheckAccess.restype = ctypes.c_uint32
+                # kIOHIDAccessTypeGranted = 0
+                return iokit.IOHIDCheckAccess(1) == 0
+        except Exception as e:
+            log(f"check {name} failed: {e}")
+        return False
+
+    # Keep references so completion handlers don't get GC'd before
+    # macOS calls back into them.
+    _completion_handlers: dict = {}
+
+    def _request_permission(self, name: str) -> None:
+        """Trigger macOS to register and prompt for the named permission."""
+        try:
+            if name == "Microphone":
+                from AVFoundation import AVCaptureDevice
+                before = int(AVCaptureDevice.authorizationStatusForMediaType_("soun"))
+                log(f"  Microphone status before request: {before} "
+                    "(0=NotDetermined 1=Restricted 2=Denied 3=Authorized)")
+
+                def _mic_cb(granted):
+                    log(f"  Microphone request callback: granted={bool(granted)}")
+                self._completion_handlers["mic"] = _mic_cb
+
+                AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+                    "soun", _mic_cb,
+                )
+                # Status doesn't update synchronously — the dialog (if shown)
+                # runs the user's response on a queue, and the cb above
+                # logs the eventual result.
+                after = int(AVCaptureDevice.authorizationStatusForMediaType_("soun"))
+                log(f"  Microphone status immediately after request call: {after}")
+            elif name == "Accessibility":
+                from ApplicationServices import (
+                    AXIsProcessTrusted,
+                    AXIsProcessTrustedWithOptions,
+                    kAXTrustedCheckOptionPrompt,
+                )
+                log(f"  Accessibility trusted before request: {AXIsProcessTrusted()}")
+                AXIsProcessTrustedWithOptions(
+                    {kAXTrustedCheckOptionPrompt: True}
+                )
+            elif name == "Input Monitoring":
+                # PyObjC doesn't expose IOHIDRequestAccess; reach into
+                # IOKit via ctypes. kIOHIDRequestTypeListenEvent = 1.
+                import ctypes, ctypes.util
+                iokit = ctypes.CDLL(ctypes.util.find_library("IOKit"))
+                iokit.IOHIDRequestAccess.argtypes = [ctypes.c_uint32]
+                iokit.IOHIDRequestAccess.restype = ctypes.c_bool
+                result = iokit.IOHIDRequestAccess(1)
+                log(f"  IOHIDRequestAccess returned: {result}")
+        except Exception as e:
+            log(f"request {name} failed: {e}")
+
+    def _icon_image(self) -> "NSImage | None":
+        path = os.path.join(PROJECT_DIR, "icon", "Parakey.icns")
+        if not os.path.exists(path):
+            return None
+        return NSImage.alloc().initWithContentsOfFile_(path)
+
     def show_about(self, sender) -> None:
         hotkey_name, _, _ = hotkey_for_keycode(self.hotkey_keycode)
         alert = NSAlert.alloc().init()
@@ -573,6 +774,20 @@ class Parakey(rumps.App):
 
     # ---- UI tick (main thread, 10 Hz) --------------------------------------
 
+    def _update_permission_rows(self) -> None:
+        """Refresh each permission row's title + clickability based on grant state."""
+        for name, item in self.perm_items.items():
+            granted = self._check_permission(name)
+            new_title = (
+                f"✓  {name} permission granted"
+                if granted else
+                f"⚠  Grant {name} permission…"
+            )
+            if item.title != new_title:
+                item.title = new_title
+            # Disable click when granted so the row reads as informational.
+            item.set_callback(None if granted else self._perm_callbacks[name])
+
     def _set_tooltip_once(self) -> None:
         """Set the menu bar tooltip to 'Parakey' once the NSStatusItem exists."""
         if self._tooltip_set:
@@ -591,6 +806,7 @@ class Parakey(rumps.App):
     @rumps.timer(0.1)
     def _tick(self, _sender) -> None:
         self._set_tooltip_once()
+        self._update_permission_rows()
         # Menu bar title (with the brand icon shown via self.icon).
         if self.error:
             self.title = LABEL_ERROR

@@ -42,6 +42,10 @@ a = Analysis(
         "Foundation",
         "Cocoa",
         "objc",
+        # Used by the onboarding wizard to trigger TCC permission
+        # registration before opening the Privacy panes.
+        "AVFoundation",
+        "ApplicationServices",
         # Menu bar UI
         "rumps",
     ] + mlx_hidden + pmlx_hidden,
