@@ -17,7 +17,7 @@ import numpy as np
 import rumps
 import sounddevice as sd
 from AppKit import NSPasteboard, NSPasteboardTypeString, NSSound
-from Foundation import NSAppleScript
+from Foundation import NSAppleScript, NSUserDefaults
 from pynput import keyboard
 import Quartz
 
@@ -30,10 +30,34 @@ MODEL_ID = os.environ.get("PARAKEY_MODEL", "mlx-community/parakeet-tdt-0.6b-v2")
 SAMPLE_RATE = 16000
 CHANNELS = 1
 MIN_CLIP_SECONDS = 0.25
-HOTKEY = keyboard.Key.ctrl_r
-HOTKEY_KEYCODE = 62  # macOS virtual keycode for Right Control
 START_SOUND = "/System/Library/Sounds/Tink.aiff"
 DONE_SOUND = "/System/Library/Sounds/Pop.aiff"
+
+# Hotkey choices: (display name, pynput Key, macOS virtual keycode).
+# Keycode is needed separately for the Quartz event-tap suppression.
+HOTKEY_CHOICES: list[tuple[str, "keyboard.Key", int]] = [
+    ("Right Control", keyboard.Key.ctrl_r, 62),
+    ("Right Option",  keyboard.Key.alt_r,  61),
+    ("Right Command", keyboard.Key.cmd_r,  54),
+    ("F5",            keyboard.Key.f5,     96),
+    ("F6",            keyboard.Key.f6,     97),
+    ("F13",           keyboard.Key.f13,    105),
+    ("F18",           keyboard.Key.f18,    79),
+    ("F19",           keyboard.Key.f19,    80),
+]
+DEFAULT_HOTKEY_KEYCODE = 62  # Right Control
+
+TRIGGER_HOLD = "hold"
+TRIGGER_TOGGLE = "toggle"
+TRIGGER_DISPLAY = {TRIGGER_HOLD: "Press and hold", TRIGGER_TOGGLE: "Press to toggle"}
+DEFAULT_TRIGGER_MODE = TRIGGER_HOLD
+
+
+def hotkey_for_keycode(keycode: int):
+    for entry in HOTKEY_CHOICES:
+        if entry[2] == keycode:
+            return entry
+    return HOTKEY_CHOICES[0]
 
 ICON_LOAD = "Parakey…"
 ICON_IDLE = "🎙"
@@ -100,11 +124,58 @@ def paste_text(text: str) -> None:
     _send_cmd_v()
 
 
+# ---- Settings (NSUserDefaults) ----------------------------------------------
+
+SETTINGS_SUITE = "com.local.parakey"
+
+
+class Settings:
+    KEY_HOTKEY_KEYCODE = "hotkey_keycode"
+    KEY_TRIGGER_MODE = "trigger_mode"
+
+    def __init__(self) -> None:
+        # We can't rely on standardUserDefaults() because the running Python
+        # process inherits org.python.python as its bundle identifier, not
+        # com.local.parakey. Use an explicit suite name instead.
+        self.defaults = NSUserDefaults.alloc().initWithSuiteName_(SETTINGS_SUITE)
+
+    @property
+    def hotkey_keycode(self) -> int:
+        if self.defaults.objectForKey_(self.KEY_HOTKEY_KEYCODE) is None:
+            return DEFAULT_HOTKEY_KEYCODE
+        return int(self.defaults.integerForKey_(self.KEY_HOTKEY_KEYCODE))
+
+    @hotkey_keycode.setter
+    def hotkey_keycode(self, value: int) -> None:
+        self.defaults.setInteger_forKey_(int(value), self.KEY_HOTKEY_KEYCODE)
+        self.defaults.synchronize()
+
+    @property
+    def trigger_mode(self) -> str:
+        v = self.defaults.stringForKey_(self.KEY_TRIGGER_MODE)
+        if v in (TRIGGER_HOLD, TRIGGER_TOGGLE):
+            return str(v)
+        return DEFAULT_TRIGGER_MODE
+
+    @trigger_mode.setter
+    def trigger_mode(self, value: str) -> None:
+        if value not in (TRIGGER_HOLD, TRIGGER_TOGGLE):
+            raise ValueError(f"invalid trigger mode: {value}")
+        self.defaults.setObject_forKey_(value, self.KEY_TRIGGER_MODE)
+        self.defaults.synchronize()
+
+
 # ---- App --------------------------------------------------------------------
 
 class Parakey(rumps.App):
     def __init__(self) -> None:
         super().__init__("Parakey", title=ICON_LOAD, quit_button=None)
+
+        self.settings = Settings()
+        _, hk, hkcode = hotkey_for_keycode(self.settings.hotkey_keycode)
+        self.hotkey = hk
+        self.hotkey_keycode = hkcode
+        self.trigger_mode = self.settings.trigger_mode
 
         self.status_item = rumps.MenuItem("Status: starting…")
         self.last_item = rumps.MenuItem("Last: —")
@@ -115,10 +186,27 @@ class Parakey(rumps.App):
         self.about_item = rumps.MenuItem("About Parakey", callback=self.show_about)
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
 
+        self.hotkey_items = [
+            rumps.MenuItem(name, callback=self.select_hotkey)
+            for name, _, _ in HOTKEY_CHOICES
+        ]
+        for item, (_, _, code) in zip(self.hotkey_items, HOTKEY_CHOICES):
+            item.state = 1 if code == self.hotkey_keycode else 0
+
+        self.trigger_items = {
+            mode: rumps.MenuItem(label, callback=self.select_trigger_mode)
+            for mode, label in TRIGGER_DISPLAY.items()
+        }
+        for mode, item in self.trigger_items.items():
+            item.state = 1 if mode == self.trigger_mode else 0
+
         self.menu = [
             self.status_item,
             self.last_item,
             self.copy_last_item,
+            None,
+            {"Hotkey": self.hotkey_items},
+            {"Trigger mode": list(self.trigger_items.values())},
             None,
             self.pause_item,
             None,
@@ -184,7 +272,9 @@ class Parakey(rumps.App):
             self.listener.start()
 
             self.ready = True
-            log("ready — hold Right Control to dictate")
+            hk_name, _, _ = hotkey_for_keycode(self.hotkey_keycode)
+            verb = "hold" if self.trigger_mode == TRIGGER_HOLD else "press"
+            log(f"ready — {verb} {hk_name} to dictate")
         except Exception as e:
             self.error = str(e)
             log(f"init failed: {e}")
@@ -201,9 +291,7 @@ class Parakey(rumps.App):
         if self.recording:
             self.frames.append(indata.copy())
 
-    def _on_press(self, key) -> None:
-        if not self.ready or self.paused or key != HOTKEY:
-            return
+    def _start_recording(self) -> None:
         with self.lock:
             if self.recording or self.busy:
                 return
@@ -224,8 +312,7 @@ class Parakey(rumps.App):
         self.max_duration_timer.daemon = True
         self.max_duration_timer.start()
 
-    def _auto_release(self) -> None:
-        log(f"max recording duration ({MAX_RECORDING_SECONDS}s) reached")
+    def _stop_recording(self) -> None:
         with self.lock:
             if not self.recording:
                 return
@@ -233,7 +320,32 @@ class Parakey(rumps.App):
         if self.mute_timer is not None:
             self.mute_timer.cancel()
             self.mute_timer = None
+        if self.max_duration_timer is not None:
+            self.max_duration_timer.cancel()
+            self.max_duration_timer = None
         threading.Thread(target=self._transcribe_and_paste, daemon=True).start()
+
+    def _on_press(self, key) -> None:
+        if not self.ready or self.paused or key != self.hotkey:
+            return
+        if self.trigger_mode == TRIGGER_TOGGLE:
+            if self.recording:
+                self._stop_recording()
+            else:
+                self._start_recording()
+        else:  # TRIGGER_HOLD
+            self._start_recording()
+
+    def _on_release(self, key) -> None:
+        if key != self.hotkey:
+            return
+        if self.trigger_mode == TRIGGER_HOLD:
+            self._stop_recording()
+        # TRIGGER_TOGGLE: release is a no-op; second press will stop.
+
+    def _auto_release(self) -> None:
+        log(f"max recording duration ({MAX_RECORDING_SECONDS}s) reached")
+        self._stop_recording()
 
     def _engage_mute(self) -> None:
         with self.lock:
@@ -248,21 +360,6 @@ class Parakey(rumps.App):
             _unmute()
             log("output unmuted")
         self.saved_muted = None
-
-    def _on_release(self, key) -> None:
-        if key != HOTKEY:
-            return
-        with self.lock:
-            if not self.recording:
-                return
-            self.recording = False
-        if self.mute_timer is not None:
-            self.mute_timer.cancel()
-            self.mute_timer = None
-        if self.max_duration_timer is not None:
-            self.max_duration_timer.cancel()
-            self.max_duration_timer = None
-        threading.Thread(target=self._transcribe_and_paste, daemon=True).start()
 
     def _transcribe_and_paste(self) -> None:
         with self.lock:
@@ -302,7 +399,7 @@ class Parakey(rumps.App):
         keycode = Quartz.CGEventGetIntegerValueField(
             event, Quartz.kCGKeyboardEventKeycode
         )
-        if keycode == HOTKEY_KEYCODE and not self.paused:
+        if keycode == self.hotkey_keycode and not self.paused:
             return None
         return event
 
@@ -321,17 +418,44 @@ class Parakey(rumps.App):
             message=self.last_text[:120],
         )
 
+    def select_hotkey(self, sender) -> None:
+        for name, key, code in HOTKEY_CHOICES:
+            if name == sender.title:
+                self.hotkey = key
+                self.hotkey_keycode = code
+                self.settings.hotkey_keycode = code
+                log(f"hotkey set to {name} (keycode {code})")
+                break
+        for item in self.hotkey_items:
+            item.state = 1 if item.title == sender.title else 0
+
+    def select_trigger_mode(self, sender) -> None:
+        for mode, label in TRIGGER_DISPLAY.items():
+            if label == sender.title:
+                # Releasing mid-recording when switching to TOGGLE while held
+                # would otherwise leave the app stuck — stop cleanly first.
+                if self.recording:
+                    self._stop_recording()
+                self.trigger_mode = mode
+                self.settings.trigger_mode = mode
+                log(f"trigger mode set to {mode}")
+                break
+        for mode, item in self.trigger_items.items():
+            item.state = 1 if mode == self.trigger_mode else 0
+
     def toggle_pause(self, sender) -> None:
         self.paused = not self.paused
         sender.title = "Resume" if self.paused else "Pause"
         log(f"{'paused' if self.paused else 'resumed'}")
 
     def show_about(self, sender) -> None:
+        hotkey_name, _, _ = hotkey_for_keycode(self.hotkey_keycode)
         rumps.alert(
             title="Parakey",
             message=(
-                "Lightweight push-to-talk dictation\n"
-                "Right Control to dictate.\n\n"
+                "Lightweight push-to-talk dictation.\n\n"
+                f"Hotkey: {hotkey_name}\n"
+                f"Mode: {TRIGGER_DISPLAY[self.trigger_mode]}\n"
                 f"Model: {MODEL_ID}\n"
                 f"Sample rate: {SAMPLE_RATE} Hz"
             ),
@@ -375,7 +499,9 @@ class Parakey(rumps.App):
             self.status_item.title = "Status: paused"
         else:
             self.title = ICON_IDLE
-            self.status_item.title = "Status: ready (hold Right Control)"
+            hk_name, _, _ = hotkey_for_keycode(self.hotkey_keycode)
+            verb = "hold" if self.trigger_mode == TRIGGER_HOLD else "press"
+            self.status_item.title = f"Status: ready ({verb} {hk_name})"
         if self.last_text:
             preview = self.last_text if len(self.last_text) <= 50 else self.last_text[:47] + "…"
             self.last_item.title = f"Last: {preview}"

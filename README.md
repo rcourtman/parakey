@@ -109,6 +109,9 @@ Menu items:
 - **Last** — preview of the most recent transcript
 - **Copy last transcription** — re-copy if a paste landed in the wrong
   place
+- **Hotkey** — submenu to pick the dictation key (Right Control / Right
+  Option / Right Command / F5 / F6 / F13 / F18 / F19)
+- **Trigger mode** — *Press and hold* or *Press to toggle*
 - **Pause / Resume** — temporarily disable the hotkey
 - **About Parakey**
 - **Quit** — clean shutdown (no auto-restart)
@@ -138,24 +141,33 @@ For a profile of where time is spent, run:
 
 ## Customise
 
-Constants live at the top of `parakey.py`:
+The two settings most users want are in the menu bar itself:
+
+- **Hotkey** — Right Control (default), Right Option, Right Command, F5,
+  F6, F13, F18, F19
+- **Trigger mode** — *Press and hold* (default) or *Press to toggle*
+  (click on / click off)
+
+Both persist across restarts via `NSUserDefaults`
+(`~/Library/Preferences/com.local.parakey.plist`) and you can also set
+them via `defaults`:
+
+```sh
+defaults write com.local.parakey hotkey_keycode -int 105   # F13
+defaults write com.local.parakey trigger_mode toggle
+launchctl kickstart -k gui/$(id -u)/com.local.parakey
+```
+
+For deeper changes, constants live at the top of `parakey.py`:
 
 | Constant | Default | Notes |
 |---|---|---|
 | `MODEL_ID` | `mlx-community/parakeet-tdt-0.6b-v2` | Any Parakeet-MLX model on Hugging Face. Also overridable via `PARAKEY_MODEL` env var. |
-| `HOTKEY` | `keyboard.Key.ctrl_r` | e.g. `keyboard.Key.f5`. |
-| `HOTKEY_KEYCODE` | `62` | macOS virtual keycode of the hotkey (used to suppress the keystroke). Must match `HOTKEY`. |
 | `MUTE_AFTER_TINK_SECONDS` | `0.18` | Delay before muting so the start sound isn't clipped. |
 | `MAX_RECORDING_SECONDS` | `120` | Auto-release if the hotkey is held longer. |
 | `LOG_TRANSCRIPTS` | `False` | Set to `True` to log transcript content (debugging). |
 
 After editing, restart with `launchctl kickstart -k gui/$(id -u)/com.local.parakey`.
-
-### Common macOS keycodes
-
-- Right Control: 62 · Left Control: 59
-- Right Option: 61 · Left Option: 58
-- F5: 96 · F6: 97 · F13: 105 · F18: 79 · F19: 80
 
 ## Re-signing the bundle
 
