@@ -10,7 +10,12 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_DEST="$HOME/Applications/Parakey.app"
 PLIST_DEST="$HOME/Library/LaunchAgents/com.local.parakey.plist"
-DEV_ID_PREFIX="Developer ID Application: Pulse Monitoring Ltd"
+
+# Override to pick a specific signing identity, e.g.
+#     PARAKEY_CODESIGN_IDENTITY="My Cert" ./install.sh
+# Otherwise the first available "Developer ID Application:" cert is used,
+# falling back to ad-hoc signing if none is found.
+CODESIGN_IDENTITY="${PARAKEY_CODESIGN_IDENTITY:-}"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
@@ -49,15 +54,20 @@ sed "s|__HOME__|$HOME|g" "$PROJECT_DIR/templates/com.local.parakey.plist" > "$PL
 plutil -lint "$PLIST_DEST" >/dev/null
 
 # --- Codesign ---------------------------------------------------------------
-CERT_HASH="$(security find-identity -v -p codesigning 2>/dev/null \
-    | awk -v p="$DEV_ID_PREFIX" '$0 ~ p { print $2; exit }')"
-if [[ -n "$CERT_HASH" ]]; then
-    say "Signing bundle with Developer ID ($CERT_HASH)"
-    codesign --force --deep --sign "$CERT_HASH" --options runtime --timestamp "$APP_DEST"
+if [[ -n "$CODESIGN_IDENTITY" ]]; then
+    say "Signing bundle with override identity: $CODESIGN_IDENTITY"
+    codesign --force --deep --sign "$CODESIGN_IDENTITY" --options runtime --timestamp "$APP_DEST"
 else
-    warn "No Developer ID cert found — falling back to ad-hoc signing"
-    say "Ad-hoc signing bundle"
-    codesign --force --deep --sign - "$APP_DEST"
+    CERT_HASH="$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk '/Developer ID Application:/ { print $2; exit }')"
+    if [[ -n "$CERT_HASH" ]]; then
+        say "Signing bundle with Developer ID ($CERT_HASH)"
+        codesign --force --deep --sign "$CERT_HASH" --options runtime --timestamp "$APP_DEST"
+    else
+        warn "No Developer ID cert found — falling back to ad-hoc signing"
+        say "Ad-hoc signing bundle"
+        codesign --force --deep --sign - "$APP_DEST"
+    fi
 fi
 codesign --verify --deep --strict "$APP_DEST" >/dev/null && say "Signature OK"
 

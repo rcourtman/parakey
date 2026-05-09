@@ -1,0 +1,27 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Python syntax check
+        run: |
+          python -m py_compile parakey.py
+          python -m py_compile bench.py
+      - name: Shell syntax check
+        run: |
+          bash -n install.sh
+          bash -n templates/Parakey.app/Contents/MacOS/parakey
+      - name: Plist lint
+        run: |
+          # plutil isn't on Linux, but the templates are valid XML.
+          python -c "import xml.etree.ElementTree as ET; ET.parse('templates/Parakey.app/Contents/Info.plist'); ET.parse('templates/com.local.parakey.plist')"

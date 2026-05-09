@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a small, focused improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What gap are you trying to close? Avoid jumping straight to a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed approach
+      description: Optional sketch. We may pick a different one.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Why this fits Parakey's scope
+      description: |
+        See CONTRIBUTING.md. Out-of-scope: cloud backends, cross-platform
+        ports, heavy preferences UI. Try to make the case briefly.

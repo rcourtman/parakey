@@ -1,0 +1,44 @@
+name: Bug report
+description: Something doesn't work as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: e.g. 26.4.1 (Tahoe)
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac model
+      placeholder: e.g. Mac mini M2, MacBook Pro M3 Pro
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log output
+      description: Last ~30 lines of `~/parakey/parakey.log`. Don't paste transcript content if `LOG_TRANSCRIPTS = True` was on.
+      render: shell
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: Permissions granted to Parakey.app
+      description: All three are required.
+      options:
+        - label: Microphone
+        - label: Accessibility
+        - label: Input Monitoring
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
