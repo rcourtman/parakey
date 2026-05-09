@@ -169,6 +169,44 @@ For deeper changes, constants live at the top of `parakey.py`:
 
 After editing, restart with `launchctl kickstart -k gui/$(id -u)/com.local.parakey`.
 
+## Building a release (maintainers)
+
+`install.sh` is the *contributor* path — fast iteration, uses your
+system Python, slightly leaky on macOS-bundle identity.
+
+`release.sh` is the *distribution* path — produces a self-contained,
+signed, optionally-notarised `Parakey.app` you can attach to a GitHub
+Release. The bundle embeds Python and every dependency, so the running
+executable lives inside `Parakey.app` and macOS identifies it as
+Parakey throughout (TCC, Activity Monitor, notifications, etc.).
+
+```sh
+./release.sh
+```
+
+Outputs:
+
+- `dist/Parakey.app` — signed, ready to drag into `/Applications/`
+- `dist/Parakey.zip` — the same bundle zipped, suitable for upload to
+  GitHub Releases (≈145 MB)
+
+### Notarisation (one-time setup)
+
+Without notarisation, macOS Gatekeeper warns end users on first launch.
+To enable notarisation in `release.sh`, run once:
+
+```sh
+xcrun notarytool store-credentials parakey-notary \
+    --apple-id <YOUR_APPLE_ID> \
+    --team-id  UJD57YVK2B \
+    --password <APP_SPECIFIC_PASSWORD>
+```
+
+Generate the app-specific password at
+[appleid.apple.com](https://appleid.apple.com) → *Sign-In and Security
+→ App-Specific Passwords*. After this, every `./release.sh` run will
+notarise + staple automatically.
+
 ## Re-signing the bundle
 
 Editing `parakey.py` doesn't break the signature — that file lives

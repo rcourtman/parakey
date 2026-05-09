@@ -155,10 +155,20 @@ class Settings:
     KEY_MUTE_WHILE_RECORDING = "mute_while_recording"
 
     def __init__(self) -> None:
-        # We can't rely on standardUserDefaults() because the running Python
-        # process inherits org.python.python as its bundle identifier, not
-        # com.local.parakey. Use an explicit suite name instead.
-        self.defaults = NSUserDefaults.alloc().initWithSuiteName_(SETTINGS_SUITE)
+        # Two paths depending on how we're running:
+        #  - Bundled (Parakey.app via PyInstaller): bundleIdentifier ==
+        #    SETTINGS_SUITE, so standardUserDefaults() points at our
+        #    plist. macOS rejects initWithSuiteName_ for your own
+        #    bundle id (returns None).
+        #  - Unbundled (dev: running parakey.py from Homebrew Python):
+        #    bundleIdentifier == "org.python.python", so we need an
+        #    explicit suite name to land on com.local.parakey.plist.
+        #  Both paths read and write the same on-disk plist:
+        #    ~/Library/Preferences/com.local.parakey.plist
+        if NSBundle.mainBundle().bundleIdentifier() == SETTINGS_SUITE:
+            self.defaults = NSUserDefaults.standardUserDefaults()
+        else:
+            self.defaults = NSUserDefaults.alloc().initWithSuiteName_(SETTINGS_SUITE)
 
     @property
     def hotkey_keycode(self) -> int:
