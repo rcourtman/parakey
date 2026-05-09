@@ -181,6 +181,7 @@ class Settings:
     KEY_TRIGGER_MODE = "trigger_mode"
     KEY_MUTE_WHILE_RECORDING = "mute_while_recording"
     KEY_SHOW_IN_DOCK = "show_in_dock"
+    KEY_INPUT_DEVICE = "input_device"  # device name as string; "" = system default
 
     def __init__(self) -> None:
         # Two paths depending on how we're running:
@@ -244,6 +245,17 @@ class Settings:
         self.defaults.setBool_forKey_(bool(value), self.KEY_SHOW_IN_DOCK)
         self.defaults.synchronize()
 
+    @property
+    def input_device(self) -> str:
+        """Saved input-device name. Empty string means 'use system default'."""
+        v = self.defaults.stringForKey_(self.KEY_INPUT_DEVICE)
+        return str(v) if v is not None else ""
+
+    @input_device.setter
+    def input_device(self, value: str) -> None:
+        self.defaults.setObject_forKey_(value or "", self.KEY_INPUT_DEVICE)
+        self.defaults.synchronize()
+
 
 # ---- App --------------------------------------------------------------------
 
@@ -265,6 +277,7 @@ class Parakey(rumps.App):
         self.trigger_mode = self.settings.trigger_mode
         self.mute_while_recording = self.settings.mute_while_recording
         self.show_in_dock = self.settings.show_in_dock
+        self.input_device = self.settings.input_device  # "" = system default
 
         # Stable menu keys (rumps tracks items by their initial title;
         # the visible title can change later without affecting lookup).
@@ -344,6 +357,22 @@ class Parakey(rumps.App):
         )
         self.dock_item.state = 1 if self.show_in_dock else 0
 
+        # Microphone submenu — list every input-capable device sounddevice
+        # finds, plus a "System default" entry at the top. Click to switch;
+        # the audio stream restarts to pick up the new device.
+        self.mic_items: list = []
+        self.mic_default_item = rumps.MenuItem(
+            "System default", callback=self.select_input_device
+        )
+        self.mic_items.append(self.mic_default_item)
+        for dev in sd.query_devices():
+            if dev.get("max_input_channels", 0) > 0:
+                item = rumps.MenuItem(
+                    dev["name"], callback=self.select_input_device
+                )
+                self.mic_items.append(item)
+        self._refresh_mic_checkmarks()
+
         # Start without the permission rows in the menu; _tick inserts
         # them lazily if any permission is missing, and removes them
         # once all three are granted.
@@ -354,6 +383,7 @@ class Parakey(rumps.App):
                 "Settings": [
                     {"Hotkey": self.hotkey_items},
                     {"Trigger mode": list(self.trigger_items.values())},
+                    {"Microphone": self.mic_items},
                     self.mute_item,
                     self.dock_item,
                 ]
@@ -404,14 +434,31 @@ class Parakey(rumps.App):
             log(f"warmed up in {time.time()-t0:.1f}s")
 
             self._set_load_status("opening mic")
-            self.stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="float32",
-                callback=self._audio_callback,
-            )
-            self.stream.start()
-            log(f"mic open: {sd.query_devices(kind='input')['name']}")
+            device_arg = self.input_device or None
+            try:
+                self.stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype="float32",
+                    callback=self._audio_callback,
+                    device=device_arg,
+                )
+                self.stream.start()
+            except Exception as e:
+                # Saved device may have been unplugged since last launch.
+                log(f"failed to open {device_arg!r}: {e} — falling back to system default")
+                self.input_device = ""
+                self.settings.input_device = ""
+                self._refresh_mic_checkmarks()
+                self.stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype="float32",
+                    callback=self._audio_callback,
+                )
+                self.stream.start()
+            mic_name = sd.query_devices(self.stream.device, kind="input")["name"]
+            log(f"mic open: {mic_name}")
 
             self._set_load_status("registering hotkey")
             self.listener = keyboard.Listener(
@@ -586,6 +633,78 @@ class Parakey(rumps.App):
         self.settings.mute_while_recording = self.mute_while_recording
         sender.state = 1 if self.mute_while_recording else 0
         log(f"mute while recording: {self.mute_while_recording}")
+
+    def _refresh_mic_checkmarks(self) -> None:
+        """Set state=1 on whichever Microphone item is currently active."""
+        target = self.input_device  # "" = System default
+        for item in self.mic_items:
+            if target == "":
+                item.state = 1 if item.title == "System default" else 0
+            else:
+                item.state = 1 if item.title == target else 0
+
+    def select_input_device(self, sender) -> None:
+        chosen = "" if sender.title == "System default" else sender.title
+        if chosen == self.input_device:
+            return  # no-op
+        self.input_device = chosen
+        self.settings.input_device = chosen
+        self._refresh_mic_checkmarks()
+        log(f"input device set to {chosen or '(system default)'}")
+        self._restart_audio_stream()
+
+    def _restart_audio_stream(self) -> None:
+        """Close the current input stream and reopen with the saved device.
+
+        Aborts any in-flight recording cleanly. Falls back to the system
+        default if the requested device can't be opened (e.g. unplugged).
+        """
+        with self.lock:
+            self.recording = False
+            self.frames = []
+        if self.mute_timer is not None:
+            self.mute_timer.cancel()
+            self.mute_timer = None
+        if self.max_duration_timer is not None:
+            self.max_duration_timer.cancel()
+            self.max_duration_timer = None
+        self._restore_mute()
+
+        try:
+            if self.stream is not None:
+                self.stream.stop()
+                self.stream.close()
+        except Exception as e:
+            log(f"closing old stream: {e}")
+        self.stream = None
+
+        device_arg = self.input_device or None
+        try:
+            self.stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="float32",
+                callback=self._audio_callback,
+                device=device_arg,
+            )
+            self.stream.start()
+            log(f"mic open: {sd.query_devices(self.stream.device, kind='input')['name']}")
+        except Exception as e:
+            log(f"failed to open device {device_arg!r}: {e} — falling back to system default")
+            self.input_device = ""
+            self.settings.input_device = ""
+            self._refresh_mic_checkmarks()
+            try:
+                self.stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=CHANNELS,
+                    dtype="float32",
+                    callback=self._audio_callback,
+                )
+                self.stream.start()
+                log(f"mic open: {sd.query_devices(kind='input')['name']}")
+            except Exception as e2:
+                log(f"fallback also failed: {e2}")
 
     def toggle_dock_setting(self, sender) -> None:
         self.show_in_dock = not self.show_in_dock

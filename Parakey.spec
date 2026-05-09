@@ -100,8 +100,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "Parakey",
         "CFBundleDisplayName": "Parakey",
-        "CFBundleShortVersionString": "0.1",
-        "CFBundleVersion": "1",
+        "CFBundleShortVersionString": "0.1.1",
+        "CFBundleVersion": "2",
         "LSMinimumSystemVersion": "13.0",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,

@@ -149,6 +149,9 @@ Menu structure:
   - **Hotkey** — Right Option (default), Right Control, Right
     Command, F5, F6, F13, F18, F19
   - **Trigger mode** — *Press and hold* or *Press to toggle*
+  - **Microphone** — System default (default) or any specific input
+    device. Switching takes effect immediately. If the saved device
+    is later unplugged, Parakey falls back to system default.
   - **Mute system audio while recording** — on by default; turn off
     if you'd rather music keep playing while you dictate
   - **Show Parakey in Dock** — off by default (menu-bar only)
@@ -194,6 +197,7 @@ defaults write com.local.parakey hotkey_keycode -int 105   # F13
 defaults write com.local.parakey trigger_mode toggle
 defaults write com.local.parakey mute_while_recording -bool false
 defaults write com.local.parakey show_in_dock -bool true
+defaults write com.local.parakey input_device "AirPods Pro"  # exact device name
 launchctl kickstart -k gui/$(id -u)/com.local.parakey
 ```
 
