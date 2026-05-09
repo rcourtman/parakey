@@ -27,7 +27,12 @@ body:
     id: log
     attributes:
       label: Log output
-      description: Last ~30 lines of `~/parakey/parakey.log`. Don't paste transcript content if `LOG_TRANSCRIPTS = True` was on.
+      description: |
+        Last ~30 lines of the Parakey log file. Path depends on how you installed:
+        - Homebrew Cask (most users): `~/Library/Logs/Parakey.log`
+        - From source via `install.sh`: `<project root>/parakey.log` (default `~/parakey/parakey.log`)
+
+        Don't paste transcript content if `LOG_TRANSCRIPTS = True` was on.
       render: shell
   - type: checkboxes
     id: permissions
