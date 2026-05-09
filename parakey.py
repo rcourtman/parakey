@@ -833,17 +833,16 @@ class Parakey(rumps.App):
         any_missing = not all(states.values())
 
         if any_missing and not self._perm_rows_visible:
-            # Set titles before insert so the menu never briefly shows
-            # the placeholder "(perm:Microphone)" key.
-            for name, item in self.perm_items.items():
-                granted = states[name]
-                item.title = (
-                    f"✓  {name} permission granted"
-                    if granted else
-                    f"⚠  Grant {name} permission…"
-                )
-            # Insert in order, each anchored to the previous item's
-            # stable initial title.
+            # Insert first, with the placeholder titles still in place —
+            # rumps uses menuitem.title at the moment of insertion as
+            # the menu's dict key, and our subsequent insert_after
+            # calls (and the matching del when we hide) all reference
+            # those stable placeholder keys. If we updated the visible
+            # titles before inserting, the second insert_after would
+            # not find its anchor, the exception would be swallowed by
+            # rumps' callback wrapper, and the rows would never appear.
+            # The user-visible titles are set by the trailing block
+            # below once everything is in the menu.
             anchor = self._status_key
             for name in ("Microphone", "Accessibility", "Input Monitoring"):
                 self.menu.insert_after(anchor, self.perm_items[name])
