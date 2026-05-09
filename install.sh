@@ -47,7 +47,11 @@ say "Installing Python dependencies"
 say "Installing Parakey.app to $APP_DEST"
 mkdir -p "$APP_DEST/Contents/MacOS" "$APP_DEST/Contents/Resources"
 cp "$PROJECT_DIR/templates/Parakey.app/Contents/Info.plist"  "$APP_DEST/Contents/Info.plist"
-cp "$PROJECT_DIR/templates/Parakey.app/Contents/MacOS/parakey" "$APP_DEST/Contents/MacOS/parakey"
+# Substitute the absolute project path into the launcher so the
+# bundle works regardless of where the user has cloned the repo.
+sed "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
+    "$PROJECT_DIR/templates/Parakey.app/Contents/MacOS/parakey" \
+    > "$APP_DEST/Contents/MacOS/parakey"
 chmod +x "$APP_DEST/Contents/MacOS/parakey"
 if [[ -f "$PROJECT_DIR/icon/Parakey.icns" ]]; then
     cp "$PROJECT_DIR/icon/Parakey.icns" "$APP_DEST/Contents/Resources/Parakey.icns"

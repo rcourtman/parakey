@@ -1,11 +1,15 @@
 #!/bin/bash
 # Parakey app launcher — runs the Python script in the project venv.
-# Uses $HOME so the same script works on any Mac.
+# The PROJECT_DIR below is substituted at install time by install.sh
+# with the absolute path of the source checkout, so the bundle works
+# regardless of where the repo was cloned (~/parakey,
+# /Volumes/Development/parakey, etc.).
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-LOG="$HOME/parakey/parakey.log"
+PROJECT_DIR="__PROJECT_DIR__"
+LOG="$PROJECT_DIR/parakey.log"
 MAX_BYTES=1048576  # 1 MB
 mkdir -p "$(dirname "$LOG")"
 if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt "$MAX_BYTES" ]; then
     mv -f "$LOG" "$LOG.1"
 fi
-exec "$HOME/parakey/.venv/bin/python" "$HOME/parakey/parakey.py" >>"$LOG" 2>&1
+exec "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/parakey.py" >>"$LOG" 2>&1
