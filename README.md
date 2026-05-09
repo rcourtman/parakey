@@ -318,6 +318,16 @@ rm -rf ~/.cache/huggingface/hub/models--mlx-community--parakeet-tdt-0.6b-v2
 
 And revoke permissions in System Settings → Privacy & Security.
 
+## Support
+
+Parakey is free and will stay free — same app whether or not you
+sponsor, no upsells, no nag screens, no premium tier. But if it
+saves you time and you'd like to throw a coffee my way as
+encouragement, the buttons are here:
+
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/rcourtman?label=Sponsor&logo=github)](https://github.com/sponsors/rcourtman)
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/rcourtman)
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and PRs welcome.
