@@ -2,6 +2,14 @@
   <img src="icon/hero.svg" alt="Parakey — Hold a key. Speak. Text appears." width="900">
 </p>
 
+<p align="center">
+  <a href="https://github.com/rcourtman/parakey/releases/latest"><img src="https://img.shields.io/github/v/release/rcourtman/parakey?label=release&color=10B981" alt="Latest release"></a>
+  <a href="https://github.com/rcourtman/parakey/actions/workflows/check.yml"><img src="https://github.com/rcourtman/parakey/actions/workflows/check.yml/badge.svg" alt="Build status"></a>
+  <a href="https://github.com/rcourtman/parakey/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rcourtman/parakey?color=10B981" alt="MIT licensed"></a>
+  <img src="https://img.shields.io/badge/Apple%20Silicon%20%C2%B7%20macOS%2013%2B-10B981?color=10B981" alt="Apple Silicon · macOS 13+">
+  <a href="https://github.com/rcourtman/homebrew-parakey"><img src="https://img.shields.io/badge/Homebrew-Cask-10B981?logo=homebrew&logoColor=white" alt="Homebrew Cask"></a>
+</p>
+
 # Parakey
 
 **Push-to-talk dictation for macOS Apple Silicon. Hold a key, speak,
