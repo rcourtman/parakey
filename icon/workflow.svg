@@ -8,7 +8,7 @@
     <clipPath id="textWipe">
       <rect x="660" y="120" width="0" height="80">
         <animate attributeName="width"
-                 values="0;0;0;0;220;220;0"
+                 values="0;0;0;0;160;160;0"
                  keyTimes="0;0.55;0.62;0.66;0.83;0.92;1"
                  dur="6s" repeatCount="indefinite"/>
       </rect>
@@ -199,10 +199,10 @@
     <text x="668" y="156" font-size="18" font-weight="500" fill="#0F172A" font-family="ui-monospace, 'SF Mono', Menlo, monospace">hello, world.</text>
   </g>
 
-  <!-- Blinking caret that follows the wipe -->
+  <!-- Blinking caret that follows the wipe — stays inside the text-field -->
   <rect x="0" y="142" width="2" height="22" fill="#0F172A">
     <animate attributeName="x"
-             values="668;668;668;668;886;886;0"
+             values="668;668;668;668;810;810;0"
              keyTimes="0;0.55;0.62;0.66;0.83;0.92;1"
              dur="6s" repeatCount="indefinite"/>
     <animate attributeName="opacity"
