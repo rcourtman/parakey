@@ -61,6 +61,13 @@ say "Pre-flight checks"
 
 [[ -d "$PROJECT_DIR/.venv" ]] || die "missing .venv — run ./install.sh first"
 
+# Sync venv with requirements.txt. Idempotent: pip is a no-op if every
+# package is already at the pinned version. Picks up new deps (e.g.
+# pyinstaller arriving here in 2026-05) without a separate install step.
+say "Syncing venv with requirements.txt"
+"$PROJECT_DIR/.venv/bin/pip" install --quiet --upgrade pip
+"$PROJECT_DIR/.venv/bin/pip" install --quiet -r "$PROJECT_DIR/requirements.txt"
+
 current_branch="$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD)"
 [[ "$current_branch" == "main" ]] || die "not on main (currently '$current_branch')"
 

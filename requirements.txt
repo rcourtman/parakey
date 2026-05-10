@@ -1,5 +1,8 @@
 # Top-level Python deps for Parakey.
 # `pip install -r requirements.txt` resolves the rest transitively.
+# End users install via Homebrew Cask (the notarised .app) and never
+# see this file; it's the contributor dev install (./install.sh) and
+# the release pipeline (./ship.sh → ./release.sh) that uses it.
 parakeet-mlx
 sounddevice
 numpy
@@ -8,3 +11,7 @@ rumps
 pyobjc-framework-Cocoa
 pyobjc-framework-Quartz
 pyobjc-framework-AVFoundation
+# Build-only: PyInstaller bundles the notarised .app in release.sh.
+# Cheap to include in the dev venv too; keeps requirements.txt as the
+# single source of truth so ship.sh works on any fresh checkout.
+pyinstaller
