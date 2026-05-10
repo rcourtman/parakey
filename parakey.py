@@ -38,6 +38,8 @@ import Quartz
 from parakeet_mlx import from_pretrained
 from parakeet_mlx.audio import get_logmel
 
+from warmup_gate import WarmupGate
+
 # Tell the running process to identify as "Parakey" instead of "Python".
 # The Homebrew Python interpreter ships in its own .app bundle, so by
 # default macOS surfaces "Python" in tooltips, About dialogs, and
@@ -416,12 +418,11 @@ class Parakey(rumps.App):
         self.mute_timer: "threading.Timer | None" = None
         self.max_duration_timer: "threading.Timer | None" = None
 
-        # Serializes calls to model.generate() so a background warmup
-        # and the user's transcribe never run concurrently on the GPU.
-        # Also acts as the "is a warmup currently in flight?" gate.
-        self._inference_lock = threading.Lock()
-        self.warming = False             # surfaced in the menu status
-        self.last_inference_at = 0.0     # wall-clock of last completed generate()
+        # Cold-after-idle re-warmup state. The gate owns the inference
+        # lock (one model.generate() at a time), the timestamp tracking,
+        # and the public `warming` flag used by the menu status. See
+        # warmup_gate.py for the contract.
+        self._gate = WarmupGate(COLD_THRESHOLD_SECONDS, clock=time.monotonic)
 
         self.start_sound = load_sound(START_SOUND)
         self.done_sound = load_sound(DONE_SOUND)
@@ -447,7 +448,8 @@ class Parakey(rumps.App):
             warm_mx = mx.array(warm)
             mel = get_logmel(warm_mx, self.model.preprocessor_config)
             self.model.generate(mel)
-            self.last_inference_at = time.time()
+            # Reset the gate's clock so the next press isn't treated as cold.
+            self._gate.last_inference_at = time.monotonic()
             log(f"warmed up in {time.time()-t0:.1f}s")
 
             self._set_load_status("opening mic")
@@ -527,35 +529,31 @@ class Parakey(rumps.App):
         )
         self.max_duration_timer.daemon = True
         self.max_duration_timer.start()
-        # Fire a background warmup if the model has been idle long enough
-        # that MLX has likely dropped its compiled-shader / tensor caches.
-        # Runs in parallel with the user speaking, so by release time the
-        # GPU is hot again. No-op if already warm or already warming.
-        threading.Thread(target=self._maybe_rewarm, daemon=True).start()
 
-    def _maybe_rewarm(self) -> None:
-        if self.model is None:
-            return  # initial load still in progress; startup warmup handles it
-        if time.time() - self.last_inference_at < COLD_THRESHOLD_SECONDS:
-            return  # still warm
-        # Single-flight: if another warmup or a transcribe is already on
-        # the GPU, skip — they'll keep the cache hot anyway.
-        if not self._inference_lock.acquire(blocking=False):
-            return
+    def _inline_rewarm(self, audio_samples: int) -> None:
+        """Run a quick warm-up inference inside the current transcribe
+        thread, *before* the real transcribe. We use this — rather than
+        firing a separate warmup thread during the press — because MLX's
+        compiled-graph state is fragile across threads: a thread doing
+        ``generate()`` with audio shorter than what another thread already
+        compiled for raises ``RuntimeError: There is no Stream(gpu, 0)``.
+        Doing the warmup inline keeps both calls on the same thread and
+        sidesteps the issue.
+
+        ``audio_samples`` is the length of the real clip we're about to
+        transcribe; matching the warmup length to it avoids forcing a
+        second graph recompile a few hundred milliseconds later.
+        """
         try:
-            self.warming = True
+            self._gate.warming = True
             t0 = time.time()
-            warm = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32)
+            warm = np.zeros(audio_samples, dtype=np.float32)
             warm_mx = mx.array(warm)
             mel = get_logmel(warm_mx, self.model.preprocessor_config)
             self.model.generate(mel)
-            self.last_inference_at = time.time()
             log(f"re-warmed in {time.time()-t0:.2f}s after idle")
-        except Exception as e:
-            log(f"rewarm error: {e}")
         finally:
-            self.warming = False
-            self._inference_lock.release()
+            self._gate.warming = False
 
     def _stop_recording(self) -> None:
         with self.lock:
@@ -621,17 +619,19 @@ class Parakey(rumps.App):
             if dur < MIN_CLIP_SECONDS:
                 log(f"clip too short ({dur:.2f}s), ignored")
                 return
-            # Serialize against any in-flight background warmup so the GPU
-            # only runs one generate() at a time. If the user releases
-            # before the warmup finishes, this blocks for the remaining
-            # warmup time (typically <1s) instead of competing on the
-            # Metal queue.
             t0 = time.time()
-            with self._inference_lock:
+            with self._gate.transcribe():
+                # If the model has been idle long enough that MLX has
+                # likely dropped its compiled-shader / tensor caches,
+                # warm it up inline before the real inference. Worst-case
+                # adds ~1s of latency *after release* on the first
+                # transcribe after a multi-hour gap; without this it can
+                # be 8s+ (see bench_idle.py and parakey.log).
+                if self._gate.is_cold():
+                    self._inline_rewarm(len(audio))
                 audio_mx = mx.array(audio.astype(np.float32))
                 mel = get_logmel(audio_mx, self.model.preprocessor_config)
                 result = self.model.generate(mel)[0]
-                self.last_inference_at = time.time()
             dt = time.time() - t0
             text = result.text.strip()
             preview = repr(text) if LOG_TRANSCRIPTS else f"{len(text)} chars"
@@ -1092,11 +1092,11 @@ class Parakey(rumps.App):
             # If a background warmup is still in flight, the transcribe is
             # waiting on the inference lock — surface that honestly instead
             # of pretending we're already transcribing.
-            self.status_item.title = "Warming up…" if self.warming else "Transcribing"
+            self.status_item.title = "Warming up…" if self._gate.warming else "Transcribing"
         elif self.recording:
             self.title = LABEL_REC
             self.status_item.title = "Recording"
-        elif self.warming:
+        elif self._gate.warming:
             # Rare: warmup fired but user never started a recording (e.g.
             # they pressed a different key by mistake). Be honest about it.
             self.title = LABEL_BUSY

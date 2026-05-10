@@ -17,6 +17,12 @@ jobs:
         run: |
           python -m py_compile parakey.py
           python -m py_compile bench.py
+          python -m py_compile bench_idle.py
+          python -m py_compile warmup_gate.py
+      - name: Unit tests
+        # WarmupGate is deliberately import-light — no MLX, no AppKit —
+        # so it runs on plain Linux runners.
+        run: python -m unittest discover -s tests -v
       - name: Shell syntax check
         run: |
           bash -n install.sh
