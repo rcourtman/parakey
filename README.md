@@ -11,7 +11,7 @@ Local transcription via [Parakeet-MLX](https://github.com/senstella/parakeet-mlx
 No cloud, no subscription, no preferences window.
 
 <p align="center">
-  <img src="icon/workflow.svg" alt="Parakey workflow: hold the Right Option key, speak, release — text appears." width="900">
+  <img src="icon/latency.svg" alt="End-to-end latency: press, speak, release — text appears in about 180 milliseconds." width="900">
 </p>
 
 - **Fast** — under 200 ms from key release to pasted text on a

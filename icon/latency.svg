@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 320" font-family="-apple-system, system-ui, 'SF Pro Text', 'Helvetica Neue', sans-serif">
+  <!-- Background -->
+  <rect width="1000" height="320" fill="#FAF8F2"/>
+
+  <!-- Section title -->
+  <text x="500" y="46" text-anchor="middle" font-size="14" font-weight="700" fill="#64748B" letter-spacing="2">END-TO-END LATENCY</text>
+
+  <defs>
+    <!-- Reveal clip for the typed-text -->
+    <clipPath id="latencyTextClip">
+      <rect x="780" y="160" width="0" height="60">
+        <animate attributeName="width"
+                 values="0;0;0;0;0;160;160;0"
+                 keyTimes="0;0.20;0.55;0.62;0.66;0.78;0.95;1"
+                 dur="5s" repeatCount="indefinite"/>
+      </rect>
+    </clipPath>
+
+    <!-- Glow filter for the 180ms badge -->
+    <filter id="badgeGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
+      <feOffset dx="0" dy="3" result="off"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.30"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- ============ Timeline base track ============ -->
+  <line x1="80" y1="180" x2="920" y2="180" stroke="#E2E8F0" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- ============ Phase 1: PRESS ============ -->
+  <!-- Marker -->
+  <circle cx="100" cy="180" r="10" fill="#0F172A"/>
+  <text x="100" y="240" text-anchor="middle" font-size="13" font-weight="600" fill="#0F172A">Press</text>
+  <text x="100" y="258" text-anchor="middle" font-size="11" font-weight="400" fill="#94A3B8">t = 0</text>
+
+  <!-- ============ Phase 2: SPEAK (key held, audio streaming) ============ -->
+  <!-- Span shading -->
+  <rect x="100" y="170" width="540" height="20" rx="10" fill="#10B981" fill-opacity="0.15"/>
+
+  <!-- Mini waveform sitting on the timeline during the speak phase -->
+  <g transform="translate(140, 180)" fill="#10B981">
+    <!-- Each bar pulses subtly -->
+    <rect x="0"   y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;14;8;18;10;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-7;-4;-9;-5;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="20"  y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;22;10;28;14;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-11;-5;-14;-7;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="40"  y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;36;18;42;22;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-18;-9;-21;-11;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="60"  y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;48;26;52;30;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-24;-13;-26;-15;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="80"  y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;36;14;48;20;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-18;-7;-24;-10;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="100" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;28;16;38;18;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-14;-8;-19;-9;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="120" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;52;22;42;28;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-26;-11;-21;-14;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="140" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;30;14;36;16;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-15;-7;-18;-8;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="160" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;42;20;48;24;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-21;-10;-24;-12;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="180" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;26;12;34;14;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-13;-6;-17;-7;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="200" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;38;16;44;22;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-19;-8;-22;-11;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="220" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;28;12;36;18;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-14;-6;-18;-9;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="240" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;46;22;52;28;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-23;-11;-26;-14;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="260" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;30;14;38;18;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-15;-7;-19;-9;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="280" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;38;18;44;22;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-19;-9;-22;-11;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="300" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;26;10;32;14;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-13;-5;-16;-7;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="320" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;42;18;48;22;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-21;-9;-24;-11;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="340" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;30;14;36;18;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-15;-7;-18;-9;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="360" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;22;10;28;12;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-11;-5;-14;-6;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="380" y="-6" width="6" height="12" rx="3">
+      <animate attributeName="height" values="6;6;14;8;18;10;6;6" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+      <animate attributeName="y"      values="-3;-3;-7;-4;-9;-5;-3;-3" keyTimes="0;0.04;0.18;0.32;0.46;0.55;0.60;1" dur="5s" repeatCount="indefinite"/>
+    </rect>
+  </g>
+
+  <text x="370" y="125" text-anchor="middle" font-size="13" font-weight="600" fill="#10B981" letter-spacing="0.6">SPEAK · arbitrary length</text>
+
+  <!-- ============ Phase 3: RELEASE marker ============ -->
+  <circle cx="640" cy="180" r="10" fill="#0F172A"/>
+  <text x="640" y="240" text-anchor="middle" font-size="13" font-weight="600" fill="#0F172A">Release</text>
+
+  <!-- ============ The 180ms gap — the star ============ -->
+  <!-- Bracket span -->
+  <line x1="650" y1="180" x2="760" y2="180" stroke="#10B981" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Subtle pulse on the bracket -->
+  <line x1="650" y1="180" x2="760" y2="180" stroke="#10B981" stroke-width="6" stroke-linecap="round" opacity="0">
+    <animate attributeName="opacity" values="0;0;0;0;1;0.5;0;0" keyTimes="0;0.55;0.62;0.66;0.72;0.78;0.84;1" dur="5s" repeatCount="indefinite"/>
+    <animate attributeName="stroke-width" values="6;6;6;6;14;10;6;6" keyTimes="0;0.55;0.62;0.66;0.72;0.78;0.84;1" dur="5s" repeatCount="indefinite"/>
+  </line>
+
+  <!-- 180ms badge -->
+  <g transform="translate(648, 86)" filter="url(#badgeGlow)">
+    <rect width="116" height="48" rx="14" fill="#10B981"/>
+    <text x="58" y="32" text-anchor="middle" font-size="22" font-weight="700" fill="#FFFFFF">~180 ms</text>
+  </g>
+  <!-- Down arrow from badge to bracket -->
+  <path d="M 706 134 L 706 168" stroke="#10B981" stroke-width="3" stroke-linecap="round"/>
+  <path d="M 700 162 L 706 172 L 712 162 Z" fill="#10B981"/>
+
+  <!-- ============ Phase 4: TEXT marker ============ -->
+  <circle cx="770" cy="180" r="10" fill="#10B981">
+    <animate attributeName="r" values="10;10;10;10;10;14;10;10" keyTimes="0;0.55;0.62;0.66;0.72;0.78;0.84;1" dur="5s" repeatCount="indefinite"/>
+  </circle>
+  <text x="770" y="240" text-anchor="middle" font-size="13" font-weight="600" fill="#10B981">Text appears</text>
+
+  <!-- Mock text-field with the typed text appearing -->
+  <rect x="780" y="160" width="160" height="40" rx="6" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1.5"/>
+  <g clip-path="url(#latencyTextClip)">
+    <text x="790" y="186" font-size="14" font-weight="500" fill="#0F172A" font-family="ui-monospace, 'SF Mono', Menlo, monospace">hello, world.</text>
+  </g>
+
+  <!-- Footer -->
+  <text x="500" y="296" text-anchor="middle" font-size="13" fill="#64748B">No network round-trip. Local inference on Apple Silicon GPU via Parakeet-MLX.</text>
+</svg>

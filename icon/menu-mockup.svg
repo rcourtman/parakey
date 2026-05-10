@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 460" font-family="-apple-system, system-ui, 'SF Pro Text', 'Helvetica Neue', sans-serif">
+  <!-- Background (cream — matches hero) -->
+  <rect width="640" height="460" fill="#FAF8F2"/>
+
+  <defs>
+    <!-- Drop shadow for the menu -->
+    <filter id="menuShadow" x="-20%" y="-10%" width="140%" height="130%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
+      <feOffset dx="0" dy="6" result="off"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.18"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- ============ Menu bar strip (top) ============ -->
+  <rect x="0" y="0" width="640" height="40" fill="#FFFFFF" fill-opacity="0.7"/>
+  <rect x="0" y="0" width="640" height="40" fill="url(#barGrad)"/>
+
+  <!-- A few faint placeholder menu-bar icons on the right -->
+  <g fill="#94A3B8" opacity="0.55">
+    <circle cx="430" cy="20" r="6"/>
+    <circle cx="458" cy="20" r="6"/>
+    <rect x="478" y="14" width="14" height="12" rx="2"/>
+    <rect x="500" y="12" width="20" height="16" rx="2"/>
+    <text x="540" y="25" font-size="13" fill="#475569" opacity="0.85">3:14 PM</text>
+  </g>
+
+  <!-- Parakey menu-bar icon (highlighted — selected state) -->
+  <g transform="translate(388, 6)">
+    <!-- Highlight pill behind icon -->
+    <rect x="-2" y="-2" width="32" height="32" rx="6" fill="#0F172A" fill-opacity="0.08"/>
+    <!-- Mic glyph (template-style, dark) -->
+    <g transform="translate(8, 5)" fill="#0F172A">
+      <rect x="3" y="0" width="8" height="13" rx="4"/>
+      <rect x="6.4" y="13" width="1.2" height="3"/>
+      <rect x="2" y="16" width="10" height="1.5" rx="0.5"/>
+    </g>
+  </g>
+
+  <!-- Pointer triangle (showing the menu drops from the icon) -->
+  <path d="M 397 40 L 405 50 L 413 40 Z" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+
+  <!-- ============ The dropdown menu ============ -->
+  <g transform="translate(220, 50)" filter="url(#menuShadow)">
+    <!-- Menu container -->
+    <rect width="380" height="384" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- Status row (idle) -->
+    <g transform="translate(0, 8)">
+      <text x="20" y="22" font-size="12" font-weight="600" fill="#94A3B8" letter-spacing="0.6">PARAKEY</text>
+      <text x="360" y="22" font-size="12" font-weight="500" fill="#10B981" text-anchor="end">● idle</text>
+    </g>
+
+    <!-- separator -->
+    <line x1="14" y1="48" x2="366" y2="48" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- Settings row -->
+    <g transform="translate(0, 56)">
+      <rect x="6" y="0" width="368" height="38" rx="6" fill="#10B981" fill-opacity="0.10"/>
+      <text x="20" y="24" font-size="15" font-weight="500" fill="#0F172A">Settings</text>
+      <!-- chevron -->
+      <path d="M 350 14 L 358 22 L 350 30" fill="none" stroke="#475569" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- separator -->
+    <line x1="14" y1="106" x2="366" y2="106" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- Pause row -->
+    <g transform="translate(0, 114)">
+      <text x="20" y="24" font-size="15" font-weight="500" fill="#0F172A">Pause</text>
+    </g>
+
+    <!-- separator -->
+    <line x1="14" y1="156" x2="366" y2="156" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- About row -->
+    <g transform="translate(0, 164)">
+      <text x="20" y="24" font-size="15" font-weight="500" fill="#0F172A">About Parakey</text>
+    </g>
+
+    <!-- Quit row -->
+    <g transform="translate(0, 206)">
+      <text x="20" y="24" font-size="15" font-weight="500" fill="#0F172A">Quit Parakey</text>
+      <!-- shortcut hint -->
+      <text x="360" y="24" font-size="13" font-weight="400" fill="#94A3B8" text-anchor="end">⌘ Q</text>
+    </g>
+
+    <!-- Spacer -->
+    <line x1="14" y1="252" x2="366" y2="252" stroke="#E2E8F0" stroke-width="1" stroke-dasharray="2 4"/>
+
+    <!-- Settings submenu preview (subtle, hinting at depth) -->
+    <g transform="translate(0, 264)">
+      <text x="20" y="20" font-size="11" font-weight="600" fill="#94A3B8" letter-spacing="0.6">SETTINGS  ▸</text>
+
+      <g transform="translate(0, 32)" font-size="13" fill="#475569">
+        <text x="20" y="0">Hotkey                           Right Option</text>
+      </g>
+      <g transform="translate(0, 56)" font-size="13" fill="#475569">
+        <text x="20" y="0">Trigger mode                       Hold-to-talk</text>
+      </g>
+      <g transform="translate(0, 80)" font-size="13" fill="#475569">
+        <text x="20" y="0">Microphone                       MacBook Pro Mic</text>
+      </g>
+      <g transform="translate(0, 104)" font-size="13" fill="#475569">
+        <text x="20" y="0">Mute system audio while recording             ✓</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- Caption below the mockup -->
+  <text x="320" y="448" font-size="13" fill="#64748B" text-anchor="middle" font-style="italic">Lives in the menu bar. No dock icon, no preferences window.</text>
+</svg>

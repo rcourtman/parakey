@@ -10,7 +10,7 @@
         <animate attributeName="width"
                  values="0;0;0;0;160;160;0"
                  keyTimes="0;0.55;0.62;0.66;0.83;0.92;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
     </clipPath>
 
@@ -28,11 +28,11 @@
       <animate attributeName="fill"
                values="#FFFFFF;#10B981;#10B981;#FFFFFF;#FFFFFF"
                keyTimes="0;0.05;0.30;0.36;1"
-               dur="6s" repeatCount="indefinite"/>
+               dur="4s" repeatCount="indefinite"/>
       <animate attributeName="stroke"
                values="#E2E8F0;#10B981;#10B981;#E2E8F0;#E2E8F0"
                keyTimes="0;0.05;0.30;0.36;1"
-               dur="6s" repeatCount="indefinite"/>
+               dur="4s" repeatCount="indefinite"/>
     </rect>
 
     <!-- Key cap -->
@@ -41,7 +41,7 @@
         <animate attributeName="fill"
                  values="#F1F5F9;#FFFFFF;#FFFFFF;#F1F5F9;#F1F5F9"
                  keyTimes="0;0.05;0.30;0.36;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
       <text x="35" y="46" text-anchor="middle" font-size="32" font-weight="600" fill="#0F172A">⌥</text>
     </g>
@@ -51,14 +51,14 @@
       <animate attributeName="fill"
                values="#475569;#FFFFFF;#FFFFFF;#475569;#475569"
                keyTimes="0;0.05;0.30;0.36;1"
-               dur="6s" repeatCount="indefinite"/>
+               dur="4s" repeatCount="indefinite"/>
       Right Option
     </text>
     <text x="120" y="160" text-anchor="middle" font-size="13" font-weight="400" fill="#94A3B8">
       <animate attributeName="fill"
                values="#94A3B8;#D1FAE5;#D1FAE5;#94A3B8;#94A3B8"
                keyTimes="0;0.05;0.30;0.36;1"
-               dur="6s" repeatCount="indefinite"/>
+               dur="4s" repeatCount="indefinite"/>
       held down
     </text>
   </g>
@@ -76,7 +76,7 @@
       <animate attributeName="stroke"
                values="#E2E8F0;#E2E8F0;#10B981;#10B981;#E2E8F0;#E2E8F0"
                keyTimes="0;0.32;0.36;0.62;0.66;1"
-               dur="6s" repeatCount="indefinite"/>
+               dur="4s" repeatCount="indefinite"/>
     </rect>
 
     <!-- Waveform (bars pulse during 2.0-4.0s of 6s cycle = 0.333-0.667 keyTime) -->
@@ -86,88 +86,88 @@
         <animate attributeName="height"
                  values="12;12;36;12;48;20;14;12;12"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
         <animate attributeName="y"
                  values="-6;-6;-18;-6;-24;-10;-7;-6;-6"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
       <!-- Bar 2 -->
       <rect x="18" y="-6" width="8" height="12" rx="4" fill="#10B981">
         <animate attributeName="height"
                  values="12;12;52;20;30;48;18;12;12"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
         <animate attributeName="y"
                  values="-6;-6;-26;-10;-15;-24;-9;-6;-6"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
       <!-- Bar 3 -->
       <rect x="36" y="-6" width="8" height="12" rx="4" fill="#10B981">
         <animate attributeName="height"
                  values="12;12;72;36;60;28;42;12;12"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
         <animate attributeName="y"
                  values="-6;-6;-36;-18;-30;-14;-21;-6;-6"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
       <!-- Bar 4 -->
       <rect x="54" y="-6" width="8" height="12" rx="4" fill="#10B981">
         <animate attributeName="height"
                  values="12;12;88;48;76;40;52;12;12"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
         <animate attributeName="y"
                  values="-6;-6;-44;-24;-38;-20;-26;-6;-6"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
       <!-- Bar 5 (center / loudest) -->
       <rect x="72" y="-6" width="8" height="12" rx="4" fill="#10B981">
         <animate attributeName="height"
                  values="12;12;104;60;92;48;64;12;12"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
         <animate attributeName="y"
                  values="-6;-6;-52;-30;-46;-24;-32;-6;-6"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
       <!-- Bar 6 -->
       <rect x="90" y="-6" width="8" height="12" rx="4" fill="#10B981">
         <animate attributeName="height"
                  values="12;12;88;48;76;40;52;12;12"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
         <animate attributeName="y"
                  values="-6;-6;-44;-24;-38;-20;-26;-6;-6"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
       <!-- Bar 7 -->
       <rect x="108" y="-6" width="8" height="12" rx="4" fill="#10B981">
         <animate attributeName="height"
                  values="12;12;72;36;60;28;42;12;12"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
         <animate attributeName="y"
                  values="-6;-6;-36;-18;-30;-14;-21;-6;-6"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
       <!-- Bar 8 -->
       <rect x="126" y="-6" width="8" height="12" rx="4" fill="#10B981">
         <animate attributeName="height"
                  values="12;12;52;20;30;48;18;12;12"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
         <animate attributeName="y"
                  values="-6;-6;-26;-10;-15;-24;-9;-6;-6"
                  keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
-                 dur="6s" repeatCount="indefinite"/>
+                 dur="4s" repeatCount="indefinite"/>
       </rect>
     </g>
 
@@ -187,7 +187,7 @@
       <animate attributeName="stroke"
                values="#E2E8F0;#E2E8F0;#10B981;#10B981;#E2E8F0;#E2E8F0"
                keyTimes="0;0.62;0.66;0.95;0.98;1"
-               dur="6s" repeatCount="indefinite"/>
+               dur="4s" repeatCount="indefinite"/>
     </rect>
 
     <!-- Mock text-field -->
@@ -204,11 +204,11 @@
     <animate attributeName="x"
              values="668;668;668;668;810;810;0"
              keyTimes="0;0.55;0.62;0.66;0.83;0.92;1"
-             dur="6s" repeatCount="indefinite"/>
+             dur="4s" repeatCount="indefinite"/>
     <animate attributeName="opacity"
              values="0;0;0;0;1;1;0;0"
              keyTimes="0;0.55;0.62;0.66;0.83;0.92;0.96;1"
-             dur="6s" repeatCount="indefinite"/>
+             dur="4s" repeatCount="indefinite"/>
   </rect>
 
   <!-- Step label below card 3 -->
