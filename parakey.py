@@ -129,6 +129,15 @@ MAX_RECORDING_SECONDS = 120     # auto-release if hotkey is held longer
 LOG_TRANSCRIPTS = False         # do not write transcript text to disk
 HISTORY_SIZE = 5                # rolling in-memory transcript history (lost on restart)
 
+# If the model hasn't been used in this many seconds, fire a background
+# warmup the next time the user presses the hotkey. MLX evicts compiled
+# Metal pipelines and tensor allocations after long idles, which makes the
+# first transcribe after a multi-hour gap an order of magnitude slower
+# (e.g. 8s instead of 0.4s for the same clip). The warmup runs while the
+# user is still speaking, so by the time they release the GPU is hot
+# again and the real transcribe is back to steady-state latency.
+COLD_THRESHOLD_SECONDS = 300    # treat as cold after 5 min of inactivity
+
 V_KEYCODE = 0x09  # macOS virtual keycode for "v"
 
 # Pre-compiled in-process AppleScripts (avoid subprocess spawn).
@@ -407,6 +416,13 @@ class Parakey(rumps.App):
         self.mute_timer: "threading.Timer | None" = None
         self.max_duration_timer: "threading.Timer | None" = None
 
+        # Serializes calls to model.generate() so a background warmup
+        # and the user's transcribe never run concurrently on the GPU.
+        # Also acts as the "is a warmup currently in flight?" gate.
+        self._inference_lock = threading.Lock()
+        self.warming = False             # surfaced in the menu status
+        self.last_inference_at = 0.0     # wall-clock of last completed generate()
+
         self.start_sound = load_sound(START_SOUND)
         self.done_sound = load_sound(DONE_SOUND)
 
@@ -431,6 +447,7 @@ class Parakey(rumps.App):
             warm_mx = mx.array(warm)
             mel = get_logmel(warm_mx, self.model.preprocessor_config)
             self.model.generate(mel)
+            self.last_inference_at = time.time()
             log(f"warmed up in {time.time()-t0:.1f}s")
 
             self._set_load_status("opening mic")
@@ -510,6 +527,35 @@ class Parakey(rumps.App):
         )
         self.max_duration_timer.daemon = True
         self.max_duration_timer.start()
+        # Fire a background warmup if the model has been idle long enough
+        # that MLX has likely dropped its compiled-shader / tensor caches.
+        # Runs in parallel with the user speaking, so by release time the
+        # GPU is hot again. No-op if already warm or already warming.
+        threading.Thread(target=self._maybe_rewarm, daemon=True).start()
+
+    def _maybe_rewarm(self) -> None:
+        if self.model is None:
+            return  # initial load still in progress; startup warmup handles it
+        if time.time() - self.last_inference_at < COLD_THRESHOLD_SECONDS:
+            return  # still warm
+        # Single-flight: if another warmup or a transcribe is already on
+        # the GPU, skip — they'll keep the cache hot anyway.
+        if not self._inference_lock.acquire(blocking=False):
+            return
+        try:
+            self.warming = True
+            t0 = time.time()
+            warm = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32)
+            warm_mx = mx.array(warm)
+            mel = get_logmel(warm_mx, self.model.preprocessor_config)
+            self.model.generate(mel)
+            self.last_inference_at = time.time()
+            log(f"re-warmed in {time.time()-t0:.2f}s after idle")
+        except Exception as e:
+            log(f"rewarm error: {e}")
+        finally:
+            self.warming = False
+            self._inference_lock.release()
 
     def _stop_recording(self) -> None:
         with self.lock:
@@ -575,10 +621,17 @@ class Parakey(rumps.App):
             if dur < MIN_CLIP_SECONDS:
                 log(f"clip too short ({dur:.2f}s), ignored")
                 return
+            # Serialize against any in-flight background warmup so the GPU
+            # only runs one generate() at a time. If the user releases
+            # before the warmup finishes, this blocks for the remaining
+            # warmup time (typically <1s) instead of competing on the
+            # Metal queue.
             t0 = time.time()
-            audio_mx = mx.array(audio.astype(np.float32))
-            mel = get_logmel(audio_mx, self.model.preprocessor_config)
-            result = self.model.generate(mel)[0]
+            with self._inference_lock:
+                audio_mx = mx.array(audio.astype(np.float32))
+                mel = get_logmel(audio_mx, self.model.preprocessor_config)
+                result = self.model.generate(mel)[0]
+                self.last_inference_at = time.time()
             dt = time.time() - t0
             text = result.text.strip()
             preview = repr(text) if LOG_TRANSCRIPTS else f"{len(text)} chars"
@@ -1036,10 +1089,18 @@ class Parakey(rumps.App):
             return
         if self.busy:
             self.title = LABEL_BUSY
-            self.status_item.title = "Transcribing"
+            # If a background warmup is still in flight, the transcribe is
+            # waiting on the inference lock — surface that honestly instead
+            # of pretending we're already transcribing.
+            self.status_item.title = "Warming up…" if self.warming else "Transcribing"
         elif self.recording:
             self.title = LABEL_REC
             self.status_item.title = "Recording"
+        elif self.warming:
+            # Rare: warmup fired but user never started a recording (e.g.
+            # they pressed a different key by mistake). Be honest about it.
+            self.title = LABEL_BUSY
+            self.status_item.title = "Warming up…"
         elif self.paused:
             self.title = LABEL_PAUSED
             self.status_item.title = "Paused"
