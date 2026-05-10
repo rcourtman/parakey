@@ -1,13 +1,18 @@
-<h1>
-  <img src="icon/parakey.svg" alt="" width="48" align="absmiddle">
-  Parakey
-</h1>
+<p align="center">
+  <img src="icon/hero.svg" alt="Parakey — Hold a key. Speak. Text appears." width="900">
+</p>
+
+# Parakey
 
 **Push-to-talk dictation for macOS Apple Silicon. Hold a key, speak,
 let go — text appears at the cursor in well under a second.**
 
 Local transcription via [Parakeet-MLX](https://github.com/senstella/parakeet-mlx).
 No cloud, no subscription, no preferences window.
+
+<p align="center">
+  <img src="icon/workflow.svg" alt="Parakey workflow: hold the Right Option key, speak, release — text appears." width="900">
+</p>
 
 - **Fast** — under 200 ms from key release to pasted text on a
   typical 3-second clip. Local inference on your Mac's GPU; no

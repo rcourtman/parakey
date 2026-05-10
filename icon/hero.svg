@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" font-family="-apple-system, system-ui, 'Helvetica Neue', sans-serif">
+  <!-- Background -->
+  <rect width="1200" height="400" fill="#FAF8F2"/>
+
+  <!-- Subtle background waveform accent (decorative) -->
+  <g opacity="0.06" fill="#10B981">
+    <rect x="900"  y="180" width="6" height="40" rx="3"/>
+    <rect x="916"  y="160" width="6" height="80" rx="3"/>
+    <rect x="932"  y="130" width="6" height="140" rx="3"/>
+    <rect x="948"  y="150" width="6" height="100" rx="3"/>
+    <rect x="964"  y="100" width="6" height="200" rx="3"/>
+    <rect x="980"  y="140" width="6" height="120" rx="3"/>
+    <rect x="996"  y="170" width="6" height="60"  rx="3"/>
+    <rect x="1012" y="120" width="6" height="160" rx="3"/>
+    <rect x="1028" y="150" width="6" height="100" rx="3"/>
+    <rect x="1044" y="130" width="6" height="140" rx="3"/>
+    <rect x="1060" y="170" width="6" height="60"  rx="3"/>
+    <rect x="1076" y="140" width="6" height="120" rx="3"/>
+    <rect x="1092" y="180" width="6" height="40"  rx="3"/>
+  </g>
+
+  <!-- Logo squircle (left) -->
+  <g transform="translate(80, 90)">
+    <rect width="220" height="220" rx="50" fill="#10B981"/>
+    <!-- Mic capsule -->
+    <rect x="80" y="48" width="60" height="94" rx="30" fill="#FFFFFF"/>
+    <!-- Stem -->
+    <rect x="105.5" y="142" width="9" height="22" fill="#FFFFFF"/>
+    <!-- Base -->
+    <rect x="68" y="164" width="86" height="9" rx="4.5" fill="#FFFFFF"/>
+  </g>
+
+  <!-- Wordmark + tagline + chips -->
+  <g transform="translate(360, 0)">
+    <!-- Wordmark -->
+    <text x="0" y="170" font-size="108" font-weight="700" fill="#0F172A" letter-spacing="-2">Parakey</text>
+
+    <!-- Tagline -->
+    <text x="0" y="222" font-size="28" font-weight="500" fill="#475569">Hold a key. Speak. Text appears.</text>
+
+    <!-- Chips -->
+    <g transform="translate(0, 270)" font-size="16" font-weight="600">
+      <g>
+        <rect width="92" height="40" rx="20" fill="#10B981" fill-opacity="0.12"/>
+        <text x="46" y="26" fill="#0E8A66" text-anchor="middle">Local</text>
+      </g>
+      <g transform="translate(104, 0)">
+        <rect width="92" height="40" rx="20" fill="#10B981" fill-opacity="0.12"/>
+        <text x="46" y="26" fill="#0E8A66" text-anchor="middle">Private</text>
+      </g>
+      <g transform="translate(208, 0)">
+        <rect width="92" height="40" rx="20" fill="#10B981" fill-opacity="0.12"/>
+        <text x="46" y="26" fill="#0E8A66" text-anchor="middle">Free</text>
+      </g>
+      <g transform="translate(312, 0)">
+        <rect width="92" height="40" rx="20" fill="#10B981" fill-opacity="0.12"/>
+        <text x="46" y="26" fill="#0E8A66" text-anchor="middle">MIT</text>
+      </g>
+    </g>
+
+    <!-- brew command -->
+    <g transform="translate(0, 350)">
+      <text x="0" y="0" font-size="18" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#64748B" letter-spacing="0.3">brew install --cask rcourtman/parakey/parakey</text>
+    </g>
+  </g>
+</svg>

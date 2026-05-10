@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 320" font-family="-apple-system, system-ui, 'Helvetica Neue', sans-serif">
+  <!-- Background -->
+  <rect width="1000" height="320" fill="#FAF8F2"/>
+
+  <defs>
+    <!-- Wipe clip for text reveal -->
+    <clipPath id="textWipe">
+      <rect x="660" y="120" width="0" height="80">
+        <animate attributeName="width"
+                 values="0;0;0;0;220;220;0"
+                 keyTimes="0;0.55;0.62;0.66;0.83;0.92;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+    </clipPath>
+
+    <!-- Common arrowhead -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <!-- ============ CARD 1: Hold key ============ -->
+  <g transform="translate(40, 60)">
+    <!-- Card background — fades green during hold -->
+    <rect width="240" height="180" rx="20" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2">
+      <animate attributeName="fill"
+               values="#FFFFFF;#10B981;#10B981;#FFFFFF;#FFFFFF"
+               keyTimes="0;0.05;0.30;0.36;1"
+               dur="6s" repeatCount="indefinite"/>
+      <animate attributeName="stroke"
+               values="#E2E8F0;#10B981;#10B981;#E2E8F0;#E2E8F0"
+               keyTimes="0;0.05;0.30;0.36;1"
+               dur="6s" repeatCount="indefinite"/>
+    </rect>
+
+    <!-- Key cap -->
+    <g transform="translate(85, 38)">
+      <rect width="70" height="70" rx="14" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="2">
+        <animate attributeName="fill"
+                 values="#F1F5F9;#FFFFFF;#FFFFFF;#F1F5F9;#F1F5F9"
+                 keyTimes="0;0.05;0.30;0.36;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+      <text x="35" y="46" text-anchor="middle" font-size="32" font-weight="600" fill="#0F172A">⌥</text>
+    </g>
+
+    <!-- Card label -->
+    <text x="120" y="138" text-anchor="middle" font-size="16" font-weight="500" fill="#475569">
+      <animate attributeName="fill"
+               values="#475569;#FFFFFF;#FFFFFF;#475569;#475569"
+               keyTimes="0;0.05;0.30;0.36;1"
+               dur="6s" repeatCount="indefinite"/>
+      Right Option
+    </text>
+    <text x="120" y="160" text-anchor="middle" font-size="13" font-weight="400" fill="#94A3B8">
+      <animate attributeName="fill"
+               values="#94A3B8;#D1FAE5;#D1FAE5;#94A3B8;#94A3B8"
+               keyTimes="0;0.05;0.30;0.36;1"
+               dur="6s" repeatCount="indefinite"/>
+      held down
+    </text>
+  </g>
+
+  <!-- Step label below card 1 -->
+  <text x="160" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#64748B" letter-spacing="0.5">1 · HOLD KEY</text>
+
+  <!-- ============ ARROW 1→2 ============ -->
+  <line x1="290" y1="150" x2="330" y2="150"
+        stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- ============ CARD 2: Speak ============ -->
+  <g transform="translate(340, 60)">
+    <rect width="240" height="180" rx="20" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2">
+      <animate attributeName="stroke"
+               values="#E2E8F0;#E2E8F0;#10B981;#10B981;#E2E8F0;#E2E8F0"
+               keyTimes="0;0.32;0.36;0.62;0.66;1"
+               dur="6s" repeatCount="indefinite"/>
+    </rect>
+
+    <!-- Waveform (bars pulse during 2.0-4.0s of 6s cycle = 0.333-0.667 keyTime) -->
+    <g transform="translate(60, 90)">
+      <!-- Bar 1 -->
+      <rect x="0" y="-6" width="8" height="12" rx="4" fill="#10B981">
+        <animate attributeName="height"
+                 values="12;12;36;12;48;20;14;12;12"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y"
+                 values="-6;-6;-18;-6;-24;-10;-7;-6;-6"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+      <!-- Bar 2 -->
+      <rect x="18" y="-6" width="8" height="12" rx="4" fill="#10B981">
+        <animate attributeName="height"
+                 values="12;12;52;20;30;48;18;12;12"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y"
+                 values="-6;-6;-26;-10;-15;-24;-9;-6;-6"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+      <!-- Bar 3 -->
+      <rect x="36" y="-6" width="8" height="12" rx="4" fill="#10B981">
+        <animate attributeName="height"
+                 values="12;12;72;36;60;28;42;12;12"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y"
+                 values="-6;-6;-36;-18;-30;-14;-21;-6;-6"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+      <!-- Bar 4 -->
+      <rect x="54" y="-6" width="8" height="12" rx="4" fill="#10B981">
+        <animate attributeName="height"
+                 values="12;12;88;48;76;40;52;12;12"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y"
+                 values="-6;-6;-44;-24;-38;-20;-26;-6;-6"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+      <!-- Bar 5 (center / loudest) -->
+      <rect x="72" y="-6" width="8" height="12" rx="4" fill="#10B981">
+        <animate attributeName="height"
+                 values="12;12;104;60;92;48;64;12;12"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y"
+                 values="-6;-6;-52;-30;-46;-24;-32;-6;-6"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+      <!-- Bar 6 -->
+      <rect x="90" y="-6" width="8" height="12" rx="4" fill="#10B981">
+        <animate attributeName="height"
+                 values="12;12;88;48;76;40;52;12;12"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y"
+                 values="-6;-6;-44;-24;-38;-20;-26;-6;-6"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+      <!-- Bar 7 -->
+      <rect x="108" y="-6" width="8" height="12" rx="4" fill="#10B981">
+        <animate attributeName="height"
+                 values="12;12;72;36;60;28;42;12;12"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y"
+                 values="-6;-6;-36;-18;-30;-14;-21;-6;-6"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+      <!-- Bar 8 -->
+      <rect x="126" y="-6" width="8" height="12" rx="4" fill="#10B981">
+        <animate attributeName="height"
+                 values="12;12;52;20;30;48;18;12;12"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="y"
+                 values="-6;-6;-26;-10;-15;-24;-9;-6;-6"
+                 keyTimes="0;0.34;0.40;0.45;0.50;0.55;0.60;0.66;1"
+                 dur="6s" repeatCount="indefinite"/>
+      </rect>
+    </g>
+
+    <text x="120" y="155" text-anchor="middle" font-size="13" font-weight="400" fill="#94A3B8">listening</text>
+  </g>
+
+  <!-- Step label below card 2 -->
+  <text x="460" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#64748B" letter-spacing="0.5">2 · SPEAK</text>
+
+  <!-- ============ ARROW 2→3 ============ -->
+  <line x1="590" y1="150" x2="630" y2="150"
+        stroke="#94A3B8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- ============ CARD 3: Text appears ============ -->
+  <g transform="translate(640, 60)">
+    <rect width="240" height="180" rx="20" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="2">
+      <animate attributeName="stroke"
+               values="#E2E8F0;#E2E8F0;#10B981;#10B981;#E2E8F0;#E2E8F0"
+               keyTimes="0;0.62;0.66;0.95;0.98;1"
+               dur="6s" repeatCount="indefinite"/>
+    </rect>
+
+    <!-- Mock text-field -->
+    <rect x="20" y="60" width="200" height="60" rx="8" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.5"/>
+  </g>
+
+  <!-- Text being typed (clipped by textWipe) -->
+  <g clip-path="url(#textWipe)">
+    <text x="668" y="156" font-size="18" font-weight="500" fill="#0F172A" font-family="ui-monospace, 'SF Mono', Menlo, monospace">hello, world.</text>
+  </g>
+
+  <!-- Blinking caret that follows the wipe -->
+  <rect x="0" y="142" width="2" height="22" fill="#0F172A">
+    <animate attributeName="x"
+             values="668;668;668;668;886;886;0"
+             keyTimes="0;0.55;0.62;0.66;0.83;0.92;1"
+             dur="6s" repeatCount="indefinite"/>
+    <animate attributeName="opacity"
+             values="0;0;0;0;1;1;0;0"
+             keyTimes="0;0.55;0.62;0.66;0.83;0.92;0.96;1"
+             dur="6s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- Step label below card 3 -->
+  <text x="760" y="280" text-anchor="middle" font-size="14" font-weight="600" fill="#64748B" letter-spacing="0.5">3 · RELEASE</text>
+</svg>
