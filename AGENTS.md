@@ -116,14 +116,62 @@ CI runs Python + shell + plist syntax checks on push/PR (see
 
 ## Release workflow
 
-1. Bump `CFBundleShortVersionString` in `Parakey.spec`.
-2. Edit `parakey.py` / etc.; commit.
-3. `./release.sh` — produces `dist/Parakey.zip` (notarised).
-   Capture the SHA256: `shasum -a 256 dist/Parakey.zip`.
-4. `gh release create vX.Y.Z dist/Parakey.zip --title "Parakey X.Y.Z" --notes-file …`
-5. Update [the brew tap](https://github.com/rcourtman/homebrew-parakey)'s
-   `Casks/parakey.rb` with the new version + SHA. Push.
-6. Smoke-test: `brew uninstall --cask parakey && brew install --cask rcourtman/parakey/parakey`.
+The repo is agent-operated; releases happen via a single command so
+there's nothing to remember between sessions. Make sure your edits
+are committed on `main` (and pushed if you want CI to validate them
+first), then:
+
+```sh
+./ship.sh                 # default: bump patch (0.1.1 → 0.1.2)
+./ship.sh --minor         # 0.1.x → 0.2.0
+./ship.sh --major         # 0.x.x → 1.0.0
+./ship.sh --version 0.1.5 # explicit
+./ship.sh --dry-run       # build everything, skip git/tag/release/cask
+```
+
+`ship.sh` does in order:
+
+1. Pre-flight (clean tree on `main`, `gh` auth, sibling tap present)
+2. Read current version from `Parakey.spec`, compute target, refuse
+   if a tag for the target version already exists
+3. Run `python -m unittest discover -s tests` — if the WarmupGate
+   tests (or anything in `tests/`) fail, the release aborts before
+   anything is touched
+4. `py_compile` `parakey.py` / `warmup_gate.py` / `bench.py` /
+   `bench_idle.py`
+5. Rewrite `CFBundleShortVersionString` and `CFBundleVersion` in
+   `Parakey.spec` (the latter monotonically increments)
+6. Call `./release.sh` (PyInstaller → Developer ID sign → notarytool
+   → ditto-zip). If this fails the Parakey.spec edit is reverted
+7. Commit the version bump, tag `vX.Y.Z`, push `main` + tag
+8. `gh release create` with `dist/Parakey.zip` as the asset; release
+   notes are auto-generated from `git log <prev-tag>..<new-tag>`
+9. Rewrite `version` + `sha256` in the sibling Homebrew tap's
+   `Casks/parakey.rb`, commit, push
+
+The tap lives at `../homebrew-parakey` by default; override with
+`PARAKEY_HOMEBREW_TAP=/path/to/tap` if your layout differs.
+
+**Recovery**: if `release.sh` fails, ship.sh reverts `Parakey.spec`
+for you. If a later step (push, gh release, cask) fails, the build
+artefact is still in `dist/Parakey.zip` — re-run the failed step
+manually rather than re-running `ship.sh` (which would try to bump
+the version a second time).
+
+**One-time setup** (only needed on a fresh machine):
+
+```sh
+# Notary credentials so release.sh can notarise
+xcrun notarytool store-credentials parakey-notary \
+    --apple-id <YOUR_APPLE_ID> --team-id UJD57YVK2B \
+    --password <APP_SPECIFIC_PASSWORD>
+
+# GitHub CLI auth
+gh auth login
+
+# Sibling tap clone if you don't have it yet
+git clone https://github.com/rcourtman/homebrew-parakey ../homebrew-parakey
+```
 
 ## Common change recipes
 
