@@ -246,6 +246,7 @@ class Settings:
     KEY_SHOW_IN_DOCK = "show_in_dock"
     KEY_INPUT_DEVICE = "input_device"  # device name as string; "" = system default
     KEY_CHECK_FOR_UPDATES = "check_for_updates"  # bool; default True
+    KEY_LAST_SEEN_VERSION = "last_seen_version"  # str; for upgrade detection
 
     def __init__(self) -> None:
         # Two paths depending on how we're running:
@@ -318,6 +319,19 @@ class Settings:
     @input_device.setter
     def input_device(self, value: str) -> None:
         self.defaults.setObject_forKey_(value or "", self.KEY_INPUT_DEVICE)
+        self.defaults.synchronize()
+
+    @property
+    def last_seen_version(self) -> str:
+        """The CFBundleShortVersionString we saw on the last successful
+        startup. Empty string for first-ever launch. Used to detect
+        upgrades and proactively recover from stale TCC state."""
+        v = self.defaults.stringForKey_(self.KEY_LAST_SEEN_VERSION)
+        return str(v) if v is not None else ""
+
+    @last_seen_version.setter
+    def last_seen_version(self, value: str) -> None:
+        self.defaults.setObject_forKey_(value or "", self.KEY_LAST_SEEN_VERSION)
         self.defaults.synchronize()
 
     @property
@@ -405,6 +419,13 @@ class Parakey(rumps.App):
             for name in self._perm_pane_map
         }
         self._perm_rows_visible = False  # toggled in _update_permission_rows
+        # In-session click counter per permission. On click #2+ for the
+        # same permission, the handler proactively resets TCC before
+        # re-firing the request — the user's first click landing without
+        # effect almost always means TCC's in a stuck state. Counter
+        # never decrements; if the click succeeds, the row disappears
+        # entirely so the count is moot.
+        self._perm_click_counts: dict[str, int] = {}
 
         self.pause_item = rumps.MenuItem("Pause", callback=self.toggle_pause)
         self.about_item = rumps.MenuItem("About Parakey", callback=self.show_about)
@@ -540,6 +561,11 @@ class Parakey(rumps.App):
                 raise RuntimeError(self.worker.error)
             # Reset the gate's clock so the next press isn't treated as cold.
             self._gate.last_inference_at = time.monotonic()
+
+            # If we just got upgraded, scrub any TCC entries that are
+            # stuck "denied" (the legacy v0.1.x microphone / input-
+            # monitoring traps). Granted permissions are untouched.
+            self._recover_stale_tcc_after_upgrade()
 
             self._set_load_status("opening mic")
             device_arg = self.input_device or None
@@ -1001,6 +1027,64 @@ class Parakey(rumps.App):
 
     # ---- Permissions --------------------------------------------------------
 
+    # ---- Auto-recovery for stale TCC state ---------------------------------
+
+    # Mapping from the human-readable permission names used in the menu to
+    # the TCC service identifiers that `tccutil reset` accepts. The
+    # Microphone and Accessibility names match; Input Monitoring is called
+    # "ListenEvent" by TCC.
+    _TCC_SERVICE_NAMES = {
+        "Microphone": "Microphone",
+        "Accessibility": "Accessibility",
+        "Input Monitoring": "ListenEvent",
+    }
+    PARAKEY_BUNDLE_ID = "com.local.parakey"
+
+    def _recover_stale_tcc_after_upgrade(self) -> None:
+        """If we got upgraded since the last successful launch, reset
+        any TCC entry that's currently denied.
+
+        Why: between v0.1.0 and v0.1.2 Parakey shipped with the wrong
+        microphone entitlement key (App Sandbox flavour, not Hardened
+        Runtime). macOS Tahoe stopped tolerating that mismatch and
+        cached a denial. Upgrading to v0.1.3+ with the correct
+        entitlement didn't clear the denial — the user had to run
+        `tccutil reset` manually. v0.1.4 hits the same shape of bug
+        for Input Monitoring. This method makes both invisible: on
+        the first launch after an upgrade, we proactively clear any
+        stuck denial for our own bundle so the existing in-menu
+        Grant flow can register cleanly.
+
+        Importantly: we DON'T reset permissions that are already
+        granted. The user's grant stays intact across upgrades.
+        """
+        last_seen = self.settings.last_seen_version
+        current = current_bundle_version()
+        if not last_seen:
+            # First-ever launch — just record the version. No state to
+            # recover from; the user hasn't granted anything yet.
+            self.settings.last_seen_version = current
+            return
+        if last_seen == current:
+            return  # not an upgrade
+        log(f"upgrade detected: {last_seen} → {current}; "
+            "checking for stale TCC state to recover")
+        for name, service in self._TCC_SERVICE_NAMES.items():
+            if self._check_permission(name):
+                continue  # granted, leave it alone
+            try:
+                subprocess.run(
+                    ["tccutil", "reset", service, self.PARAKEY_BUNDLE_ID],
+                    check=False, capture_output=True, timeout=5,
+                )
+                log(f"  reset TCC {service} for {self.PARAKEY_BUNDLE_ID} "
+                    "(was denied; next Grant click will register cleanly)")
+            except Exception as e:
+                log(f"  tccutil reset {service} failed: {e}")
+        # Always record the new version, even if some resets failed —
+        # we don't want to re-attempt the same reset on every launch.
+        self.settings.last_seen_version = current
+
     def _make_perm_handler(self, name: str):
         """Click handler. Tries to drive the user to the right place:
 
@@ -1023,7 +1107,28 @@ class Parakey(rumps.App):
             # dialog has no foreground host to attach to and doesn't
             # appear. Temporarily promote to a Regular app for ~6s
             # while the request is in flight, then drop back.
-            log(f"perm click: {name}")
+            self._perm_click_counts[name] = self._perm_click_counts.get(name, 0) + 1
+            click_count = self._perm_click_counts[name]
+            log(f"perm click #{click_count}: {name}")
+
+            # Belt-and-braces: on click 2+ for the same denied
+            # permission, scrub TCC before re-requesting. The most
+            # common cause of "I clicked Grant but nothing happened"
+            # is a stuck TCC entry from an earlier broken build, and
+            # a reset puts us back to "never asked" state so the
+            # request below registers cleanly.
+            if click_count >= 2:
+                service = self._TCC_SERVICE_NAMES.get(name)
+                if service is not None:
+                    try:
+                        subprocess.run(
+                            ["tccutil", "reset", service, self.PARAKEY_BUNDLE_ID],
+                            check=False, capture_output=True, timeout=5,
+                        )
+                        log(f"  reset TCC {service} before retry")
+                    except Exception as e:
+                        log(f"  tccutil reset {service} failed: {e}")
+
             NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
             NSApp.activateIgnoringOtherApps_(True)
 
@@ -1245,11 +1350,17 @@ class Parakey(rumps.App):
         if self._perm_rows_visible:
             for name, item in self.perm_items.items():
                 granted = states[name]
-                new_title = (
-                    f"✓  {name} permission granted"
-                    if granted else
-                    f"⚠  Grant {name} permission…"
-                )
+                if granted:
+                    new_title = f"✓  {name} permission granted"
+                elif self._perm_click_counts.get(name, 0) >= 1:
+                    # User has clicked Grant at least once but the
+                    # permission still hasn't taken. Tell them their
+                    # click landed and prompt a retry — the click
+                    # handler auto-resets TCC on the second attempt,
+                    # which usually unsticks a stuck denial.
+                    new_title = f"⚠  {name} stuck? Click again to reset and retry…"
+                else:
+                    new_title = f"⚠  Grant {name} permission…"
                 if item.title != new_title:
                     item.title = new_title
                 item.set_callback(None if granted else self._perm_callbacks[name])
