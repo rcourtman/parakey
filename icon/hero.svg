@@ -68,7 +68,7 @@
       <text x="282" y="0" font-size="17" font-weight="400" fill="#64748B">download</text>
 
       <text x="395" y="0" font-size="17" font-weight="700" fill="#10B981">~80 MB</text>
-      <text x="463" y="0" font-size="17" font-weight="400" fill="#64748B">resident</text>
+      <text x="463" y="0" font-size="17" font-weight="400" fill="#64748B">RAM</text>
 
       <text x="565" y="0" font-size="17" font-weight="700" fill="#10B981">0% CPU</text>
       <text x="630" y="0" font-size="17" font-weight="400" fill="#64748B">when idle</text>

@@ -32,7 +32,7 @@
         <text x="320" y="0" font-size="19" font-weight="400" fill="#475569">download</text>
 
         <text x="437" y="0" font-size="19" font-weight="700" fill="#0F172A">~80 MB</text>
-        <text x="517" y="0" font-size="19" font-weight="400" fill="#475569">resident</text>
+        <text x="517" y="0" font-size="19" font-weight="400" fill="#475569">RAM</text>
       </g>
 
       <text x="0" y="98" font-size="20" font-weight="400" fill="#64748B" letter-spacing="0.5">brew install --cask rcourtman/parakey/parakey</text>

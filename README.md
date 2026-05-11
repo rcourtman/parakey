@@ -20,7 +20,7 @@ Native Swift. Runs on the Apple Neural Engine via
 [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
 Local. No cloud. No subscription. No preferences window.
 
-> **~100 ms transcription** · **2.2 MB download** · **~80 MB resident memory** · **0% CPU between dictations**
+> **~100 ms transcription** · **2.2 MB download** · **~80 MB RAM** · **0% CPU between dictations**
 
 <p align="center">
   <img src="icon/latency.svg" alt="End-to-end latency: press, speak, release — text appears in about 100 milliseconds." width="900">
@@ -37,14 +37,15 @@ Local. No cloud. No subscription. No preferences window.
   same hardware.
 
 - **Lightweight** — **2.2 MB** signed, notarised release zip.
-  **~80 MB** of resident RAM while idle; **0% CPU** between
-  dictations. Single AOT-compiled Swift binary, no embedded
-  interpreter, no JIT, no library-validation override, no
-  background daemon, no telemetry, no autostart. CoreML keeps the
-  speech model on the Neural Engine itself, so the in-process
-  memory footprint stays small even though the model is ready to
-  fire. Two hardened-runtime entitlements (microphone +
-  audio-input); that's the whole sandbox surface.
+  Uses about **80 MB of RAM** while idle and **0% CPU** between
+  dictations — roughly the same memory as a single open Safari tab.
+  Single AOT-compiled Swift binary, no embedded interpreter, no
+  JIT, no library-validation override, no background daemon, no
+  telemetry, no autostart. CoreML keeps the speech model on the
+  Neural Engine itself, so the in-app memory footprint stays small
+  even though the model is loaded and ready. Two hardened-runtime
+  entitlements (microphone + audio-input); that's the whole
+  sandbox surface.
 
 - **Private** — audio is captured in memory, transcribed locally,
   and discarded. Nothing leaves your Mac during dictation. No
