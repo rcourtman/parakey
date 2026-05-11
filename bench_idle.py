@@ -101,50 +101,76 @@ def main() -> int:
         baseline_p50 = transcribe_once(model, audio)
         print(f"[2] quick baseline: {fmt_ms(baseline_p50)}\n")
 
-    # ----- (3) demonstrate the inline-warmup pattern ------------------
-    # parakey.py does the warmup *inline*, in the same thread as the real
-    # transcribe — fixing it on the same Metal queue avoids MLX's
-    # cross-thread graph-recompile fragility. The user-perceived latency
-    # after release is therefore warmup_time + transcribe_time.
-    print("[3] inline-warmup pattern (forced-cold gate):")
-    gate = WarmupGate(cold_threshold_seconds=0)  # always cold
-    self_audio_samples = len(audio)
+    # ----- (3) demonstrate the parallel-warmup-during-speak pattern ----
+    # The real parakey.py uses an InferenceWorker that owns the model
+    # and runs every generate() on a single dedicated thread. On press
+    # (when the model is cold) we enqueue a warmup; on release we enqueue
+    # the real transcribe. The worker's FIFO queue serializes them, so
+    # the transcribe waits for the warmup to finish — but because the
+    # user is speaking during that whole window, by release time the
+    # warmup is usually already done and the transcribe runs immediately.
+    print("[3] parallel-warmup-during-speak pattern (forced-cold gate):")
+    print("    spawning worker (will load its own model on its own thread)...")
+    # The worker MUST load the model itself — that's the whole point of
+    # the architecture. Reusing the bench's main-thread-loaded model
+    # would re-trigger the very bug we're trying to test the fix for.
+    import inference_worker as iwmod
+    iwmod.configure(mx, from_pretrained, get_logmel, np)
+    from inference_worker import InferenceWorker
+    worker = InferenceWorker(
+        MODEL_ID,
+        sample_rate=16000,
+        warmup_seconds=0.5,
+        log_cb=lambda _msg: None,
+    )
+    worker.start()
+    if not worker.wait_ready(timeout=120):
+        print("⚠️  worker never reached ready"); worker.shutdown(); return 1
+    if worker.error:
+        print(f"⚠️  worker init failed: {worker.error}"); worker.shutdown(); return 1
 
-    def transcribe_with_inline_rewarm():
-        with gate.transcribe():
-            if gate.is_cold():
-                gate.warming = True
-                try:
-                    transcribe_once(model, np.zeros(self_audio_samples, dtype=np.float32))
-                finally:
-                    gate.warming = False
-            return transcribe_once(model, audio)
+    speak_seconds = SIM_SPEAK_SECONDS
+    print(f"    user 'speaks' for: {speak_seconds*1000:7.1f}ms")
 
-    t0 = time.perf_counter()
-    real_dt = transcribe_with_inline_rewarm()
-    total = time.perf_counter() - t0
+    # On press: kick off the parallel warmup.
+    user_t0 = time.perf_counter()
+    worker.submit_warmup(audio_samples=int(speak_seconds * 16000))
 
-    print(f"    inline-warmup + real transcribe total: {fmt_ms(total)}")
-    print(f"    of which real transcribe: {fmt_ms(real_dt)}")
+    # User speaks (parallel with warmup running on the worker).
+    time.sleep(speak_seconds)
+    release_t = time.perf_counter()
+
+    # On release: submit the real transcribe.
+    done = threading.Event()
+    result: dict = {}
+    def on_done(text):
+        result["dt_complete"] = time.perf_counter()
+        result["text"] = text
+        done.set()
+    worker.submit_transcribe(audio, on_done)
+    done.wait()
+
+    user_total = result["dt_complete"] - user_t0
+    after_release = result["dt_complete"] - release_t
+    worker.shutdown()
+
+    print(f"    user-perceived total (press → text):   {fmt_ms(user_total)}")
+    print(f"    of which after release (release → text): {fmt_ms(after_release)}")
     print(f"    (steady-state baseline was {fmt_ms(baseline_p50)})")
     print()
 
     # ----- Sanity-check what we measured ------------------------------
-    # Real transcribe should be at steady-state (warmup primed the GPU
-    # for this exact audio length).
-    if real_dt > baseline_p50 * 2:
-        print("⚠️  real transcribe slower than 2× baseline — inline warmup may")
-        print("   not have primed the right graph for this audio length.")
-        return 1
-    # Total should be MUCH better than cold (the whole point of the fix).
-    if total > cold * 0.9:
-        print(f"⚠️  inline-warmup total ({fmt_ms(total)}) is not meaningfully better")
-        print(f"   than the cold path ({fmt_ms(cold)}). Fix isn't working.")
+    # The whole win is: after release, latency should be ~baseline,
+    # not warmup+baseline, because the warmup ran during speak.
+    if after_release > baseline_p50 * 2.5:
+        print(f"⚠️  after-release latency ({fmt_ms(after_release)}) is more than 2.5×")
+        print(f"   baseline ({fmt_ms(baseline_p50)}). The warmup may not be running")
+        print(f"   in parallel with speak as intended.")
         return 1
 
-    speedup_vs_cold = cold / total
-    print(f"✓ inline-warmup pattern is {speedup_vs_cold:.1f}× faster than cold,")
-    print(f"  and the real transcribe is back at steady-state speed.")
+    speedup_vs_cold = cold / after_release
+    print(f"✓ parallel-warmup pattern is {speedup_vs_cold:.1f}× faster than cold path,")
+    print(f"  and after-release latency is at steady-state speed.")
     return 0
 
 
