@@ -84,7 +84,13 @@ Steps:
 
 Then the menu bar's status row will tell me which key to hold to
 dictate. I can change it from Settings → Hotkey if I'd prefer
-something else. To upgrade later: `brew upgrade --cask parakey`.
+something else.
+
+To upgrade later: Parakey checks GitHub every few hours and will
+show an "Update to vX.Y.Z…" item at the top of its menu when a new
+release is out — click it, the app handles the upgrade and relaunch.
+The terminal fallback is still `brew upgrade --cask parakey` if I'd
+rather drive it manually.
 ````
 
 ## Install (one-liner)
@@ -99,7 +105,10 @@ First launch downloads the speech model (~600 MB, one-time). Click
 the 🎙 menu bar icon to grant the three macOS privacy permissions
 when it asks.
 
-To upgrade: `brew upgrade --cask parakey`.
+To upgrade: just click **"Update to vX.Y.Z…"** when it appears at
+the top of Parakey's menu — the app polls GitHub for new releases
+every few hours and handles the upgrade and relaunch itself. Or run
+`brew upgrade --cask parakey` manually if you prefer the terminal.
 
 To uninstall:
 
