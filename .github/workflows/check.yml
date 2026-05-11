@@ -1,35 +1,29 @@
 name: check
 
+# Lightweight repo-hygiene checks: shell + XML/plist syntax. Building the
+# Swift app needs macOS 26 (LSMinimumSystemVersion in swift/Info.plist) and
+# downloads the FluidAudio CoreML weights (~600 MB) on first build, so the
+# actual build/notarise path lives in ship-swift.sh on the maintainer's Mac.
+# Linux runners just cheap-check that the things humans hand-edit are still
+# parseable.
+
 on:
   push:
     branches: [main]
   pull_request:
 
 jobs:
-  syntax:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Python syntax check
+      - name: Shell syntax
         run: |
-          python -m py_compile parakey.py
-          python -m py_compile bench.py
-          python -m py_compile bench_idle.py
-          python -m py_compile warmup_gate.py
-          python -m py_compile inference_worker.py
-          python -m py_compile update_check.py
-      - name: Unit tests
-        # WarmupGate is deliberately import-light — no MLX, no AppKit —
-        # so it runs on plain Linux runners.
-        run: python -m unittest discover -s tests -v
-      - name: Shell syntax check
+          bash -n ship-swift.sh
+          bash -n swift/dev-run.sh
+          bash -n icon/make-icons.sh
+      - name: Plist + XML syntax
         run: |
-          bash -n install.sh
-          bash -n templates/Parakey.app/Contents/MacOS/parakey
-      - name: Plist lint
-        run: |
-          # plutil isn't on Linux, but the templates are valid XML.
-          python -c "import xml.etree.ElementTree as ET; ET.parse('templates/Parakey.app/Contents/Info.plist'); ET.parse('templates/com.local.parakey.plist')"
+          python -c "import xml.etree.ElementTree as ET; \
+            ET.parse('swift/Info.plist'); \
+            ET.parse('entitlements.plist')"

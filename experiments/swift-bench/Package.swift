@@ -1,8 +1,9 @@
 // swift-tools-version: 6.0
 //
-// parakey-bench — Swift CLI that benchmarks two ASR backends against
-// the same audio inputs. Output is comparable to the existing
-// parakey-mlx numbers from ../../bench.py.
+// parakey-bench — Swift CLI that benchmarks ASR backends against the
+// same audio inputs. Output is intentionally comparable with the
+// sibling `./bench-py.py` script, which runs the same audio through
+// the Python parakey-mlx path as a reference baseline.
 //
 // Backends tested:
 //   * Apple `SpeechAnalyzer` + `DictationTranscriber` (built into
@@ -10,6 +11,12 @@
 //   * FluidAudio's `AsrManager` running Parakeet TDT v3 via CoreML
 //     on the ANE (model downloaded from HuggingFace on first run,
 //     ~600 MB, cached thereafter).
+//
+// This benchmark drove the original "should Parakey port to Swift?"
+// decision; FluidAudio won and the production app uses it now (see
+// ../../swift/Sources/Parakey/main.swift). The bench stays around as
+// the canonical "is the inference path still healthy?" check for any
+// future backend / model swap.
 //
 // macOS 26 is required for `SpeechAnalyzer` / `DictationTranscriber`.
 // FluidAudio itself targets macOS 14+, so the gating factor is

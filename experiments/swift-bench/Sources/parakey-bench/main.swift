@@ -1,9 +1,9 @@
 // parakey-bench — head-to-head benchmark of Apple SpeechAnalyzer
 // (DictationTranscriber on the Apple Neural Engine, built into
 // macOS 26 Tahoe) vs FluidAudio (Parakeet TDT v3 via CoreML on the
-// ANE) on the same audio. Output is intentionally comparable to the
-// numbers from ../../bench.py so all three backends — these two plus
-// parakey-mlx in Python — can be cross-referenced in one table.
+// ANE) on the same audio. Output is intentionally comparable to
+// the sibling `./bench-py.py` (Python parakey-mlx, GPU/Metal), so
+// all three backends can be cross-referenced in one table.
 //
 // Usage:
 //   parakey-bench --file path/to/audio.wav [--trials 5] [--backend apple|fluid|both]

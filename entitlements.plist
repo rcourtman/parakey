@@ -18,15 +18,8 @@
           builds, kept as belt-and-braces for older macOS versions
           that historically accepted the sandbox key as a fallback.
 
-      Pre-Swift Parakey also carried three Python-runtime keys
-      (allow-jit, allow-unsigned-executable-memory,
-      disable-library-validation). Those existed because the bundled
-      Python.framework had to be loaded without library validation
-      and MLX/numba JIT-compiled at runtime. Native Swift + CoreML
-      doesn't need any of that — the binary is AOT-compiled and the
-      CoreML models we load are signed by Apple — so those three
-      keys are removed. Smaller TCC surface, less to justify if
-      anyone audits.
+      Anything new in this file expands the TCC surface and has to
+      be justified before being added.
     -->
     <key>com.apple.security.device.audio-input</key>
     <true/>

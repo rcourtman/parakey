@@ -4,9 +4,13 @@ Head-to-head ASR benchmark of three transcription backends running
 against the same WAV files on the same Mac, so they can be compared
 in like-for-like units.
 
-Lives under `experiments/` because the conclusion *may* be "don't
-port" — this directory is a decision-support tool, not a production
-build path.
+Originally built to answer "should Parakey port from Python+MLX to
+native Swift?" — the answer turned out to be yes, and the production
+app now runs on FluidAudio (see [`../../swift/`](../../swift/) and
+the [main README](../../README.md)). The bench stays in
+`experiments/` because it's still the cleanest way to validate any
+future backend / model / FluidAudio-version change without touching
+the production app.
 
 ## Backends
 
@@ -120,18 +124,38 @@ mostly on power-per-inference, which we haven't quantified. A
 `powermetrics`-based companion script could capture that; it's not
 done.
 
-## What this benchmark says about Parakey's path
+## What this benchmark drove
 
-The data answers the question the user actually asked:
+The original questions and where they landed:
 
-- **"Is ANE meaningfully faster than MLX for our workload?"**
+- **"Is ANE meaningfully faster than MLX for our workload?"** —
   Yes, consistently 1.5–2× depending on clip length.
 
-- **"Would users perceive the difference?"** No. Both backends
-  finish in under 200 ms for a 3-second clip; neither shows visible
-  lag.
+- **"Would users perceive the difference?"** — At the bench's
+  granularity, no; both backends finish in well under 200 ms for a
+  3-second clip. But the ANE path **does** finish before the user
+  has released the dictation key on typical clips, which makes
+  end-to-end "press → text" feel measurably snappier in real use.
 
-- **"Is it worth porting Parakey to Swift to capture the win?"**
-  Open question — would primarily be a power-on-battery win, which
-  this benchmark doesn't measure. Re-run with `powermetrics` if /
-  when that question becomes load-bearing.
+- **"Is it worth porting Parakey to Swift to capture the win?"** —
+  Yes. Beyond the latency win, going native removed the embedded
+  Python interpreter (149 MB → 2.2 MB zip), shrank the hardened-
+  runtime entitlement set from six keys to two, and sidestepped the
+  whole class of TCC/codesigning bugs that plagued the
+  PyInstaller-bundled `.app`. The port shipped as Parakey 0.2.0.
+
+## Future use
+
+The bench is kept as the "is the inference path still healthy?"
+sanity check. Re-run it whenever:
+
+- FluidAudio publishes a new release and you want to confirm the
+  latency curve hasn't regressed.
+- Apple ships a new SpeechAnalyzer revision (or someone unblocks
+  the entitlements gap so the `apple` backend runs end-to-end).
+- A future Parakeet / MLX / WhisperKit model arrives and you want
+  to evaluate it against the current numbers.
+
+`powermetrics` integration would let it answer the
+power-on-battery question, which the latency numbers leave
+unanswered. Not done.

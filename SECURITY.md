@@ -24,9 +24,10 @@ contact is listed on their GitHub profile.
 ## What's out of scope
 
 - Issues that require already having local user privileges (e.g. an
-  attacker who can already read `~/parakey/parakey.log` doesn't need a
-  vulnerability — they're already on the box).
-- Vulnerabilities in upstream dependencies (please report those to the
-  upstream project).
-- Anything related to the user choosing to enable `LOG_TRANSCRIPTS =
-  True` for debugging.
+  attacker who can already read `~/Library/Logs/Parakey.log` doesn't
+  need a vulnerability — they're already on the box).
+- Vulnerabilities in upstream dependencies (please report those to
+  the upstream project).
+- Anything that requires the user to ship a custom build with
+  transcript logging deliberately enabled — Parakey as shipped never
+  writes transcript content to disk.

@@ -29,7 +29,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$HERE/.build/debug/Parakey" "$APP/Contents/MacOS/Parakey"
 # Single canonical Info.plist (swift/Info.plist) — same file
 # ship-swift.sh uses, so dev and release builds advertise the same
-# bundle id / minimum macOS / usage descriptions.
+# bundle id / minimum macOS / usage descriptions / icon. Don't
+# overwrite this with an inline heredoc; the canonical Info.plist is
+# the source of truth, full stop.
 cp "$HERE/Info.plist" "$APP/Contents/Info.plist"
 # Menubar PNGs into the canonical Contents/Resources/ slot. NSImage
 # (named:) on Bundle.main finds them under this exact path. We avoid
@@ -41,23 +43,6 @@ cp "$HERE/Resources/parakey-menubar@2x.png" "$APP/Contents/Resources/"
 if [[ -f "$REPO/icon/Parakey.icns" ]]; then
     cp "$REPO/icon/Parakey.icns" "$APP/Contents/Resources/Parakey.icns"
 fi
-cat > "$APP/Contents/Info.plist" <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key><string>Parakey</string>
-    <key>CFBundleIdentifier</key><string>com.local.parakey</string>
-    <key>CFBundleName</key><string>Parakey</string>
-    <key>CFBundleShortVersionString</key><string>0.0.1-swiftdev</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>LSMinimumSystemVersion</key><string>26.0</string>
-    <key>LSUIElement</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>Parakey records audio while you hold the dictation hotkey, then transcribes it locally on your Mac.</string>
-    <key>NSAppleEventsUsageDescription</key><string>Parakey uses System Events to paste transcribed text at your cursor and to mute the system audio output during recording.</string>
-</dict>
-</plist>
-EOF
 
 say "Signing with Developer ID + hardened runtime..."
 CERT_HASH="$(security find-identity -v -p codesigning 2>/dev/null \

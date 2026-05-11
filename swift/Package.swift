@@ -1,10 +1,12 @@
 // swift-tools-version: 6.0
 //
-// Parakey (Swift). Successor to parakey.py — same UX (menu bar
-// push-to-talk dictation), native AppKit / AVFoundation, FluidAudio
-// on the Apple Neural Engine. macOS 26 minimum so we can use
-// SpeechAnalyzer later if we want and so FluidAudio's CoreML
-// integration is happy.
+// Parakey — single-file Swift menu-bar push-to-talk dictation app
+// for macOS Apple Silicon. Native AppKit / AVFoundation, FluidAudio
+// driving Parakeet TDT v3 on the Apple Neural Engine. macOS 26
+// minimum: required for the Hardened Runtime microphone entitlement
+// (`com.apple.security.device.audio-input`) and FluidAudio's CoreML
+// integration; also keeps the door open for SpeechAnalyzer if a
+// future backend swap is wanted.
 import PackageDescription
 
 let package = Package(

@@ -6,33 +6,43 @@
   <a href="https://github.com/rcourtman/parakey/releases/latest"><img src="https://img.shields.io/github/v/release/rcourtman/parakey?label=release&color=10B981" alt="Latest release"></a>
   <a href="https://github.com/rcourtman/parakey/actions/workflows/check.yml"><img src="https://github.com/rcourtman/parakey/actions/workflows/check.yml/badge.svg" alt="Build status"></a>
   <a href="https://github.com/rcourtman/parakey/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rcourtman/parakey?color=10B981" alt="MIT licensed"></a>
-  <img src="https://img.shields.io/badge/Apple%20Silicon%20%C2%B7%20macOS%2013%2B-10B981?color=10B981" alt="Apple Silicon · macOS 13+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon%20%C2%B7%20macOS%2026%2B-10B981?color=10B981" alt="Apple Silicon · macOS 26+">
   <a href="https://github.com/rcourtman/homebrew-parakey"><img src="https://img.shields.io/badge/Homebrew-Cask-10B981?logo=homebrew&logoColor=white" alt="Homebrew Cask"></a>
 </p>
 
 # Parakey
 
-**Push-to-talk dictation for macOS Apple Silicon. Hold a key, speak,
-let go — text appears at the cursor in well under a second.**
+**Push-to-talk dictation for Apple Silicon. Hold a key, speak, let go —
+text appears at the cursor in about 100 milliseconds.**
 
-Local transcription via [Parakeet-MLX](https://github.com/senstella/parakeet-mlx).
-No cloud, no subscription, no preferences window.
+Native Swift. Runs on the Apple Neural Engine via
+[FluidAudio](https://github.com/FluidInference/FluidAudio) +
+[Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+Local. No cloud. No subscription. No preferences window.
 
 <p align="center">
-  <img src="icon/latency.svg" alt="End-to-end latency: press, speak, release — text appears in about 180 milliseconds." width="900">
+  <img src="icon/latency.svg" alt="End-to-end latency: press, speak, release — text appears in about 100 milliseconds." width="900">
 </p>
 
-- **Fast** — under 200 ms from key release to pasted text on a
-  typical 3-second clip. Local inference on your Mac's GPU; no
-  network round-trip.
+- **Fast** — about **100 ms** from key release to pasted text on a
+  typical 2–4 second clip; measured on an M4 Mac mini. The encoder
+  runs on the Neural Engine, the decoder is a tiny autoregressive
+  loop, and the paste is just `Cmd+V` on the general pasteboard —
+  no IPC, no subprocess hop, no cloud round-trip. See
+  [`experiments/swift-bench/`](experiments/swift-bench/) for the
+  numbers.
+- **Tiny** — the signed, notarised release is a **2.2 MB** zip. The
+  Parakeet TDT v3 weights (~600 MB) download once on first launch
+  and cache locally; nothing else to install.
+- **Native** — single Swift binary, AOT-compiled, two hardened-
+  runtime entitlements (microphone + audio-input). Nothing in the
+  bundle that wasn't compiled from source.
 - **Private** — audio is captured in memory, transcribed locally,
   and discarded. Nothing leaves your Mac during dictation. No
   telemetry, no accounts, transcripts are never written to disk.
   (Two narrow exceptions: the first launch downloads the speech
-  model from Hugging Face — HF's own usage telemetry is disabled
-  via `HF_HUB_DISABLE_TELEMETRY=1` — and Parakey checks GitHub
-  every six hours for a newer release. Both are anonymous, the
-  second is toggleable in Settings.)
+  model, and Parakey checks GitHub every six hours for a newer
+  release. Both are anonymous; the second is toggleable in Settings.)
 - **Free** — MIT-licensed open source. No trials, no premium tier,
   no upsell.
 - **Minimal** — one menu-bar icon. No dock clutter by default. No
@@ -41,13 +51,14 @@ No cloud, no subscription, no preferences window.
 - **Focused** — push-to-talk dictation. No AI rewriting, no cloud
   sync, no extras.
 
-Apple Silicon only. macOS 13+.
+Apple Silicon only. macOS 26 (Tahoe) or later.
 
 ## Requirements
 
 - An Apple Silicon Mac (M1 or newer)
-- macOS 13 (Ventura) or later
-- [Homebrew](https://brew.sh/) for installing `python` and `ffmpeg`
+- macOS 26 (Tahoe) or later
+- [Homebrew](https://brew.sh/) — only used by the installer for the
+  Cask itself; Parakey has no other runtime dependencies
 
 ## Install (with an AI assistant)
 
@@ -62,15 +73,16 @@ repo or build from source — `brew install --cask` is the canonical
 end-user install path.
 
 Steps:
-1. Confirm this Mac is Apple Silicon (uname -m == arm64) and macOS 13+.
-   If not, stop and tell me — Parakey is Apple Silicon only.
+1. Confirm this Mac is Apple Silicon (uname -m == arm64) and macOS 26+.
+   If not, stop and tell me — Parakey is Apple Silicon only and
+   requires macOS 26 (Tahoe).
 2. Install Homebrew if missing (the installer at https://brew.sh).
 3. Run:
      brew install --cask rcourtman/parakey/parakey
 4. Launch the app:
      open /Applications/Parakey.app
-5. Tell me the menu bar 🎙 icon will appear shortly. First launch
-   downloads a 600 MB speech model from Hugging Face — this takes
+5. Tell me the menu bar Parakey icon will appear shortly. First launch
+   downloads a ~600 MB speech model from Hugging Face — this takes
    1–5 minutes on a typical connection, one-time only. Don't try the
    dictation key yet.
 6. Once the icon appears, tell me to click it. Three rows will be
@@ -102,7 +114,7 @@ open /Applications/Parakey.app
 
 That's it — the cask is signed and notarised, no Gatekeeper warnings.
 First launch downloads the speech model (~600 MB, one-time). Click
-the 🎙 menu bar icon to grant the three macOS privacy permissions
+the Parakey menu bar icon to grant the three macOS privacy permissions
 when it asks.
 
 To upgrade: just click **"Update to vX.Y.Z…"** when it appears at
@@ -121,30 +133,37 @@ brew uninstall --zap --cask parakey   # also removes preferences + logs
 If you want to hack on the code:
 
 ```sh
-brew install python ffmpeg
 git clone https://github.com/rcourtman/parakey.git ~/parakey
-cd ~/parakey
-./install.sh
+cd ~/parakey/swift
+./dev-run.sh
 ```
 
-`install.sh` is idempotent — re-run it any time. It creates a venv
-at `~/parakey/.venv`, builds a dev `~/Applications/Parakey.app`
-backed by the source tree, and loads a LaunchAgent so it auto-starts
-at login. Edit `parakey.py`, then
-`launchctl kickstart -k gui/$(id -u)/com.local.parakey` to pick up
-changes.
+`dev-run.sh` is idempotent — re-run it any time. It compiles
+`Sources/Parakey/main.swift` with `swift build`, wraps the binary in
+a minimal `/tmp/Parakey-dev.app`, signs it with your Developer ID +
+hardened runtime + the production entitlements (so TCC permissions
+carry over from the Cask install — no manual re-grants), kills any
+prior dev instance, and relaunches via `open`.
 
-To produce a notarised release build like the one shipped on Homebrew:
-`./release.sh` (see *Building a release* further down).
+Requirements: Xcode 16+ (or the Swift 6.3+ toolchain) and a
+Developer ID Application certificate in your keychain. The first
+build also pulls FluidAudio from SwiftPM and downloads the Parakeet
+TDT v3 CoreML weights (~600 MB, cached to `~/Library/Application
+Support/FluidAudio/`).
+
+To produce the notarised release build that ships on Homebrew:
+`./ship-swift.sh --dry-run` first (see *Building a release* below).
 
 ### First launch
 
-The first time Parakey runs, it downloads the Parakeet-TDT-0.6B model
-(~600 MB) from Hugging Face into `~/.cache/huggingface/`. This is a
-one-time download — subsequent launches start in seconds. During the
-download the menu bar icon shows a "loading…" indicator; there's no
-progress bar (yet), so allow 1–5 minutes on a typical connection
-before pressing your dictation key.
+The first time Parakey runs, it downloads the Parakeet TDT v3 model
+(~600 MB) from Hugging Face into
+`~/Library/Application Support/FluidAudio/`. This is a one-time
+download — subsequent launches load the cached CoreML weights and
+are ready in well under a second. During the download the menu bar
+icon shows a "loading…" indicator; there's no progress bar (yet), so
+allow 1–5 minutes on a typical connection before pressing your
+dictation key.
 
 ### Permissions
 
@@ -176,8 +195,10 @@ While the hotkey is held, system audio output is muted (so background
 music doesn't bleed into the recording or distract you). It's restored
 on release.
 
-The menu bar icon reflects state: 🎙 idle / 🔴 recording / ⏳
-transcribing / ⏸ paused.
+The menu bar icon reflects state via macOS's template-image tinting:
+the parakeet glyph in the bar's normal label colour when idle, dimmed
+while loading, **red** while recording, **yellow** if something went
+wrong.
 
 Menu structure:
 
@@ -203,30 +224,29 @@ Menu structure:
   - **Show Parakey in Dock** — off by default (menu-bar only)
 - **Pause / Resume** — temporarily disable the hotkey
 - **About Parakey**
-- **Quit** — clean shutdown (no auto-restart)
+- **Quit** — clean shutdown
 
 A 2-minute hard cap auto-releases if the hotkey is held too long.
 
 ## How it works
 
-1. `pynput` listens for the hotkey via a Quartz event tap.
-2. While held, `sounddevice` captures mic audio at 16 kHz mono.
-3. On release, the audio buffer is fed straight to `parakeet-mlx` —
-   `numpy → mlx.array → get_logmel → model.generate` — bypassing the
-   ffmpeg/WAV round-trip the public API would normally use.
-4. The transcript is placed on the clipboard via `NSPasteboard` and
-   `Cmd+V` is posted via `Quartz.CGEventPost` — both in-process, no
-   subprocess overhead.
-5. System audio is unmuted and a confirmation sound plays.
+1. A Quartz `CGEventTap` listens for the hotkey (modifier keys via
+   `flagsChanged`, regular keys via `keyDown`/`keyUp`).
+2. While held, an `AVAudioEngine` input tap captures mic audio and an
+   `AVAudioConverter` resamples it to 16 kHz mono Float32 on the fly.
+3. On release, the buffer is handed to a `TranscriptionWorker` actor
+   that owns FluidAudio's `AsrManager`. The Parakeet TDT v3 CoreML
+   models run on the Apple Neural Engine; the encoder is the bound
+   work, the TDT decoder is autoregressive but tiny.
+4. The transcript is placed on `NSPasteboard` and `Cmd+V` is posted
+   via `CGEvent`. System audio is unmuted via `NSAppleScript` and the
+   "Pop" system sound plays.
 
 The chosen hotkey itself is suppressed via the same event tap so it
 doesn't trigger any other application shortcuts.
 
-For a profile of where time is spent, run:
-
-```sh
-.venv/bin/python bench.py
-```
+For latency / accuracy numbers and the test methodology, see
+[`experiments/swift-bench/`](experiments/swift-bench/).
 
 ## Customise
 
@@ -245,20 +265,22 @@ defaults write com.local.parakey mute_while_recording -bool false
 defaults write com.local.parakey show_in_dock -bool true
 defaults write com.local.parakey input_device "AirPods Pro"  # exact device name
 defaults write com.local.parakey check_for_updates -bool false
-launchctl kickstart -k gui/$(id -u)/com.local.parakey
+# Then quit + relaunch Parakey to pick up settings that affect startup
+# (most apply live; restart is only needed for the Dock toggle).
 ```
 
-For deeper changes, constants live at the top of `parakey.py`:
+For deeper changes, constants live at the top of
+`swift/Sources/Parakey/main.swift`:
 
 | Constant | Default | Notes |
 |---|---|---|
-| `MODEL_ID` | `mlx-community/parakeet-tdt-0.6b-v2` | Any Parakeet-MLX model on Hugging Face. Also overridable via `PARAKEY_MODEL` env var. |
-| `MUTE_AFTER_TINK_SECONDS` | `0.18` | Delay before muting so the start sound isn't clipped. |
+| `MIN_CLIP_SECONDS` | `0.25` | Recordings shorter than this are discarded (treated as accidental key-tap). |
 | `MAX_RECORDING_SECONDS` | `120` | Auto-release if the hotkey is held longer. |
-| `LOG_TRANSCRIPTS` | `False` | Set to `True` to log transcript content (debugging). |
+| `MUTE_AFTER_START_SOUND` | `0.18` | Delay before muting so the start sound isn't clipped. |
+| `HISTORY_SIZE` | `5` | Rolling in-memory transcript history (cleared on quit). |
 | `UPDATE_CHECK_INTERVAL_SECONDS` | `21600` (6 h) | How often the app polls GitHub for a newer release. |
 
-After editing, restart with `launchctl kickstart -k gui/$(id -u)/com.local.parakey`.
+After editing, rebuild + relaunch via `swift/dev-run.sh`.
 
 ## Updates
 
@@ -280,10 +302,10 @@ updates**.
 
 What the update check sends: one anonymous HTTPS `GET` to
 `api.github.com/repos/rcourtman/parakey/releases/latest`. No
-identifier, no telemetry, no user agent fingerprint beyond Python's
-default. The release body (used by **What's new**) stays in memory
-and is never written to disk. Skipped-version choices are stored
-locally in `NSUserDefaults`.
+identifier, no telemetry, no user-agent fingerprint beyond Swift's
+URLSession default. The release body (used by **What's new**) stays
+in memory and is never written to disk. Skipped-version choices are
+stored locally in `NSUserDefaults`.
 
 Source / non-brew installs: the update item still appears when a
 newer release exists, but **Update now…** opens the GitHub releases
@@ -291,31 +313,34 @@ page in your browser rather than touching your local checkout.
 
 ## Building a release (maintainers)
 
-`install.sh` is the *contributor* path — fast iteration, uses your
-system Python, slightly leaky on macOS-bundle identity.
+`swift/dev-run.sh` is the *contributor* path — fast iteration, debug
+build, dropped into `/tmp/Parakey-dev.app`.
 
-`release.sh` is the *distribution* path — produces a self-contained,
-signed, **notarised**, drag-installable `Parakey.app`. The bundle
-embeds Python and every dependency, so the running executable lives
-inside `Parakey.app` and macOS identifies it as Parakey throughout
-(TCC, Activity Monitor, notifications, etc.). Once notarisation is
-set up (one-time, see below), every run signs + uploads + staples
-automatically.
+`ship-swift.sh` is the *distribution* path — produces a self-contained,
+signed, **notarised**, drag-installable `Parakey.app`. The bundle is
+a thin wrapper around a single Mach-O Swift binary plus the menu-bar
+PNGs and `.icns`; the CoreML weights are downloaded by FluidAudio on
+first launch rather than embedded, so the ship-zip stays under 3 MB.
 
 ```sh
-./release.sh
+./ship-swift.sh --dry-run   # build + sign + notarise check, skip git/tag/release/cask
+./ship-swift.sh             # actually ship
+./ship-swift.sh --minor     # 0.1.x → 0.2.0
+./ship-swift.sh --major     # 0.x.x → 1.0.0
+./ship-swift.sh --version 0.2.3
 ```
 
 Outputs:
 
-- `dist/Parakey.app` — signed, ready to drag into `/Applications/`
-- `dist/Parakey.zip` — the same bundle zipped, suitable for upload to
-  GitHub Releases (≈145 MB)
+- `swift/dist/Parakey.app` — signed, notarised, ready for Homebrew Cask
+- `swift/dist/Parakey.zip` — the ditto-zipped bundle that GitHub
+  Releases serves (≈2.2 MB; the version is in the GitHub release tag,
+  not the filename)
 
 ### Notarisation (one-time setup)
 
 Without notarisation, macOS Gatekeeper warns end users on first launch.
-To enable notarisation in `release.sh`, run once:
+To enable notarisation in `ship-swift.sh`, run once:
 
 ```sh
 xcrun notarytool store-credentials parakey-notary \
@@ -326,39 +351,19 @@ xcrun notarytool store-credentials parakey-notary \
 
 Generate the app-specific password at
 [appleid.apple.com](https://appleid.apple.com) → *Sign-In and Security
-→ App-Specific Passwords*. After this, every `./release.sh` run will
+→ App-Specific Passwords*. After this, every `./ship-swift.sh` run will
 notarise + staple automatically.
-
-## Re-signing the bundle
-
-Editing `parakey.py` doesn't break the signature — that file lives
-outside the bundle. But editing anything inside
-`~/Applications/Parakey.app/Contents/` (the launcher script or
-`Info.plist`) does. Easiest path: re-run `./install.sh`, which
-re-signs.
-
-To pin a specific signing identity, set `PARAKEY_CODESIGN_IDENTITY`:
-
-```sh
-PARAKEY_CODESIGN_IDENTITY="Developer ID Application: My Name (ABC123XYZ)" ./install.sh
-```
-
-Otherwise the first `Developer ID Application:` certificate in your
-keychain is used, falling back to ad-hoc.
 
 ## Logging
 
-Two log files depending on which install path you used:
+Parakey writes to `~/Library/Logs/Parakey.log`. The dev binary built
+by `swift/dev-run.sh` writes to the same file (same bundle id), so a
+single `tail -f` follows both.
 
-- `~/parakey/parakey.log` — the dev install (`./install.sh`) writes
-  here; rotated to `.log.1` at 1 MB.
-- `~/Library/Logs/Parakey.log` — the bundled `.app` (`./release.sh`,
-  or a downloaded release) writes here.
-
-Transcript content is **not** written to disk in either case — only
-timing and length metadata. If you need to debug a specific
-transcription, set `LOG_TRANSCRIPTS = True` in `parakey.py`, restart,
-reproduce, then flip it back.
+Transcript content is **never** written to disk — only timing and
+length metadata. There's no opt-in debug flag for logging
+transcripts; the only way to see what the model heard is to read the
+in-memory history from the menu while the app is still running.
 
 ## Troubleshooting
 
@@ -369,33 +374,29 @@ reproduce, then flip it back.
 | Mic captures silence (transcripts come back as 0 chars) | Microphone not granted |
 | Menu bar shows "loading…" for several minutes on first launch | First-run model download from Hugging Face (~600 MB). One-time. |
 | Music doesn't pause, only quietens | Parakey mutes system *output*, it doesn't pause Spotify/Music. Resumes on release. |
-| The Parakey.app you downloaded won't open | Confirm Apple Silicon + macOS 13+. If it's an older release before notarisation was set up, you may hit a Gatekeeper warning — right-click → Open → Open. |
+| The Parakey.app you downloaded won't open | Confirm Apple Silicon + macOS 26+. If it's an older release from before notarisation was set up, you may hit a Gatekeeper warning — right-click → Open → Open. |
 
 The in-menu permission rows surface most permission issues directly —
 if you see ⚠ rows, click them. If you've toggled permissions in
 Settings outside the app, the rows update within ~100 ms.
 
-If you've edited bundle internals or settings via `defaults` and need
-a clean restart:
-
-```sh
-launchctl kickstart -k gui/$(id -u)/com.local.parakey   # dev install
-# or just quit + relaunch Parakey.app from /Applications/         (bundled)
-```
+If you've granted permissions but the macOS TCC database is stale,
+clicking a ⚠ row twice in a row triggers `tccutil reset` on that
+service for `com.local.parakey` — re-grant on the prompt that follows.
 
 ## Uninstall
 
 ```sh
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.local.parakey.plist
-rm -rf ~/Applications/Parakey.app
-rm -f  ~/Library/LaunchAgents/com.local.parakey.plist
-rm -rf ~/parakey  # only if you cloned here and want it gone
+brew uninstall --zap --cask parakey
 ```
 
-Optionally also remove the model cache:
+`--zap` also clears `~/Library/Preferences/com.local.parakey.plist`
+and `~/Library/Logs/Parakey.log`.
+
+Optionally also remove the cached speech model:
 
 ```sh
-rm -rf ~/.cache/huggingface/hub/models--mlx-community--parakeet-tdt-0.6b-v2
+rm -rf ~/Library/Application\ Support/FluidAudio/
 ```
 
 And revoke permissions in System Settings → Privacy & Security.
@@ -420,9 +421,8 @@ MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-- [Parakeet-MLX](https://github.com/senstella/parakeet-mlx) by Senstella
-  for the MLX port of NVIDIA's Parakeet-TDT.
-- [rumps](https://github.com/jaredks/rumps) for the menu bar
-  scaffolding.
-- [pynput](https://github.com/moses-palmer/pynput) for the global
-  hotkey + Quartz event tap.
+- [FluidAudio](https://github.com/FluidInference/FluidAudio) by
+  FluidInference — the Swift ASR SDK that runs Parakeet on the Apple
+  Neural Engine.
+- [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
+  by NVIDIA — the underlying speech-recognition model.

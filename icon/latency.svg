@@ -140,10 +140,10 @@
     <animate attributeName="stroke-width" values="6;6;6;6;14;10;6;6" keyTimes="0;0.55;0.62;0.66;0.72;0.78;0.84;1" dur="5s" repeatCount="indefinite"/>
   </line>
 
-  <!-- 180ms badge -->
+  <!-- 100ms badge -->
   <g transform="translate(648, 86)" filter="url(#badgeGlow)">
     <rect width="116" height="48" rx="14" fill="#10B981"/>
-    <text x="58" y="32" text-anchor="middle" font-size="22" font-weight="700" fill="#FFFFFF">~180 ms</text>
+    <text x="58" y="32" text-anchor="middle" font-size="22" font-weight="700" fill="#FFFFFF">~100 ms</text>
   </g>
   <!-- Down arrow from badge to bracket -->
   <path d="M 706 134 L 706 168" stroke="#10B981" stroke-width="3" stroke-linecap="round"/>
@@ -162,5 +162,5 @@
   </g>
 
   <!-- Footer -->
-  <text x="500" y="296" text-anchor="middle" font-size="13" fill="#64748B">No network round-trip. Local inference on Apple Silicon GPU via Parakeet-MLX.</text>
+  <text x="500" y="296" text-anchor="middle" font-size="13" fill="#64748B">No network round-trip. Local inference on the Apple Neural Engine via FluidAudio + Parakeet TDT v3.</text>
 </svg>

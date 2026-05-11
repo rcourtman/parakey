@@ -1,15 +1,27 @@
-// Parakey — push-to-talk dictation for macOS.
+// Parakey — push-to-talk dictation for macOS Apple Silicon.
 //
-// This is the Swift successor to parakey.py. Behavioral spec lives
-// in ../parakey.py; this file translates the runtime parts to native
-// AppKit + AVFoundation + Speech APIs + FluidAudio on the ANE. Read
-// the Python version's docstrings if anything here looks
-// non-obvious — every UX decision was made there first.
+// Single-file Swift menu-bar app. The whole runtime lives in this
+// file: hotkey capture (`CGEventTap`), audio capture
+// (`AVAudioEngine`), transcription (`FluidAudio` on the Apple
+// Neural Engine), paste-at-cursor (`NSPasteboard` + `CGEvent`),
+// system-audio mute (`NSAppleScript`), menu-bar UI, settings,
+// rolling history, in-app updater, TCC self-healing.
 //
-// Scope of this MVP: menu bar icon, Right Option hotkey, record →
-// transcribe → paste at cursor, three-permission menu. Settings UI,
-// about dialog, history, update mechanism, and skip-version come in
-// later iterations.
+// Section comments (`// MARK: -`) tag every major region; Cmd+Ctrl+Up
+// in Xcode jumps between them. Keep them honest as you edit.
+//
+// Architectural invariants the build relies on are documented in
+// ../../AGENTS.md — read that before refactoring concurrency,
+// resource loading, or codesigning. In particular:
+//   - `AudioCapture` is *not* @MainActor (AVAudioEngine tap fires on
+//     an audio thread; main-actor entry would SIGTRAP under Swift 6
+//     strict concurrency).
+//   - `AVAudioConverter` inputBlock must return .noDataNow, never
+//     .endOfStream — the latter puts the converter in a terminal
+//     state and every press after the first captures silence.
+//   - Resources are loaded via `Bundle.main`, never `Bundle.module`
+//     — SwiftPM's auto-generated resource bundle has no Info.plist
+//     and breaks `codesign --deep`.
 
 import AppKit
 import AVFoundation
@@ -49,9 +61,9 @@ enum MenuBarState {
     case error
 }
 
-/// Modifier-keys + a handful of F-keys, mirroring parakey.py's HOTKEY_CHOICES.
-/// Modifier keycodes (62/61/54) are tracked via .flagsChanged events; the
-/// rest are normal .keyDown/.keyUp.
+/// The hotkeys the user can pick from in Settings → Hotkey. Modifier
+/// keycodes (62/61/54) are tracked via `.flagsChanged` events; the
+/// F-keys are normal `.keyDown` / `.keyUp`.
 struct HotkeyChoice: Equatable {
     let name: String
     let keycode: CGKeyCode
@@ -85,9 +97,10 @@ let TRIGGER_DISPLAY: [TriggerMode: String] = [
 // MARK: - Logger
 //
 // All output goes to stderr (line-buffered, so we don't lose lines
-// across an abrupt exit) and to ~/Library/Logs/Parakey.log, matching
-// the Python app's path so the file is interchangeable between the
-// two implementations.
+// across an abrupt exit) and to ~/Library/Logs/Parakey.log. Same
+// path the Homebrew Cask install and the dev binary built by
+// dev-run.sh both write to (they share a bundle id), so a single
+// `tail -f` follows both.
 
 final class Logger: @unchecked Sendable {
     static let shared = Logger()
@@ -132,11 +145,11 @@ extension ISO8601DateFormatter {
 // MARK: - Settings
 //
 // Thin wrapper around NSUserDefaults using the explicit suite name
-// `com.local.parakey`. Same storage location as the Python app
-// (~/Library/Preferences/com.local.parakey.plist), so settings carry
-// over cleanly when a user upgrades from Python Parakey to Swift
-// Parakey. Mirrors parakey.py's Settings class one property at a
-// time — including the defaults — so behaviour parity is exact.
+// `com.local.parakey` (the bundle id), so settings persist at
+// `~/Library/Preferences/com.local.parakey.plist`. One property per
+// user-visible setting; defaults are returned inline by each getter
+// when the key is missing, rather than via a central `register()`
+// call.
 
 final class Settings: @unchecked Sendable {
     private static let keyHotkeyKeycode = "hotkey_keycode"
@@ -327,8 +340,7 @@ final class HotkeyListener {
     }
 
     /// Replace the current hotkey choice. Safe to call at runtime —
-    /// the tap stays bound, only the per-event filter changes. Mirrors
-    /// the Python `select_hotkey` flow.
+    /// the tap stays bound, only the per-event filter changes.
     func setHotkey(_ choice: HotkeyChoice) {
         self.hotkey = choice
         self.lastFlags = []
@@ -373,8 +385,7 @@ final class HotkeyListener {
             if isRelease { onRelease?() }
         case .toggle:
             // Toggle mode: every press flips between "start recording"
-            // and "stop recording". Releases are no-ops. Matches the
-            // Python TRIGGER_TOGGLE behavior exactly.
+            // and "stop recording". Releases are no-ops.
             guard isPress else { return }
             if toggleActive { onRelease?() } else { onPress?() }
             toggleActive.toggle()
@@ -501,8 +512,10 @@ final class AudioCapture: @unchecked Sendable {
 //
 // Owns the FluidAudio AsrManager. ASR work runs in the actor's
 // isolated context, so the model load + every `transcribe` call
-// happens on a single Swift concurrency executor — analogous to
-// inference_worker.py's dedicated thread pattern.
+// happens on a single Swift concurrency executor. Necessary because
+// the Apple Neural Engine doesn't tolerate concurrent inference
+// calls against the same compiled CoreML graph — serialising
+// through the actor is what keeps that contract.
 
 actor TranscriptionWorker {
     private var asr: AsrManager?
@@ -527,10 +540,12 @@ actor TranscriptionWorker {
 
 // MARK: - Paste at cursor
 //
-// Write to general pasteboard, post Cmd+V. Same pattern as the
-// Python version's paste_text() — we don't preserve / restore the
-// user's previous clipboard contents (the Python version doesn't
-// either; deliberate to match).
+// Write to general pasteboard, post Cmd+V. We deliberately don't
+// preserve and restore the user's previous clipboard contents —
+// trying to round-trip it racily fights with paste-managers and
+// other clipboard observers, and most users find a clipboard that
+// silently reverts itself more surprising than one that ends up
+// holding whatever they last dictated.
 
 @MainActor
 enum Paster {
@@ -557,9 +572,10 @@ enum Paster {
 //
 // Mute the system output volume during recording so an open Zoom /
 // Music / browser tab doesn't get captured back into the mic and
-// transcribed alongside the user's voice. Same NSAppleScript path
-// the Python app uses; same restore behaviour (only unmute if WE
-// were the ones who muted — leave alone if the user had already
+// transcribed alongside the user's voice. Done via NSAppleScript
+// since there's no public AVFoundation knob for it. On release we
+// only unmute if WE were the ones who muted — leave alone if the
+// user had already
 // muted manually).
 
 enum SystemAudio {
@@ -587,8 +603,8 @@ enum SystemAudio {
 // MARK: - Sounds
 //
 // Two short system sounds — Tink on recording start, Pop on
-// finished transcribe — matching the Python app. Loaded from
-// /System/Library/Sounds so no bundle resources required.
+// finished transcribe. Loaded from /System/Library/Sounds so we
+// don't have to bundle audio resources.
 
 @MainActor
 enum Sounds {
@@ -634,11 +650,19 @@ func isNewer(_ candidate: String, than current: String) -> Bool {
 
 // MARK: - TCC recovery
 //
-// Direct port of parakey.py's `_recover_stale_tcc_after_upgrade`
-// + click-twice-to-reset retry. On a fresh launch after an upgrade
-// (CFBundleShortVersionString differs from settings.lastSeenVersion),
-// reset any DENIED permission entry for our bundle. Granted entries
-// stay intact. Mirrors the Python belt-and-braces exactly.
+// macOS's TCC database occasionally ends up with a DENIED entry
+// for our bundle id that the user can't easily clear (typical
+// trigger: an upgrade that changes the signed binary while a
+// previous denial is still cached). On a fresh launch after an
+// upgrade (CFBundleShortVersionString differs from
+// settings.lastSeenVersion), we proactively `tccutil reset` any
+// DENIED entry for `com.local.parakey`. GRANTED entries stay
+// intact — we never reset away permissions the user gave us.
+//
+// The companion to this is the click-twice-to-reset retry in the
+// permission rows: if the user clicks a ⚠ row, sees the OS dialog
+// say nothing useful, and clicks the same row again, the second
+// click runs `tccutil reset` to clear stuck state and re-request.
 
 enum TCC {
     /// Maps the human-readable permission name we use in the menu to
@@ -669,8 +693,7 @@ enum TCC {
 
 // MARK: - Update check
 //
-// Port of update_check.py + parakey.py's update plumbing. Hits the
-// GitHub Releases API once at boot + every 6 h. When a newer
+// Hits the GitHub Releases API once at boot + every 6 h. When a newer
 // version is found AND it's not in the user's skipped list, a
 // submenu inserts itself at the top of the menu: What's new /
 // Update now / Skip vX.Y.Z.
@@ -707,9 +730,10 @@ enum UpdateCheck {
 
 // MARK: - App
 //
-// Single class that owns the lifecycle. Mirrors the Python Parakey
-// class but stripped to the MVP path: hotkey → record → transcribe
-// → paste, plus a three-permission menu.
+// Single class that owns the lifecycle and the AppKit menu-bar UI.
+// All UI state lives here; subsystems (HotkeyListener, AudioCapture,
+// TranscriptionWorker, UpdateCheck, …) hold their own state but
+// call back into `ParakeyApp` for anything that touches the menu.
 
 @MainActor
 final class ParakeyApp: NSObject, NSApplicationDelegate {
@@ -730,8 +754,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var history: [String] = []
 
     /// In-session click counter per permission. Click #2 onwards
-    /// resets the matching TCC entry before re-requesting. Direct
-    /// port of the Python belt-and-braces.
+    /// resets the matching TCC entry before re-requesting — belt
+    /// and braces for stuck DENIED entries macOS occasionally caches.
     private var permClickCount: [Permission: Int] = [:]
 
     /// Latest release detected by the periodic check. nil = no update,
@@ -770,8 +794,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
                 // Belt-and-braces: clear any TCC entries stuck
                 // 'denied' from an upgrade. Granted permissions
-                // stay intact. Same heuristic as Python's
-                // _recover_stale_tcc_after_upgrade.
+                // stay intact. See the TCC recovery section comment
+                // for why this is needed.
                 recoverStaleTCCAfterUpgrade()
 
                 rebuildMenu()
@@ -1035,8 +1059,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if clicks >= 1 {
             // First click already happened; permission still denied,
             // so signal explicitly that a second click will reset
-            // any stuck TCC state and re-request. Matches Python's
-            // "Grant X (try again)…" pattern.
+            // any stuck TCC state and re-request.
             title = "⚠ Grant \(p.rawValue) (try again — will reset stuck state)…"
         } else {
             title = "⚠ Grant \(p.rawValue) permission…"
@@ -1308,9 +1331,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func updateNowClicked(_ sender: NSMenuItem) {
-        // Two paths matching the Python app: brew-installed users
-        // get the automated upgrade-and-relaunch flow, source /
-        // non-brew installs get the GitHub Releases page opened.
+        // Two paths: brew-installed users get the automated
+        // upgrade-and-relaunch flow, source / non-brew installs
+        // get the GitHub Releases page opened.
         if isBrewInstall(), let brew = findBrew() {
             spawnUpdateHelper(brewPath: brew)
         } else {
@@ -1345,8 +1368,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private func spawnUpdateHelper(brewPath: String) {
         // Detached shell helper that waits for THIS process to exit,
         // runs `brew upgrade --cask parakey`, then re-opens
-        // /Applications/Parakey.app. Identical mechanism to the
-        // Python app's _spawn_update_helper.
+        // /Applications/Parakey.app. We can't run `brew upgrade`
+        // in-process because brew will try to replace the very
+        // bundle we're executing from; the indirection through a
+        // detached shell is what lets the upgrade actually complete.
         let pid = getpid()
         let script = """
             #!/bin/bash
