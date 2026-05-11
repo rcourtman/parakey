@@ -15,10 +15,14 @@
 **Push-to-talk dictation for Apple Silicon. Hold a key, speak, let go —
 text appears at the cursor in about 100 milliseconds.**
 
-Native Swift. Runs on the Apple Neural Engine via
-[FluidAudio](https://github.com/FluidInference/FluidAudio) +
-[Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
-Local. No cloud. No subscription. No preferences window.
+Native Swift, **on-device speech recognition**. Runs on the
+**Apple Neural Engine (ANE)** via **CoreML**, executing the
+[Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
+model served by
+[FluidAudio](https://github.com/FluidInference/FluidAudio). No cloud
+transcription API, no subscription, no preferences window. An
+alternative to Whisper-class Mac apps that lean on the GPU — the
+ANE delivers both lower latency *and* lower power draw on battery.
 
 > **~100 ms transcription** · **2.2 MB download** · **~80 MB RAM** · **0% CPU between dictations**
 
@@ -27,9 +31,10 @@ Local. No cloud. No subscription. No preferences window.
 </p>
 
 - **Fast** — about **100 ms** from key release to pasted text on a
-  typical 2–4 second clip. The encoder runs on the Apple Neural
-  Engine, the decoder is a tiny autoregressive loop, and the paste
-  is just `Cmd+V` on the general pasteboard — no IPC, no subprocess
+  typical 2–4 second clip. The encoder runs on the **Apple Neural
+  Engine (ANE)** via CoreML — not the GPU, not the CPU. The
+  decoder is a tiny autoregressive RNN-T loop, and the paste is
+  just `Cmd+V` on the general pasteboard — no IPC, no subprocess
   hop, no cloud round-trip. By the time a cloud service has
   finished its TLS handshake, your text is already at the cursor.
   See [`experiments/swift-bench/`](experiments/swift-bench/) for
@@ -64,6 +69,37 @@ Local. No cloud. No subscription. No preferences window.
 
 - **Focused** — push-to-talk dictation. No AI rewriting, no cloud
   sync, no extras.
+
+## Built on Apple's neural-ML stack
+
+- **Apple Neural Engine (ANE)** — the dedicated machine-learning
+  co-processor on every M-series Mac. Parakey's inference path
+  targets it specifically (rather than the GPU or the CPU), via
+  Apple's **CoreML** framework. ANE inference is both faster than
+  GPU for this workload and materially less power-hungry, which
+  matters when you're dictating heavily through a battery day.
+- **Parakeet TDT v3** — NVIDIA's RNN-T (token-and-duration)
+  streaming-capable speech model, ~600 MB. Compiled to CoreML and
+  shipped as model weights via Hugging Face; runs on the ANE
+  rather than the cloud.
+- **[FluidAudio](https://github.com/FluidInference/FluidAudio)** —
+  the Swift SDK that wraps CoreML + Parakeet into a clean
+  `AsrManager` API. Open source, lean dependency surface, single
+  SwiftPM declaration.
+- **Apple's audio + UI frameworks all the way down** —
+  AVFoundation for capture, CoreGraphics event taps for the hotkey,
+  AppKit for the menu bar, NSAppleScript for the system-audio mute.
+  No Electron, no embedded Chromium, no embedded interpreter — the
+  whole app is one AOT-compiled Swift binary.
+
+If you've been looking for a **fully on-device speech recognition**
+app for the Mac that's an alternative to Whisper-on-GPU Mac apps
+(MacWhisper, WhisperKit-based UIs) and to cloud transcription
+services (OpenAI Whisper API, Google Speech-to-Text, Deepgram,
+Apple's built-in dictation that pipes through Siri), Parakey is
+exactly that — Push-to-Talk transcription on the **Apple Neural
+Engine**, with the model running locally on your Mac and no audio
+ever leaving the device.
 
 The Parakeet TDT v3 weights (~600 MB) download once on first launch
 into `~/Library/Application Support/FluidAudio/` and cache there;
