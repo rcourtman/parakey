@@ -478,6 +478,16 @@ class Parakey(rumps.App):
         self._update_item_inserted = False
         self.update_available_tag: "str | None" = None  # 'v0.1.3' if newer found
 
+        # Manual "Check for updates now" action — complements the
+        # periodic background check controlled by the toggle above.
+        # Default title is stored so we can restore it after showing
+        # a transient result ("Checking…", "✓ Up to date", etc.).
+        self._update_check_now_default_title = "Check for Updates Now…"
+        self.update_check_now_item = rumps.MenuItem(
+            self._update_check_now_default_title,
+            callback=self._on_update_check_now_clicked,
+        )
+
         # Microphone submenu — list every input-capable device sounddevice
         # finds, plus a "System default" entry at the top. Click to switch;
         # the audio stream restarts to pick up the new device.
@@ -508,6 +518,7 @@ class Parakey(rumps.App):
                     self.mute_item,
                     self.dock_item,
                     self.update_check_item,
+                    self.update_check_now_item,
                 ]
             },
             None,
@@ -929,6 +940,56 @@ class Parakey(rumps.App):
             except Exception as e:
                 log(f"update check raised: {e}")
             time.sleep(UPDATE_CHECK_INTERVAL_SECONDS)
+
+    def _on_update_check_now_clicked(self, sender) -> None:
+        """Manual 'check now' action. Fires a check on a background
+        thread (so the menu stays responsive) and shows the result
+        inline in the menu item title for a few seconds.
+
+        The action complements the periodic background check controlled
+        by the 'Check for updates' toggle — it lets the user force a
+        check without waiting up to UPDATE_CHECK_INTERVAL_SECONDS, and
+        gives explicit feedback ("Up to date" / "Update available")
+        rather than the silent appearance/non-appearance of the
+        top-of-menu update row.
+        """
+        sender.title = "Checking for updates…"
+        sender.set_callback(None)  # prevent double-clicks while in flight
+
+        def worker() -> None:
+            try:
+                self._check_for_update_once()
+                had_update = self.update_available_tag is not None
+            except Exception as e:
+                log(f"manual update check failed: {e}")
+                had_update = False
+            from PyObjCTools.AppHelper import callAfter
+            callAfter(self._finish_update_check_now, had_update)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_update_check_now(self, had_update: bool) -> None:
+        """Show a transient result in the Check-Now item, then restore it.
+
+        Runs on the main thread (rumps requires menu mutation there).
+        If an update was found, _check_for_update_once already inserted
+        the top-of-menu 'Update to v…' row, so all we need here is to
+        confirm the check happened.
+        """
+        item = self.update_check_now_item
+        item.title = "✓ Update available" if had_update else "✓ You're up to date"
+
+        def restore_after_delay() -> None:
+            time.sleep(4)
+            from PyObjCTools.AppHelper import callAfter
+            callAfter(self._restore_update_check_now_item)
+
+        threading.Thread(target=restore_after_delay, daemon=True).start()
+
+    def _restore_update_check_now_item(self) -> None:
+        item = self.update_check_now_item
+        item.title = self._update_check_now_default_title
+        item.set_callback(self._on_update_check_now_clicked)
 
     def _check_for_update_once(self) -> None:
         tag = fetch_latest_release_tag()
