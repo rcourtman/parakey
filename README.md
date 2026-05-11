@@ -407,6 +407,8 @@ in-memory history from the menu while the app is still running.
 | Menu bar shows "loading…" for several minutes on first launch | First-run model download from Hugging Face (~600 MB). One-time. |
 | Music doesn't pause, only quietens | Parakey mutes system *output*, it doesn't pause Spotify/Music. Resumes on release. |
 | The Parakey.app you downloaded won't open | Confirm Apple Silicon + macOS 26+. If it's an older release from before notarisation was set up, you may hit a Gatekeeper warning — right-click → Open → Open. |
+| Clicked **Update now…** and the GitHub releases page opened instead of the app upgrading | Means brew either isn't installed at the expected path (`/opt/homebrew/bin/brew` or `/usr/local/bin/brew`) *or* this install wasn't placed by `brew install --cask`. The release page is the safe fallback — install/upgrade manually from there. |
+| Clicked **Update now…** but the new version didn't come back | brew upgrade itself failed. Read `/tmp/parakey-update.log` for the brew output (network error, macOS-version mismatch, stale tap, etc.). |
 
 The in-menu permission rows surface most permission issues directly —
 if you see ⚠ rows, click them. If you've toggled permissions in
