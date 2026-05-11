@@ -247,7 +247,6 @@ Menu structure:
   - **Mute system audio while recording** — on by default; turn off
     if you'd rather music keep playing while you dictate
   - **Show Parakey in Dock** — off by default (menu-bar only)
-- **Pause / Resume** — temporarily disable the hotkey
 - **About Parakey**
 - **Quit** — clean shutdown
 
@@ -267,8 +266,11 @@ A 2-minute hard cap auto-releases if the hotkey is held too long.
    via `CGEvent`. System audio is unmuted via `NSAppleScript` and the
    "Pop" system sound plays.
 
-The chosen hotkey itself is suppressed via the same event tap so it
-doesn't trigger any other application shortcuts.
+The event tap runs in `.listenOnly` mode, so the hotkey isn't
+suppressed — Right Option, Right Control, etc. still behave as
+modifier keys in whatever app is focused while you're holding them.
+Parakey just additionally observes the press/release pair and
+records during the interval.
 
 For latency / accuracy numbers and the test methodology, see
 [`experiments/swift-bench/`](experiments/swift-bench/).

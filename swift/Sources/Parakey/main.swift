@@ -968,12 +968,23 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    /// 60-char preview with ellipsis. Newlines collapsed so a multi-
+    /// line transcript still renders as one menu row.
+    private func previewLine(for text: String) -> String {
+        let flat = text.replacingOccurrences(of: "\n", with: " ")
+        return flat.count > 60 ? String(flat.prefix(60)) + "…" : flat
+    }
+
     @objc private func historyClicked(_ sender: NSMenuItem) {
         guard let s = sender.representedObject as? String else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(s, forType: .string)
         log("history copied to clipboard (\(s.count) chars)")
+    }
+
+    @objc private func quitClicked(_ sender: NSMenuItem) {
+        NSApp.terminate(self)
     }
 
     // MARK: - Menu
@@ -1015,22 +1026,36 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
         if addedPermRow { menu.addItem(.separator()) }
 
-        // History submenu.
-        if !history.isEmpty {
-            let parent = NSMenuItem(title: "Recent", action: nil, keyEquivalent: "")
-            let sub = NSMenu()
-            for entry in history {
-                let preview = entry.prefix(60) + (entry.count > 60 ? "…" : "")
-                let item = NSMenuItem(title: String(preview),
-                                      action: #selector(historyClicked(_:)),
-                                      keyEquivalent: "")
-                item.target = self
-                item.representedObject = entry
-                item.toolTip = entry
-                sub.addItem(item)
+        // History: newest transcript inline (one-click to copy back to
+        // the clipboard), older ones hidden inside a Recent submenu so
+        // the top level stays scannable. The most common re-paste need
+        // — "drop what I just dictated into a second place" — is then
+        // a single click rather than a hover-into-submenu.
+        if let newest = history.first {
+            let inline = NSMenuItem(title: previewLine(for: newest),
+                                    action: #selector(historyClicked(_:)),
+                                    keyEquivalent: "")
+            inline.target = self
+            inline.representedObject = newest
+            inline.toolTip = newest
+            menu.addItem(inline)
+
+            if history.count > 1 {
+                let parent = NSMenuItem(title: "Recent", action: nil, keyEquivalent: "")
+                let sub = NSMenu()
+                for entry in history.dropFirst() {
+                    let item = NSMenuItem(title: previewLine(for: entry),
+                                          action: #selector(historyClicked(_:)),
+                                          keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = entry
+                    item.toolTip = entry
+                    sub.addItem(item)
+                }
+                parent.submenu = sub
+                menu.addItem(parent)
             }
-            parent.submenu = sub
-            menu.addItem(parent)
+
             menu.addItem(.separator())
         }
 
@@ -1045,9 +1070,18 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         about.target = self
         menu.addItem(about)
 
-        menu.addItem(NSMenuItem(title: "Quit Parakey",
-                                action: #selector(NSApp.terminate(_:)),
-                                keyEquivalent: "q"))
+        // Route through our own selector rather than `NSApp.terminate(_:)`
+        // directly. macOS auto-decorates items whose action is the
+        // system terminate: selector with a destructive-action glyph
+        // (visible in the state-column slot), which is the *only* item
+        // in the menu that gets such an indicator — every other row
+        // sits flush against the left edge. The wrapper produces the
+        // identical behaviour with no auto-glyph.
+        let quit = NSMenuItem(title: "Quit Parakey",
+                              action: #selector(quitClicked(_:)),
+                              keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
         return menu
     }
 
