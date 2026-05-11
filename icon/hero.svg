@@ -59,20 +59,11 @@
       </g>
     </g>
 
-    <!-- Stat row: hard numbers the prose can't hammer as compactly -->
-    <g transform="translate(0, 345)" font-family="ui-monospace, 'SF Mono', Menlo, monospace">
-      <text x="0" y="0" font-size="17" font-weight="700" fill="#10B981">~100 ms</text>
-      <text x="74" y="0" font-size="17" font-weight="400" fill="#64748B">transcription</text>
-
-      <text x="220" y="0" font-size="17" font-weight="700" fill="#10B981">2.2 MB</text>
-      <text x="282" y="0" font-size="17" font-weight="400" fill="#64748B">download</text>
-
-      <text x="395" y="0" font-size="17" font-weight="700" fill="#10B981">~80 MB</text>
-      <text x="463" y="0" font-size="17" font-weight="400" fill="#64748B">RAM</text>
-
-      <text x="565" y="0" font-size="17" font-weight="700" fill="#10B981">0% CPU</text>
-      <text x="630" y="0" font-size="17" font-weight="400" fill="#64748B">when idle</text>
-    </g>
+    <!-- Stat row: hard numbers the prose can't hammer as compactly.
+         One <text> with <tspan>s so the spacing flows naturally —
+         hand-positioned x-coordinates underestimated bold-monospace
+         char widths and the labels collided with the numbers. -->
+    <text x="0" y="345" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="17" xml:space="preserve"><tspan font-weight="700" fill="#10B981">~100 ms </tspan><tspan font-weight="400" fill="#64748B">transcription   </tspan><tspan font-weight="700" fill="#10B981">2.2 MB </tspan><tspan font-weight="400" fill="#64748B">download   </tspan><tspan font-weight="700" fill="#10B981">~80 MB </tspan><tspan font-weight="400" fill="#64748B">RAM   </tspan><tspan font-weight="700" fill="#10B981">0% CPU </tspan><tspan font-weight="400" fill="#64748B">when idle</tspan></text>
 
     <!-- brew command -->
     <g transform="translate(0, 395)">

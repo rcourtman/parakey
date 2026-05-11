@@ -23,17 +23,9 @@
 
       <!-- Hard-number stat line — the share preview's job is to make
            someone click through, and concrete numbers do that better
-           than adjectives. -->
-      <g transform="translate(0, 38)" font-family="ui-monospace, 'SF Mono', Menlo, monospace">
-        <text x="0" y="0" font-size="19" font-weight="700" fill="#0F172A">~100 ms</text>
-        <text x="92" y="0" font-size="19" font-weight="400" fill="#475569">transcription</text>
-
-        <text x="244" y="0" font-size="19" font-weight="700" fill="#0F172A">2.2 MB</text>
-        <text x="320" y="0" font-size="19" font-weight="400" fill="#475569">download</text>
-
-        <text x="437" y="0" font-size="19" font-weight="700" fill="#0F172A">~80 MB</text>
-        <text x="517" y="0" font-size="19" font-weight="400" fill="#475569">RAM</text>
-      </g>
+           than adjectives. One <text> with <tspan>s so the spacing
+           flows naturally rather than being hand-positioned. -->
+      <text x="0" y="38" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="19" xml:space="preserve"><tspan font-weight="700" fill="#0F172A">~100 ms </tspan><tspan font-weight="400" fill="#475569">transcription   </tspan><tspan font-weight="700" fill="#0F172A">2.2 MB </tspan><tspan font-weight="400" fill="#475569">download   </tspan><tspan font-weight="700" fill="#0F172A">~80 MB </tspan><tspan font-weight="400" fill="#475569">RAM</tspan></text>
 
       <text x="0" y="98" font-size="20" font-weight="400" fill="#64748B" letter-spacing="0.5">brew install --cask rcourtman/parakey/parakey</text>
     </g>
