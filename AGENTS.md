@@ -222,10 +222,43 @@ read the "Invariant: no telemetry" section above.
 
 ## Release workflow
 
-The repo is agent-operated; releases happen via a single command so
-there's nothing to remember between sessions. Make sure your edits
-are committed on `main` (and pushed if you want CI to validate them
-first), then:
+### Invariant: only ship when the user asks
+
+**Do not run `./ship.sh` on your own initiative.** Commit changes to
+`main`, push them, and wait. The user decides when a release happens.
+Bundle multiple commits into a single release naturally — there's no
+correctness or safety reason to ship every accumulated commit
+immediately.
+
+Triggers that mean "ship":
+
+- The user explicitly says something like *"ship it"*, *"do the
+  release"*, *"cut v0.1.x"*, or *"release this".*
+- An earlier in-progress release was interrupted and needs to finish
+  (resume the existing flow, don't start a new version bump).
+
+Triggers that do **not** mean "ship":
+
+- Finishing a feature or bug fix. Push to main, stop there.
+- "Just committed something cool" momentum. Commit. Don't ship.
+- A bundle of "polish" changes you'd like users to have. Wait for
+  the user to ask.
+- The user thanking you, agreeing with a plan, or saying *"continue"* —
+  *"continue"* means continue the work you were doing, not "kick off
+  a release."
+- Even an "urgent" bug fix — commit + push, then tell the user the
+  fix is on main and ask whether they want a release. They may want
+  to bundle it with other in-flight work, do their own testing first,
+  or schedule it.
+
+This rule exists because each release runs notarytool against Apple,
+bumps the cask version, creates a GitHub release, and irreversibly
+publishes a version number. Six releases in two hours is wasteful and
+makes the version log noisy. One release with six commits' worth of
+content is just as useful to users and uses one notary slot instead
+of six.
+
+When the user does ask for a release, the mechanics are:
 
 ```sh
 ./ship.sh                 # default: bump patch (0.1.1 → 0.1.2)
