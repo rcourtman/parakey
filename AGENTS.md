@@ -123,6 +123,10 @@ hit the same wall and landed the same fix in
 
 ## Out of scope
 
+- **Telemetry, analytics, crash reporting, "anonymous usage stats."**
+  Zero — see *Privacy / security* below for the load-bearing
+  invariant. Not "off by default", not "opt-in", not "just a UUID":
+  **none**. This is the product's marketing position.
 - **Cloud transcription backends.** Parakey is local-only by
   design. Audio never leaves the Mac (one-time exception: the model
   download from Hugging Face on first launch, with telemetry
@@ -139,17 +143,82 @@ hit the same wall and landed the same fix in
 
 ## Privacy / security
 
-- **`HF_HUB_DISABLE_TELEMETRY=1`** is set as the very first line of
-  effective code in `parakey.py` (after stdlib imports). Before any
-  HF-touching import. Don't move it.
+### Invariant: no telemetry, ever
+
+Parakey ships with **no analytics, no event tracking, no error
+reporting, no crash reporting, no "anonymous usage stats."** This is
+a load-bearing product commitment — it's documented in the README's
+opening privacy bullet, in the awesome-mac entry, in the
+awesome-macOS entry, and in the in-app About copy. Users install
+Parakey *specifically* because of it.
+
+Do not add any of the following, regardless of how innocuous they
+seem or how strong the "we'd just like to know how many people use
+it" instinct is:
+
+- A phone-home with a UUID or install ID (even one generated locally).
+- Sentry / Bugsnag / Crashlytics / any third-party SDK.
+- Apple's `MetricKit`, `os_log` with a custom subsystem, or any
+  signpost the user can't audit by reading parakey.py.
+- A "share usage stats" toggle, even default-off. Adding it normalises
+  the conversation.
+- Counting feature usage (which hotkey, which trigger mode, etc.) and
+  pinging anywhere with it.
+- Augmenting the existing GitHub update check with version info,
+  platform info, or anything beyond the bare GET it does today.
+
+If a future feature genuinely needs to ask the user something
+specific, do it in a release note / on social — voluntary, in-context,
+no infrastructure. If a bug needs reproduction info, GitHub issues
+exist and produce higher-quality data than telemetry would anyway.
+
+Substitutes for the questions telemetry would answer:
+
+- **User count, version distribution** → GitHub Releases download
+  counts (visible on the releases page), Homebrew's own analytics
+  (`brew analytics` aggregates cask install counts).
+- **Is anything crashing in the wild?** → GitHub issues. Watch
+  download counts vs. issue volume.
+- **Are people on the latest version?** → After a release ships, the
+  in-app update check gives every running Parakey the chance to
+  upgrade itself. Compare new vs. old release download counts.
+
+### The exhaustive list of network calls Parakey makes
+
+Anything added to this list expands the privacy surface and must be
+documented here:
+
+1. **First-launch model download** —
+   `huggingface.co` (or `hf.co` via redirect). One-time, ~600 MB.
+   `HF_HUB_DISABLE_TELEMETRY=1` is set as the very first line of
+   effective code in `parakey.py` (after stdlib imports), before any
+   HF-touching import. Don't move it.
+2. **Update check** —
+   `api.github.com/repos/rcourtman/parakey/releases/latest`, every
+   `UPDATE_CHECK_INTERVAL_SECONDS` (6 h), first call 30 s after
+   reaching "ready". Anonymous `GET`, no auth header, no identifier.
+   User can disable via Settings → Check for updates.
+3. **Update apply** —
+   When the user clicks the in-menu update item on a brew install:
+   shells out to `brew upgrade --cask parakey`, which then fetches
+   `github.com/rcourtman/parakey/releases/download/...`. User-
+   triggered, not background.
+
+That is the entire list. If you're about to add a fourth, stop and
+read the "Invariant: no telemetry" section above.
+
+### Other privacy / security invariants
+
 - **Hardened-runtime entitlements** (in `entitlements.plist`) are:
   `cs.allow-jit`, `cs.allow-unsigned-executable-memory`,
   `cs.disable-library-validation`, `device.microphone`. Anything new
   expands TCC surface — justify before adding.
-- **No network calls beyond model download.** If you add any HTTP
-  client, document it and audit the URL list.
 - **Transcripts are in-memory only.** A `collections.deque(maxlen=5)`
   rolling history clears on quit. Nothing is persisted.
+- **`LOG_TRANSCRIPTS = False`** is the published default and part of
+  the privacy claim. Only flip to `True` locally for debugging — and
+  even then, never commit logs to the repo or attach them to issues
+  without redaction.
 
 ## Release workflow
 
