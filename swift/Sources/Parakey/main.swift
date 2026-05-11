@@ -1194,6 +1194,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             Maintained by Richard Courtman.
             github.com/rcourtman/parakey · MIT licensed
             """
+        // Use our app icon instead of NSAlert's default exclamation
+        // mark. .icns lives in Contents/Resources/Parakey.icns;
+        // NSImage(named:) on Bundle.main resolves it by filename
+        // sans extension.
+        if let icon = NSImage(named: "Parakey") {
+            alert.icon = icon
+        }
         alert.runModal()
     }
 

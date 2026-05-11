@@ -2,25 +2,31 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>com.apple.security.cs.allow-jit</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
     <!--
-      Two microphone entitlements. The right one for our distribution
-      mode (Developer ID + Hardened Runtime, NO App Sandbox) is
-      audio-input — that's the key macOS Tahoe 26 checks before letting
-      a hardened-runtime app appear in System Settings → Privacy &
-      Security → Microphone. Older macOS versions accepted the
-      sandbox-flavoured `device.microphone` key as a fallback, but
-      Tahoe stopped tolerating that mismatch: the prompt silently
-      never fires and the app never gets a TCC entry.
+      Microphone access. Two keys; one for each distribution mode the
+      app might land in:
 
-      We list both. `device.microphone` stays for belt-and-braces
-      compatibility with older macOS that still wants to see it, and
-      adding it is harmless on Tahoe.
+        com.apple.security.device.audio-input
+          The Hardened Runtime key. macOS Tahoe 26 checks THIS one
+          when deciding whether a Developer-ID-signed app (the
+          distribution model we use) can appear in System Settings →
+          Privacy & Security → Microphone. Without it the app never
+          gets a TCC entry and the prompt silently never fires.
+
+        com.apple.security.device.microphone
+          The App Sandbox flavour. Harmless on Hardened Runtime
+          builds, kept as belt-and-braces for older macOS versions
+          that historically accepted the sandbox key as a fallback.
+
+      Pre-Swift Parakey also carried three Python-runtime keys
+      (allow-jit, allow-unsigned-executable-memory,
+      disable-library-validation). Those existed because the bundled
+      Python.framework had to be loaded without library validation
+      and MLX/numba JIT-compiled at runtime. Native Swift + CoreML
+      doesn't need any of that — the binary is AOT-compiled and the
+      CoreML models we load are signed by Apple — so those three
+      keys are removed. Smaller TCC surface, less to justify if
+      anyone audits.
     -->
     <key>com.apple.security.device.audio-input</key>
     <true/>

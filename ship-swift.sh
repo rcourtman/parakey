@@ -166,9 +166,11 @@ say "Signature OK ($(codesign --display --verbose=2 "$APP" 2>&1 | awk -F= '/^Aut
 say "Asserting required entitlements are present"
 EMBEDDED_ENTITLEMENTS="$(codesign -d --entitlements - "$APP" 2>&1)"
 REQUIRED_ENTITLEMENTS=(
-    "com.apple.security.cs.allow-jit"
-    "com.apple.security.cs.allow-unsigned-executable-memory"
-    "com.apple.security.cs.disable-library-validation"
+    # Just the two microphone keys. The Python-era JIT / unsigned-exec
+    # / disable-library-validation entitlements are gone — native
+    # Swift + CoreML doesn't need them. If a future regression
+    # re-introduces a Python runtime or unsigned dylib here, this
+    # assertion will fail loudly.
     "com.apple.security.device.audio-input"
     "com.apple.security.device.microphone"
 )
