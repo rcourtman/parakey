@@ -1185,22 +1185,17 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         dock.state = settings.showInDock ? .on : .off
         sub.addItem(dock)
 
-        // Periodic-check toggle. The label ends in "automatically" so it
-        // reads distinctly from the "Check for updates now…" action below
-        // — matches the macOS convention (e.g. Mail, Software Update).
+        // Periodic-check toggle. The 6-hour poll plus the 30-seconds-
+        // after-launch initial check catches every release; we don't
+        // also expose a "Check now" action because (a) it duplicates
+        // what the automatic poll already does and (b) users who want
+        // to force one can quit + relaunch.
         let checkToggle = NSMenuItem(title: "Check for updates automatically",
                                      action: #selector(toggleCheckForUpdates(_:)),
                                      keyEquivalent: "")
         checkToggle.target = self
         checkToggle.state = settings.checkForUpdates ? .on : .off
         sub.addItem(checkToggle)
-
-        // Immediate-check action.
-        let checkNow = NSMenuItem(title: "Check for updates now…",
-                                  action: #selector(checkForUpdatesNowClicked(_:)),
-                                  keyEquivalent: "")
-        checkNow.target = self
-        sub.addItem(checkNow)
 
         parent.submenu = sub
         return parent
@@ -1293,33 +1288,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    /// Reference to the currently-shown 'Check for updates now…' menu
-    /// item so we can update its title from the network result.
-    /// Settled here because Swift 6 strict concurrency forbids
-    /// sending an NSMenuItem across the actor boundary inside a
-    /// Task.detached closure.
-    private weak var checkNowItem: NSMenuItem?
-
-    @objc private func checkForUpdatesNowClicked(_ sender: NSMenuItem) {
-        sender.title = "Checking for updates…"
-        sender.action = nil
-        checkNowItem = sender
-        Task { @MainActor in
-            let release = await UpdateCheck.fetchLatest()
-            var hadUpdate = false
-            if let release {
-                self.handleFetchedRelease(release)
-                hadUpdate = self.pendingUpdate != nil
-            }
-            guard let item = self.checkNowItem else { return }
-            item.title = hadUpdate ? "✓ Update available" : "✓ You're up to date"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-                guard let self, let item = self.checkNowItem else { return }
-                item.title = "Check for updates now…"
-                item.action = #selector(self.checkForUpdatesNowClicked(_:))
-            }
-        }
-    }
 
     private func buildUpdateItem(for release: GitHubRelease) -> NSMenuItem {
         let parent = NSMenuItem(title: "Update to v\(release.version)",
