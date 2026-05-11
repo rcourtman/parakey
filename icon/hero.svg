@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" font-family="-apple-system, system-ui, 'Helvetica Neue', sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 440" font-family="-apple-system, system-ui, 'Helvetica Neue', sans-serif">
   <!-- Background -->
-  <rect width="1200" height="400" fill="#FAF8F2"/>
+  <rect width="1200" height="440" fill="#FAF8F2"/>
 
   <!-- Subtle background waveform accent (decorative) -->
   <g opacity="0.06" fill="#10B981">
@@ -59,8 +59,23 @@
       </g>
     </g>
 
+    <!-- Stat row: hard numbers the prose can't hammer as compactly -->
+    <g transform="translate(0, 345)" font-family="ui-monospace, 'SF Mono', Menlo, monospace">
+      <text x="0" y="0" font-size="17" font-weight="700" fill="#10B981">~100 ms</text>
+      <text x="74" y="0" font-size="17" font-weight="400" fill="#64748B">transcription</text>
+
+      <text x="220" y="0" font-size="17" font-weight="700" fill="#10B981">2.2 MB</text>
+      <text x="282" y="0" font-size="17" font-weight="400" fill="#64748B">download</text>
+
+      <text x="395" y="0" font-size="17" font-weight="700" fill="#10B981">~80 MB</text>
+      <text x="463" y="0" font-size="17" font-weight="400" fill="#64748B">resident</text>
+
+      <text x="565" y="0" font-size="17" font-weight="700" fill="#10B981">0% CPU</text>
+      <text x="630" y="0" font-size="17" font-weight="400" fill="#64748B">when idle</text>
+    </g>
+
     <!-- brew command -->
-    <g transform="translate(0, 350)">
+    <g transform="translate(0, 395)">
       <text x="0" y="0" font-size="18" font-family="ui-monospace, 'SF Mono', Menlo, monospace" fill="#64748B" letter-spacing="0.3">brew install --cask rcourtman/parakey/parakey</text>
     </g>
   </g>

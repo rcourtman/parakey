@@ -20,36 +20,53 @@ Native Swift. Runs on the Apple Neural Engine via
 [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
 Local. No cloud. No subscription. No preferences window.
 
+> **~100 ms transcription** · **2.2 MB download** · **~80 MB resident memory** · **0% CPU between dictations**
+
 <p align="center">
   <img src="icon/latency.svg" alt="End-to-end latency: press, speak, release — text appears in about 100 milliseconds." width="900">
 </p>
 
 - **Fast** — about **100 ms** from key release to pasted text on a
-  typical 2–4 second clip; measured on an M4 Mac mini. The encoder
-  runs on the Neural Engine, the decoder is a tiny autoregressive
-  loop, and the paste is just `Cmd+V` on the general pasteboard —
-  no IPC, no subprocess hop, no cloud round-trip. See
-  [`experiments/swift-bench/`](experiments/swift-bench/) for the
-  numbers.
-- **Tiny** — the signed, notarised release is a **2.2 MB** zip. The
-  Parakeet TDT v3 weights (~600 MB) download once on first launch
-  and cache locally; nothing else to install.
-- **Native** — single Swift binary, AOT-compiled. Two hardened-
-  runtime entitlements (microphone + audio-input); no JIT, no
-  library-validation override, no embedded interpreter.
+  typical 2–4 second clip. The encoder runs on the Apple Neural
+  Engine, the decoder is a tiny autoregressive loop, and the paste
+  is just `Cmd+V` on the general pasteboard — no IPC, no subprocess
+  hop, no cloud round-trip. By the time a cloud service has
+  finished its TLS handshake, your text is already at the cursor.
+  See [`experiments/swift-bench/`](experiments/swift-bench/) for
+  apples-to-apples comparisons against alternative backends on the
+  same hardware.
+
+- **Lightweight** — **2.2 MB** signed, notarised release zip.
+  **~80 MB** of resident RAM while idle; **0% CPU** between
+  dictations. Single AOT-compiled Swift binary, no embedded
+  interpreter, no JIT, no library-validation override, no
+  background daemon, no telemetry, no autostart. CoreML keeps the
+  speech model on the Neural Engine itself, so the in-process
+  memory footprint stays small even though the model is ready to
+  fire. Two hardened-runtime entitlements (microphone +
+  audio-input); that's the whole sandbox surface.
+
 - **Private** — audio is captured in memory, transcribed locally,
   and discarded. Nothing leaves your Mac during dictation. No
   telemetry, no accounts, transcripts are never written to disk.
   (Two narrow exceptions: the first launch downloads the speech
   model, and Parakey checks GitHub every six hours for a newer
-  release. Both are anonymous; the second is toggleable in Settings.)
+  release. Both are anonymous; the second is toggleable in
+  Settings.)
+
 - **Free** — MIT-licensed open source. No trials, no premium tier,
   no upsell.
+
 - **Minimal** — one menu-bar icon. No dock clutter by default. No
   preferences window — every setting lives in the menu's Settings
   submenu.
+
 - **Focused** — push-to-talk dictation. No AI rewriting, no cloud
   sync, no extras.
+
+The Parakeet TDT v3 weights (~600 MB) download once on first launch
+into `~/Library/Application Support/FluidAudio/` and cache there;
+nothing else to install.
 
 Apple Silicon only. macOS 26 (Tahoe) or later.
 
