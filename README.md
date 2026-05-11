@@ -262,20 +262,31 @@ After editing, restart with `launchctl kickstart -k gui/$(id -u)/com.local.parak
 
 ## Updates
 
-Parakey checks GitHub for a newer release every 6 hours (and once,
-30 seconds after launch). When a newer version is published, a
-**"Update to vX.Y.Z…"** item appears at the top of the menu. Clicking
-it runs `brew upgrade --cask parakey` in a detached shell helper and
-re-opens the app once the upgrade finishes — no terminal needed.
+Parakey checks GitHub for a newer release every 6 hours (plus one
+check 30 seconds after launch). When a newer version is published,
+an **"Update to vX.Y.Z"** submenu appears at the top of the menu:
+
+- **What's new…** — opens the release notes in a dialog with a link
+  out to the full GitHub release page.
+- **Update now…** — runs `brew upgrade --cask parakey` in a detached
+  shell helper and re-opens the app once the upgrade finishes. No
+  terminal needed.
+- **Skip vX.Y.Z** — suppresses *just this version* without disabling
+  the periodic check. A newer release published later still surfaces.
+
+You can also force a check from **Settings → Check for Updates Now…**
+and disable the periodic check entirely via **Settings → Check for
+updates**.
 
 What the update check sends: one anonymous HTTPS `GET` to
 `api.github.com/repos/rcourtman/parakey/releases/latest`. No
 identifier, no telemetry, no user agent fingerprint beyond Python's
-default. Disable via **Settings → Check for updates** if you'd
-rather upgrade manually with `brew upgrade --cask parakey`.
+default. The release body (used by **What's new**) stays in memory
+and is never written to disk. Skipped-version choices are stored
+locally in `NSUserDefaults`.
 
 Source / non-brew installs: the update item still appears when a
-newer release exists, but clicking it just opens the GitHub releases
+newer release exists, but **Update now…** opens the GitHub releases
 page in your browser rather than touching your local checkout.
 
 ## Building a release (maintainers)

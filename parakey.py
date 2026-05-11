@@ -28,6 +28,7 @@ import rumps
 import sounddevice as sd
 from AppKit import (
     NSAlert,
+    NSAlertSecondButtonReturn,
     NSImage,
     NSPasteboard,
     NSPasteboardTypeString,
@@ -1095,9 +1096,8 @@ class Parakey(rumps.App):
             img = NSImage.alloc().initWithContentsOfFile_(icon_path)
             if img is not None:
                 alert.setIcon_(img)
-        # NSAlertFirstButtonReturn = 1000, second button = 1001.
         response = alert.runModal()
-        if response == 1001:
+        if response == NSAlertSecondButtonReturn:
             subprocess.Popen(["open", html_url])
 
     def _on_skip_version_clicked(self, _sender) -> None:

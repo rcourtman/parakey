@@ -96,9 +96,17 @@ hit the same wall and landed the same fix in
 
 ## Conventions
 
-- **Single file.** `parakey.py` is the whole app. Resist splitting
-  unless something genuinely belongs in its own module (e.g. a real
-  test suite). Adding files trades discoverability for organisation.
+- **One app file, plus small testable modules.** `parakey.py` is the
+  whole app (~1500 lines, single `Parakey(rumps.App)` class). Resist
+  splitting it further. The only sibling modules that exist are
+  testable extractions — pure-Python helpers and state machines with
+  no AppKit / MLX / pynput imports, so CI can run their tests on
+  plain Linux runners. Currently: `warmup_gate.py` (cold-after-idle
+  state machine), `inference_worker.py` (single-threaded MLX queue),
+  `update_check.py` (GitHub Releases polling helpers). New modules
+  should follow the same shape: pure-stdlib at the top, no app
+  imports, paired with `tests/test_<name>.py`. If a feature can't be
+  expressed without AppKit, it stays in `parakey.py`.
 - **Type-hinted.** Method signatures and class attributes are
   annotated. Don't introduce untyped public API.
 - **Comments are for the *why*.** The *what* should be obvious from
