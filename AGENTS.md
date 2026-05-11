@@ -328,8 +328,12 @@ When the user does ask for a release, the mechanics are:
    `swift/dist/Parakey.zip` (versioning lives in the GitHub release
    tag, not the filename)
 10. Commit the version bump, tag `vX.Y.Z`, push `main` + tag
-11. `gh release create` with the zip as the asset; release notes are
-    auto-generated from `git log <prev-tag>..<new-tag>`
+11. `gh release create` with the zip as the asset. Release notes
+    come from `swift/release-notes/v<new_version>.md` if that file
+    exists (preferred for releases with migration steps, breaking
+    changes, or any narrative content); otherwise they're
+    auto-generated from `git log <prev-tag>..<new-tag>`. Write the
+    file before running `ship-swift.sh` to control the release body.
 12. Rewrite `version` + `sha256` in the sibling Homebrew tap's
     `Casks/parakey.rb`, commit, push
 

@@ -34,9 +34,9 @@ Local. No cloud. No subscription. No preferences window.
 - **Tiny** — the signed, notarised release is a **2.2 MB** zip. The
   Parakeet TDT v3 weights (~600 MB) download once on first launch
   and cache locally; nothing else to install.
-- **Native** — single Swift binary, AOT-compiled, two hardened-
-  runtime entitlements (microphone + audio-input). Nothing in the
-  bundle that wasn't compiled from source.
+- **Native** — single Swift binary, AOT-compiled. Two hardened-
+  runtime entitlements (microphone + audio-input); no JIT, no
+  library-validation override, no embedded interpreter.
 - **Private** — audio is captured in memory, transcribed locally,
   and discarded. Nothing leaves your Mac during dictation. No
   telemetry, no accounts, transcripts are never written to disk.
@@ -62,8 +62,13 @@ Apple Silicon only. macOS 26 (Tahoe) or later.
 
 ## Install (with an AI assistant)
 
-Paste this into Claude Code, Cursor, Codex, or any shell-capable agent
-running on the target Mac:
+Paste the prompt below into Claude Code, Cursor, Codex, or any shell-
+capable agent running on the target Mac. It'll handle the Homebrew
+install, walk you through the three permission grants, and explain
+what to expect on first launch.
+
+<details>
+<summary>Click to expand the AI-assistant install prompt</summary>
 
 ````text
 Install Parakey from https://github.com/rcourtman/parakey on this Mac.
@@ -104,6 +109,8 @@ release is out — click it, the app handles the upgrade and relaunch.
 The terminal fallback is still `brew upgrade --cask parakey` if I'd
 rather drive it manually.
 ````
+
+</details>
 
 ## Install (one-liner)
 
@@ -154,7 +161,7 @@ Support/FluidAudio/`).
 To produce the notarised release build that ships on Homebrew:
 `./ship-swift.sh --dry-run` first (see *Building a release* below).
 
-### First launch
+## First launch
 
 The first time Parakey runs, it downloads the Parakeet TDT v3 model
 (~600 MB) from Hugging Face into
@@ -165,7 +172,7 @@ icon shows a "loading…" indicator; there's no progress bar (yet), so
 allow 1–5 minutes on a typical connection before pressing your
 dictation key.
 
-### Permissions
+## Permissions
 
 Parakey needs three macOS privacy permissions: **Microphone**,
 **Accessibility**, and **Input Monitoring**. Until they're all
@@ -324,11 +331,15 @@ first launch rather than embedded, so the ship-zip stays under 3 MB.
 
 ```sh
 ./ship-swift.sh --dry-run   # build + sign + notarise check, skip git/tag/release/cask
-./ship-swift.sh             # actually ship
-./ship-swift.sh --minor     # 0.1.x → 0.2.0
+./ship-swift.sh             # actually ship (bumps patch: 0.2.x → 0.2.x+1)
+./ship-swift.sh --minor     # 0.2.x → 0.3.0
 ./ship-swift.sh --major     # 0.x.x → 1.0.0
 ./ship-swift.sh --version 0.2.3
 ```
+
+If a release-notes file exists at `swift/release-notes/v<new_version>.md`,
+ship-swift.sh uses it for the GitHub release body; otherwise the body
+is auto-generated from `git log <prev-tag>..<new-tag>`.
 
 Outputs:
 

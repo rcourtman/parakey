@@ -230,18 +230,33 @@ git -C "$PROJECT_DIR" push origin main --follow-tags
 
 # ---- 10. GitHub release ---------------------------------------------------
 say "Creating GitHub release v$new_version"
-prev_tag="$(git -C "$PROJECT_DIR" describe --tags --abbrev=0 "v$new_version^" 2>/dev/null || true)"
-if [[ -n "$prev_tag" ]]; then
-    range="$prev_tag..v$new_version"
-    notes="$(git -C "$PROJECT_DIR" log --pretty='- %s' "$range")"
+
+# If a hand-written release-notes file exists for this version, use it
+# verbatim — preferable to a list of commit subjects for releases with
+# any narrative content (migration steps, breaking changes, etc.).
+# Otherwise fall back to a generated commit-list.
+NOTES_FILE="$SWIFT_DIR/release-notes/v$new_version.md"
+if [[ -f "$NOTES_FILE" ]]; then
+    say "Using hand-written release notes from $NOTES_FILE"
+    gh release create "v$new_version" "$ZIP_OUT" \
+        --repo rcourtman/parakey \
+        --title "v$new_version" \
+        --notes-file "$NOTES_FILE" \
+        || die "gh release create failed -- tag is pushed; re-run gh release manually"
 else
-    notes="Initial Swift release."
+    prev_tag="$(git -C "$PROJECT_DIR" describe --tags --abbrev=0 "v$new_version^" 2>/dev/null || true)"
+    if [[ -n "$prev_tag" ]]; then
+        range="$prev_tag..v$new_version"
+        notes="$(git -C "$PROJECT_DIR" log --pretty='- %s' "$range")"
+    else
+        notes="Initial Swift release."
+    fi
+    gh release create "v$new_version" "$ZIP_OUT" \
+        --repo rcourtman/parakey \
+        --title "v$new_version" \
+        --notes "$notes" \
+        || die "gh release create failed -- tag is pushed; re-run gh release manually"
 fi
-gh release create "v$new_version" "$ZIP_OUT" \
-    --repo rcourtman/parakey \
-    --title "v$new_version" \
-    --notes "$notes" \
-    || die "gh release create failed -- tag is pushed; re-run gh release manually"
 
 # ---- 11. Homebrew Cask bump -----------------------------------------------
 if [[ "$NO_CASK" -eq 1 ]]; then
