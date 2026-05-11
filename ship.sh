@@ -71,6 +71,11 @@ say "Syncing venv with requirements.txt"
 current_branch="$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD)"
 [[ "$current_branch" == "main" ]] || die "not on main (currently '$current_branch')"
 
+# Refresh the index's stat cache before diff-index. Without this,
+# stale mtimes (e.g. after a recent pip install or a `touch`-y editor)
+# cause diff-index to report phantom changes for files whose content
+# actually matches HEAD. This bit us once during the v0.1.2 ship.
+git -C "$PROJECT_DIR" update-index --refresh >/dev/null 2>&1 || true
 if ! git -C "$PROJECT_DIR" diff-index --quiet HEAD --; then
     die "working tree has uncommitted changes — commit or stash before shipping"
 fi
@@ -83,6 +88,8 @@ fi
 if [[ "$NO_CASK" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
     [[ -f "$CASK_FILE" ]] || die "cask not found at $CASK_FILE — set PARAKEY_HOMEBREW_TAP or use --no-cask"
     tap_branch="$(git -C "$CASK_TAP" rev-parse --abbrev-ref HEAD)"
+    # Same stat-cache refresh as the project repo above (see comment).
+    git -C "$CASK_TAP" update-index --refresh >/dev/null 2>&1 || true
     if ! git -C "$CASK_TAP" diff-index --quiet HEAD --; then
         die "Homebrew tap has uncommitted changes at $CASK_TAP"
     fi
