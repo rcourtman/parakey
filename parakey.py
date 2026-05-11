@@ -1099,12 +1099,11 @@ class Parakey(rumps.App):
                 from ApplicationServices import AXIsProcessTrusted
                 return bool(AXIsProcessTrusted())
             if name == "Input Monitoring":
-                import ctypes, ctypes.util
-                iokit = ctypes.CDLL(ctypes.util.find_library("IOKit"))
-                iokit.IOHIDCheckAccess.argtypes = [ctypes.c_uint32]
-                iokit.IOHIDCheckAccess.restype = ctypes.c_uint32
-                # kIOHIDAccessTypeGranted = 0
-                return iokit.IOHIDCheckAccess(1) == 0
+                # Symmetric with the request path: ask CoreGraphics about
+                # CGEventTap access, not IOKit about HID access. Same TCC
+                # entry under the hood, but the CG variant is what pynput
+                # actually depends on at runtime.
+                return bool(Quartz.CGPreflightListenEventAccess())
         except Exception as e:
             log(f"check {name} failed: {e}")
         return False
@@ -1145,14 +1144,20 @@ class Parakey(rumps.App):
                     {kAXTrustedCheckOptionPrompt: True}
                 )
             elif name == "Input Monitoring":
-                # PyObjC doesn't expose IOHIDRequestAccess; reach into
-                # IOKit via ctypes. kIOHIDRequestTypeListenEvent = 1.
-                import ctypes, ctypes.util
-                iokit = ctypes.CDLL(ctypes.util.find_library("IOKit"))
-                iokit.IOHIDRequestAccess.argtypes = [ctypes.c_uint32]
-                iokit.IOHIDRequestAccess.restype = ctypes.c_bool
-                result = iokit.IOHIDRequestAccess(1)
-                log(f"  IOHIDRequestAccess returned: {result}")
+                # CGRequestListenEventAccess is the canonical API for any
+                # app using CGEventTap (which is what pynput's listener
+                # uses under the hood). It does three things in one call:
+                #   * Registers the app in the Input Monitoring TCC list
+                #     so it shows up in System Settings with a toggle.
+                #   * Shows the system prompt if permission was never asked.
+                #   * Opens Settings to the right pane if previously denied.
+                # The older IOHIDRequestAccess call (IOKit) targets the
+                # same TCC service but doesn't reliably register CGEventTap
+                # clients on Tahoe 26 — the app silently fails to appear
+                # in the list, leaving the user with a "+" button they
+                # can't actually use.
+                result = bool(Quartz.CGRequestListenEventAccess())
+                log(f"  CGRequestListenEventAccess returned: {result}")
         except Exception as e:
             log(f"request {name} failed: {e}")
 
