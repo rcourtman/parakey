@@ -428,13 +428,6 @@ class Parakey(rumps.App):
         self._perm_click_counts: dict[str, int] = {}
 
         self.pause_item = rumps.MenuItem("Pause", callback=self.toggle_pause)
-        # Disabled info row showing the running version. Sits just above
-        # "About Parakey" so users can glance at the version without
-        # opening the About dialog. The dialog still has the canonical
-        # presentation (with build number, hotkey, model, etc.).
-        self.version_item = rumps.MenuItem(
-            f"Parakey {current_bundle_version()}", callback=None,
-        )
         self.about_item = rumps.MenuItem("About Parakey", callback=self.show_about)
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
 
@@ -524,7 +517,6 @@ class Parakey(rumps.App):
             None,
             self.pause_item,
             None,
-            self.version_item,
             self.about_item,
             self.quit_item,
         ]
