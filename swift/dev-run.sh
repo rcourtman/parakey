@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# dev-run.sh — local iteration loop for the Swift Parakey port.
+#
+# Rebuilds main.swift, drops the binary into a minimal .app wrapper
+# at /tmp/Parakey-dev.app, signs it with the Developer ID + hardened
+# runtime + the production entitlements (so TCC carries over from
+# the Cask-installed Parakey, no manual permission re-grants), kills
+# any prior dev instance, and relaunches via `open`.
+#
+# Usage: ./dev-run.sh
+#
+# When you're done testing and want the production Cask Parakey
+# back, just `open /Applications/Parakey.app` — both binaries share
+# bundle id `com.local.parakey`, so the TCC entries are
+# interchangeable.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+APP="/tmp/Parakey-dev.app"
+
+say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+
+say "Building (debug)..."
+( cd "$HERE" && swift build 2>&1 | grep -vE "^/.*warning:|^[0-9]+ \|" | tail -3 )
+
+say "Wrapping in $APP..."
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$HERE/.build/debug/Parakey" "$APP/Contents/MacOS/Parakey"
+# Menubar PNGs into the canonical Contents/Resources/ slot. NSImage
+# (named:) on Bundle.main finds them under this exact path. We avoid
+# SwiftPM's auto-generated <Package>_<Target>.bundle because it lacks
+# an Info.plist, which makes codesign --deep error out.
+cp "$HERE/Resources/parakey-menubar.png"    "$APP/Contents/Resources/"
+cp "$HERE/Resources/parakey-menubar@2x.png" "$APP/Contents/Resources/"
+cat > "$APP/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>Parakey</string>
+    <key>CFBundleIdentifier</key><string>com.local.parakey</string>
+    <key>CFBundleName</key><string>Parakey</string>
+    <key>CFBundleShortVersionString</key><string>0.0.1-swiftdev</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>26.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Parakey records audio while you hold the dictation hotkey, then transcribes it locally on your Mac.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Parakey uses System Events to paste transcribed text at your cursor and to mute the system audio output during recording.</string>
+</dict>
+</plist>
+EOF
+
+say "Signing with Developer ID + hardened runtime..."
+CERT_HASH="$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk '/Developer ID Application:/ { print $2; exit }')"
+[[ -n "$CERT_HASH" ]] || { echo "no Developer ID cert in keychain" >&2; exit 1; }
+codesign --force --deep --sign "$CERT_HASH" \
+    --options runtime \
+    --entitlements "$REPO/entitlements.plist" \
+    --timestamp \
+    "$APP" >/dev/null 2>&1
+
+say "Stopping any prior dev instance..."
+pkill -f "Parakey-dev.app" 2>/dev/null || true
+# Also kill any Cask instance — same bundle id would clash on TCC + hotkey.
+pkill -f "/Applications/Parakey.app" 2>/dev/null || true
+sleep 0.5
+
+say "Launching..."
+open "$APP"
+sleep 1
+ps aux | grep -E "Parakey-dev.app|Parakey.app" | grep -v grep | awk '{print "  pid="$2, $11}'
+echo
+echo "  log: tail -f ~/Library/Logs/Parakey.log"
+echo "  stop: pkill -f Parakey-dev.app"

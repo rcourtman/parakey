@@ -24,6 +24,15 @@ let package = Package(
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ]
+            // No `resources:` here on purpose. SwiftPM bundles them as
+            // a `<Package>_<Target>.bundle` directory next to the
+            // executable, which `codesign --deep` won't accept as a
+            // signable component because it lacks Info.plist. Instead,
+            // the menubar PNGs are copied into Contents/Resources/ by
+            // dev-run.sh and ship-swift.sh — the canonical .app layout
+            // where Bundle.main finds them via the standard search
+            // path. Source PNGs live in swift/Resources/ at the repo
+            // root, NOT in the SwiftPM target, so SwiftPM never sees them.
         ),
     ]
 )
