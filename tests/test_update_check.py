@@ -18,6 +18,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from update_check import (
+    fetch_latest_release,
     fetch_latest_release_tag,
     find_brew,
     parse_semver,
@@ -164,6 +165,58 @@ class FetchLatestReleaseTagTests(unittest.TestCase):
         with patch("update_check.urllib.request.urlopen",
                    return_value=self._fake_urlopen(body)):
             self.assertIsNone(fetch_latest_release_tag())
+
+
+# ----------------------------------------------------------------------
+# fetch_latest_release — full release dict for "What's new" rendering
+# ----------------------------------------------------------------------
+
+class FetchLatestReleaseTests(unittest.TestCase):
+    def _fake_urlopen(self, payload: bytes):
+        class _Resp:
+            def __enter__(self_inner): return self_inner
+            def __exit__(self_inner, *exc): return False
+            def read(self_inner): return payload
+        return _Resp()
+
+    def test_returns_full_release_dict_on_happy_path(self):
+        body = (b'{"tag_name": "v0.1.7", "name": "v0.1.7", '
+                b'"body": "- Adds release notes\\n- Adds skip", '
+                b'"html_url": "https://example.invalid/r/1"}')
+        with patch("update_check.urllib.request.urlopen",
+                   return_value=self._fake_urlopen(body)):
+            release = fetch_latest_release()
+        self.assertIsInstance(release, dict)
+        self.assertEqual(release["tag_name"], "v0.1.7")
+        self.assertIn("Adds release notes", release["body"])
+        self.assertEqual(release["html_url"], "https://example.invalid/r/1")
+
+    def test_missing_tag_name_returns_none(self):
+        # Defensive: we count "no tag_name" as no release.
+        with patch("update_check.urllib.request.urlopen",
+                   return_value=self._fake_urlopen(b'{"body": "no tag"}')):
+            self.assertIsNone(fetch_latest_release())
+
+    def test_top_level_not_a_dict_returns_none(self):
+        # GitHub error responses are sometimes JSON arrays or strings —
+        # we should treat anything that isn't a dict as a failure.
+        with patch("update_check.urllib.request.urlopen",
+                   return_value=self._fake_urlopen(b'["not", "a", "dict"]')):
+            self.assertIsNone(fetch_latest_release())
+
+    def test_network_errors_return_none(self):
+        import urllib.error
+        for exc in (urllib.error.URLError("down"), OSError("dns")):
+            with patch("update_check.urllib.request.urlopen", side_effect=exc):
+                self.assertIsNone(fetch_latest_release())
+
+    def test_tag_wrapper_still_returns_only_tag_string(self):
+        # Backwards-compat: the existing tag-only wrapper must keep
+        # returning a string, not a dict.
+        body = b'{"tag_name": "v0.1.7", "body": "..."}'
+        with patch("update_check.urllib.request.urlopen",
+                   return_value=self._fake_urlopen(body)):
+            self.assertEqual(fetch_latest_release_tag(), "v0.1.7")
 
 
 if __name__ == "__main__":

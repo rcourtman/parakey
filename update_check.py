@@ -74,16 +74,17 @@ def find_brew() -> "str | None":
     return None
 
 
-def fetch_latest_release_tag(
+def fetch_latest_release(
     url: str = GITHUB_LATEST_RELEASE_URL,
     timeout: float = UPDATE_CHECK_HTTP_TIMEOUT_SECONDS,
-) -> "str | None":
+) -> "dict | None":
     """Single GET against the GitHub Releases ``/latest`` endpoint.
 
-    Returns the tag (``'v0.1.3'``) on success, ``None`` on any failure —
-    network errors, JSON parse failures, missing ``tag_name``, anything.
-    The caller is expected to silently retry on the next interval; no
-    error UI is appropriate for what's effectively a heartbeat.
+    Returns the parsed release JSON (a dict with ``tag_name``, ``body``,
+    ``html_url`` etc.) on success, or ``None`` on any failure — network
+    errors, JSON parse failures, anything. The caller is expected to
+    silently retry on the next interval; no error UI is appropriate for
+    what's effectively a heartbeat.
     """
     try:
         req = urllib.request.Request(
@@ -91,7 +92,21 @@ def fetch_latest_release_tag(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        tag = data.get("tag_name")
-        return str(tag) if tag else None
+        if not isinstance(data, dict) or not data.get("tag_name"):
+            return None
+        return data
     except (urllib.error.URLError, OSError, ValueError):
         return None
+
+
+def fetch_latest_release_tag(
+    url: str = GITHUB_LATEST_RELEASE_URL,
+    timeout: float = UPDATE_CHECK_HTTP_TIMEOUT_SECONDS,
+) -> "str | None":
+    """Backwards-compatible thin wrapper around :func:`fetch_latest_release`
+    that returns only the tag name. Kept for callers (and tests) that
+    don't need the full release body."""
+    release = fetch_latest_release(url=url, timeout=timeout)
+    if release is None:
+        return None
+    return str(release.get("tag_name") or "") or None

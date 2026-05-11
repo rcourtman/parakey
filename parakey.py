@@ -162,6 +162,7 @@ from update_check import (
     UPDATE_CHECK_HTTP_TIMEOUT_SECONDS,
     parse_semver,
     find_brew,
+    fetch_latest_release,
     fetch_latest_release_tag,
 )
 
@@ -247,6 +248,7 @@ class Settings:
     KEY_INPUT_DEVICE = "input_device"  # device name as string; "" = system default
     KEY_CHECK_FOR_UPDATES = "check_for_updates"  # bool; default True
     KEY_LAST_SEEN_VERSION = "last_seen_version"  # str; for upgrade detection
+    KEY_SKIPPED_VERSIONS = "skipped_versions"  # list[str]; versions the user opted out of
 
     def __init__(self) -> None:
         # Two paths depending on how we're running:
@@ -332,6 +334,22 @@ class Settings:
     @last_seen_version.setter
     def last_seen_version(self, value: str) -> None:
         self.defaults.setObject_forKey_(value or "", self.KEY_LAST_SEEN_VERSION)
+        self.defaults.synchronize()
+
+    @property
+    def skipped_versions(self) -> list[str]:
+        """Set of version strings (e.g. '0.1.7') the user has clicked
+        'Skip' on in the in-menu update submenu. The periodic checker
+        won't surface these versions again — when a *newer* version
+        than the latest skipped one is published, it will surface."""
+        raw = self.defaults.arrayForKey_(self.KEY_SKIPPED_VERSIONS)
+        if raw is None:
+            return []
+        return [str(v) for v in raw]
+
+    @skipped_versions.setter
+    def skipped_versions(self, value: list[str]) -> None:
+        self.defaults.setObject_forKey_(list(value), self.KEY_SKIPPED_VERSIONS)
         self.defaults.synchronize()
 
     @property
@@ -460,16 +478,35 @@ class Parakey(rumps.App):
         )
         self.update_check_item.state = 1 if self.check_for_updates else 0
 
-        # Lazily-inserted "Update to vX.Y.Z…" item at the top of the menu.
-        # Starts with a placeholder title so rumps uses that as its stable
-        # internal key (same trick as the permission rows); we rename it
-        # to the real version once a newer release is detected.
+        # Lazily-inserted "Update to vX.Y.Z" submenu at the top of the menu.
+        # Three children: "What's new" (shows release notes), "Update now"
+        # (the upgrade action), "Skip vX.Y.Z" (suppresses just this version
+        # without disabling the periodic check entirely). Starts with
+        # placeholder titles so rumps uses those as stable internal keys.
         self._update_item_key = "(update)"
-        self.update_item = rumps.MenuItem(
-            self._update_item_key, callback=self._on_update_clicked
+        self._update_whats_new_key = "(whats new)"
+        self._update_now_key = "(update now)"
+        self._update_skip_key = "(skip version)"
+        self.update_whats_new_item = rumps.MenuItem(
+            self._update_whats_new_key, callback=self._on_whats_new_clicked,
         )
+        self.update_now_item = rumps.MenuItem(
+            self._update_now_key, callback=self._on_update_clicked,
+        )
+        self.update_skip_item = rumps.MenuItem(
+            self._update_skip_key, callback=self._on_skip_version_clicked,
+        )
+        self.update_item = rumps.MenuItem(self._update_item_key)
+        self.update_item.add(self.update_whats_new_item)
+        self.update_item.add(self.update_now_item)
+        self.update_item.add(self.update_skip_item)
+
         self._update_item_inserted = False
-        self.update_available_tag: "str | None" = None  # 'v0.1.3' if newer found
+        self.update_available_tag: "str | None" = None     # 'v0.1.3' if newer found
+        # Full GitHub release JSON for the pending update — we keep this
+        # around so 'What's new' can render the release body without a
+        # second API call. None when no update is pending.
+        self.update_available_release: "dict | None" = None
 
         # Manual "Check for updates now" action — complements the
         # periodic background check controlled by the toggle above.
@@ -984,25 +1021,38 @@ class Parakey(rumps.App):
         item.set_callback(self._on_update_check_now_clicked)
 
     def _check_for_update_once(self) -> None:
-        tag = fetch_latest_release_tag()
-        if tag is None:
+        release = fetch_latest_release()
+        if release is None:
             return  # network blip, log already silent
+        tag = str(release.get("tag_name") or "")
         latest = parse_semver(tag)
         current = parse_semver(current_bundle_version())
         if not latest or latest <= current:
             return
-        # Newer release is published. Update the menu item title and
-        # insert it (if not already) at the top of the menu, right under
-        # the status row.
-        self.update_available_tag = tag.lstrip("vV")
-        self.update_item.title = f"Update to v{self.update_available_tag}…"
+        version = tag.lstrip("vV")
+        # Honour any "Skip this version" decision the user made earlier.
+        # Skipping a specific version means "don't bug me about THIS one";
+        # a newer one published later will still surface.
+        if version in self.settings.skipped_versions:
+            log(f"update available (v{version}) but user skipped — staying quiet")
+            return
+        # Newer release published. Update the submenu titles, store the
+        # full release JSON so 'What's new' can render the body without
+        # a second API call, and lazy-insert the submenu under the
+        # status row.
+        self.update_available_tag = version
+        self.update_available_release = release
+        self.update_item.title = f"Update to v{version}"
+        self.update_whats_new_item.title = "What's new…"
+        self.update_now_item.title = "Update now…"
+        self.update_skip_item.title = f"Skip v{version}"
         if not self._update_item_inserted:
             self.menu.insert_after(self._status_key, self.update_item)
             self._update_item_inserted = True
-        log(f"update available: {current_bundle_version()} → v{self.update_available_tag}")
+        log(f"update available: {current_bundle_version()} → v{version}")
 
     def _on_update_clicked(self, _sender) -> None:
-        """User clicked the in-menu update item. Brew-installed users get
+        """User clicked 'Update now…'. Brew-installed users get
         an automated upgrade + relaunch; source-installs and missing-brew
         cases fall back to opening the releases page in a browser."""
         if not self.update_available_tag:
@@ -1017,6 +1067,59 @@ class Parakey(rumps.App):
             subprocess.Popen(["open", GITHUB_RELEASES_PAGE])
             return
         self._spawn_update_helper(brew)
+
+    def _on_whats_new_clicked(self, _sender) -> None:
+        """Show the release-notes body in an NSAlert, with a button to
+        open the full GitHub release page in the browser. Body is
+        truncated at ~1500 chars so the dialog stays a reasonable size
+        for long changelogs — the 'Open in browser' button bridges to
+        the full thing."""
+        release = self.update_available_release
+        if release is None:
+            return
+        version = self.update_available_tag or ""
+        body = str(release.get("body") or "").strip()
+        if not body:
+            body = "(No release notes available for this version.)"
+        elif len(body) > 1500:
+            body = body[:1500].rstrip() + "\n\n…"
+        html_url = str(release.get("html_url") or GITHUB_RELEASES_PAGE)
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(f"Parakey v{version}")
+        alert.setInformativeText_(body)
+        alert.addButtonWithTitle_("Close")
+        alert.addButtonWithTitle_("Open in Browser")
+        icon_path = os.path.join(PROJECT_DIR, "icon", "Parakey.icns")
+        if os.path.exists(icon_path):
+            img = NSImage.alloc().initWithContentsOfFile_(icon_path)
+            if img is not None:
+                alert.setIcon_(img)
+        # NSAlertFirstButtonReturn = 1000, second button = 1001.
+        response = alert.runModal()
+        if response == 1001:
+            subprocess.Popen(["open", html_url])
+
+    def _on_skip_version_clicked(self, _sender) -> None:
+        """User clicked 'Skip vX.Y.Z'. Persist the choice so the
+        periodic check stops surfacing this version, and hide the
+        submenu immediately. A *newer* version published later will
+        still surface — skip is per-version, not per-app."""
+        version = self.update_available_tag
+        if not version:
+            return
+        current = self.settings.skipped_versions
+        if version not in current:
+            self.settings.skipped_versions = current + [version]
+            log(f"user skipped v{version}; suppressing until a newer release")
+        self.update_available_tag = None
+        self.update_available_release = None
+        if self._update_item_inserted:
+            try:
+                del self.menu[self._update_item_key]
+            except (KeyError, ValueError):
+                pass
+            self._update_item_inserted = False
 
     def _spawn_update_helper(self, brew_path: str) -> None:
         """Write a short shell script that waits for *this* process to die,
