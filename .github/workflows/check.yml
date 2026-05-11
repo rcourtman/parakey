@@ -19,6 +19,8 @@ jobs:
           python -m py_compile bench.py
           python -m py_compile bench_idle.py
           python -m py_compile warmup_gate.py
+          python -m py_compile inference_worker.py
+          python -m py_compile update_check.py
       - name: Unit tests
         # WarmupGate is deliberately import-light — no MLX, no AppKit —
         # so it runs on plain Linux runners.

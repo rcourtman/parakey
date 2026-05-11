@@ -28,9 +28,11 @@ No cloud, no subscription, no preferences window.
 - **Private** — audio is captured in memory, transcribed locally,
   and discarded. Nothing leaves your Mac during dictation. No
   telemetry, no accounts, transcripts are never written to disk.
-  (One-time exception: the first launch downloads the speech model
-  from Hugging Face. Hugging Face's own usage telemetry is disabled
-  by Parakey at startup via `HF_HUB_DISABLE_TELEMETRY=1`.)
+  (Two narrow exceptions: the first launch downloads the speech
+  model from Hugging Face — HF's own usage telemetry is disabled
+  via `HF_HUB_DISABLE_TELEMETRY=1` — and Parakey checks GitHub
+  every six hours for a newer release. Both are anonymous, the
+  second is toggleable in Settings.)
 - **Free** — MIT-licensed open source. No trials, no premium tier,
   no upsell.
 - **Minimal** — one menu-bar icon. No dock clutter by default. No
@@ -220,9 +222,9 @@ For a profile of where time is spent, run:
 ## Customise
 
 Most settings live in the menu's **Settings** submenu (described
-above). All four — **Hotkey**, **Trigger mode**, **Mute system audio
-while recording**, **Show Parakey in Dock** — persist across restarts
-via `NSUserDefaults`
+above). All — **Hotkey**, **Trigger mode**, **Mute system audio while
+recording**, **Show Parakey in Dock**, **Check for updates** — persist
+across restarts via `NSUserDefaults`
 (`~/Library/Preferences/com.local.parakey.plist`).
 
 Power users can also poke them via `defaults` directly:
@@ -233,6 +235,7 @@ defaults write com.local.parakey trigger_mode toggle
 defaults write com.local.parakey mute_while_recording -bool false
 defaults write com.local.parakey show_in_dock -bool true
 defaults write com.local.parakey input_device "AirPods Pro"  # exact device name
+defaults write com.local.parakey check_for_updates -bool false
 launchctl kickstart -k gui/$(id -u)/com.local.parakey
 ```
 
@@ -244,8 +247,27 @@ For deeper changes, constants live at the top of `parakey.py`:
 | `MUTE_AFTER_TINK_SECONDS` | `0.18` | Delay before muting so the start sound isn't clipped. |
 | `MAX_RECORDING_SECONDS` | `120` | Auto-release if the hotkey is held longer. |
 | `LOG_TRANSCRIPTS` | `False` | Set to `True` to log transcript content (debugging). |
+| `UPDATE_CHECK_INTERVAL_SECONDS` | `21600` (6 h) | How often the app polls GitHub for a newer release. |
 
 After editing, restart with `launchctl kickstart -k gui/$(id -u)/com.local.parakey`.
+
+## Updates
+
+Parakey checks GitHub for a newer release every 6 hours (and once,
+30 seconds after launch). When a newer version is published, a
+**"Update to vX.Y.Z…"** item appears at the top of the menu. Clicking
+it runs `brew upgrade --cask parakey` in a detached shell helper and
+re-opens the app once the upgrade finishes — no terminal needed.
+
+What the update check sends: one anonymous HTTPS `GET` to
+`api.github.com/repos/rcourtman/parakey/releases/latest`. No
+identifier, no telemetry, no user agent fingerprint beyond Python's
+default. Disable via **Settings → Check for updates** if you'd
+rather upgrade manually with `brew upgrade --cask parakey`.
+
+Source / non-brew installs: the update item still appears when a
+newer release exists, but clicking it just opens the GitHub releases
+page in your browser rather than touching your local checkout.
 
 ## Building a release (maintainers)
 

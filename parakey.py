@@ -15,7 +15,10 @@ import os
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 import collections
+import subprocess
 import sys
+import tempfile
+import textwrap
 import threading
 import time
 
@@ -147,6 +150,48 @@ HISTORY_SIZE = 5                # rolling in-memory transcript history (lost on 
 # again and the real transcribe is back to steady-state latency.
 COLD_THRESHOLD_SECONDS = 300    # treat as cold after 5 min of inactivity
 
+# --- Update check ----------------------------------------------------------
+# parse_semver, find_brew, fetch_latest_release_tag, and the constants live
+# in update_check.py so they can be unit-tested without dragging in MLX.
+# Only the AppKit-dependent helpers (bundle path, version string) stay here.
+from update_check import (
+    GITHUB_LATEST_RELEASE_URL,
+    GITHUB_RELEASES_PAGE,
+    UPDATE_CHECK_FIRST_DELAY_SECONDS,
+    UPDATE_CHECK_INTERVAL_SECONDS,
+    UPDATE_CHECK_HTTP_TIMEOUT_SECONDS,
+    parse_semver,
+    find_brew,
+    fetch_latest_release_tag,
+)
+
+
+def current_bundle_version() -> str:
+    """Read CFBundleShortVersionString out of the running bundle's Info.plist.
+    Returns '0.0.0' when we can't (e.g. running from source in dev), which
+    means update-check comparisons will treat us as ancient and always offer
+    the latest release — fine for testing, harmless in production."""
+    try:
+        info = NSBundle.mainBundle().infoDictionary()
+        v = info.objectForKey_("CFBundleShortVersionString")
+        if v is not None:
+            return str(v)
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+def is_brew_install() -> bool:
+    """True if we're running from the Cask-installed bundle at
+    /Applications/Parakey.app. Source / dev installs from elsewhere
+    can't be updated via brew so we fall back to opening the releases
+    page in the browser."""
+    try:
+        return str(NSBundle.mainBundle().bundlePath()) == "/Applications/Parakey.app"
+    except Exception:
+        return False
+
+
 V_KEYCODE = 0x09  # macOS virtual keycode for "v"
 
 # Pre-compiled in-process AppleScripts (avoid subprocess spawn).
@@ -200,6 +245,7 @@ class Settings:
     KEY_MUTE_WHILE_RECORDING = "mute_while_recording"
     KEY_SHOW_IN_DOCK = "show_in_dock"
     KEY_INPUT_DEVICE = "input_device"  # device name as string; "" = system default
+    KEY_CHECK_FOR_UPDATES = "check_for_updates"  # bool; default True
 
     def __init__(self) -> None:
         # Two paths depending on how we're running:
@@ -274,6 +320,18 @@ class Settings:
         self.defaults.setObject_forKey_(value or "", self.KEY_INPUT_DEVICE)
         self.defaults.synchronize()
 
+    @property
+    def check_for_updates(self) -> bool:
+        """Whether to poll GitHub for newer releases. Default on."""
+        if self.defaults.objectForKey_(self.KEY_CHECK_FOR_UPDATES) is None:
+            return True
+        return bool(self.defaults.boolForKey_(self.KEY_CHECK_FOR_UPDATES))
+
+    @check_for_updates.setter
+    def check_for_updates(self, value: bool) -> None:
+        self.defaults.setBool_forKey_(bool(value), self.KEY_CHECK_FOR_UPDATES)
+        self.defaults.synchronize()
+
 
 # ---- App --------------------------------------------------------------------
 
@@ -296,6 +354,7 @@ class Parakey(rumps.App):
         self.mute_while_recording = self.settings.mute_while_recording
         self.show_in_dock = self.settings.show_in_dock
         self.input_device = self.settings.input_device  # "" = system default
+        self.check_for_updates = self.settings.check_for_updates
 
         # Stable menu keys (rumps tracks items by their initial title;
         # the visible title can change later without affecting lookup).
@@ -375,6 +434,22 @@ class Parakey(rumps.App):
         )
         self.dock_item.state = 1 if self.show_in_dock else 0
 
+        self.update_check_item = rumps.MenuItem(
+            "Check for updates", callback=self.toggle_update_check_setting
+        )
+        self.update_check_item.state = 1 if self.check_for_updates else 0
+
+        # Lazily-inserted "Update to vX.Y.Z…" item at the top of the menu.
+        # Starts with a placeholder title so rumps uses that as its stable
+        # internal key (same trick as the permission rows); we rename it
+        # to the real version once a newer release is detected.
+        self._update_item_key = "(update)"
+        self.update_item = rumps.MenuItem(
+            self._update_item_key, callback=self._on_update_clicked
+        )
+        self._update_item_inserted = False
+        self.update_available_tag: "str | None" = None  # 'v0.1.3' if newer found
+
         # Microphone submenu — list every input-capable device sounddevice
         # finds, plus a "System default" entry at the top. Click to switch;
         # the audio stream restarts to pick up the new device.
@@ -404,6 +479,7 @@ class Parakey(rumps.App):
                     {"Microphone": self.mic_items},
                     self.mute_item,
                     self.dock_item,
+                    self.update_check_item,
                 ]
             },
             None,
@@ -504,6 +580,9 @@ class Parakey(rumps.App):
             hk_name, _, _ = hotkey_for_keycode(self.hotkey_keycode)
             verb = "hold" if self.trigger_mode == TRIGGER_HOLD else "press"
             log(f"ready — {verb} {hk_name} to dictate")
+            # Begin the GitHub Releases poll. Sleeps UPDATE_CHECK_FIRST_DELAY
+            # before its first check so it never competes with model load.
+            self._start_update_check_loop()
         except Exception as e:
             self.error = str(e)
             log(f"init failed: {e}")
@@ -779,6 +858,113 @@ class Parakey(rumps.App):
         sender.state = 1 if self.show_in_dock else 0
         self._apply_dock_visibility()
         log(f"show in dock: {self.show_in_dock}")
+
+    def toggle_update_check_setting(self, sender) -> None:
+        """Settings ▸ Check for updates. Disables the periodic GitHub poll
+        without removing the menu item if an update is already pending —
+        the user can still click through to apply or visit the releases
+        page."""
+        self.check_for_updates = not self.check_for_updates
+        self.settings.check_for_updates = self.check_for_updates
+        sender.state = 1 if self.check_for_updates else 0
+        log(f"check for updates: {self.check_for_updates}")
+
+    # ---- Update check ------------------------------------------------------
+
+    def _start_update_check_loop(self) -> None:
+        """Kick off the recurring background update poll. Called once from
+        _initialize after the app is ready; subsequent ticks are scheduled
+        by the loop itself."""
+        if not self.check_for_updates:
+            return
+        threading.Thread(
+            target=self._update_check_tick, daemon=True,
+            name="ParakeyUpdateCheck",
+        ).start()
+
+    def _update_check_tick(self) -> None:
+        """One check, then sleep until the next interval and repeat. Runs
+        on a dedicated daemon thread — quits silently when the toggle is
+        flipped off."""
+        time.sleep(UPDATE_CHECK_FIRST_DELAY_SECONDS)
+        while True:
+            if not self.check_for_updates:
+                return
+            try:
+                self._check_for_update_once()
+            except Exception as e:
+                log(f"update check raised: {e}")
+            time.sleep(UPDATE_CHECK_INTERVAL_SECONDS)
+
+    def _check_for_update_once(self) -> None:
+        tag = fetch_latest_release_tag()
+        if tag is None:
+            return  # network blip, log already silent
+        latest = parse_semver(tag)
+        current = parse_semver(current_bundle_version())
+        if not latest or latest <= current:
+            return
+        # Newer release is published. Update the menu item title and
+        # insert it (if not already) at the top of the menu, right under
+        # the status row.
+        self.update_available_tag = tag.lstrip("vV")
+        self.update_item.title = f"Update to v{self.update_available_tag}…"
+        if not self._update_item_inserted:
+            self.menu.insert_after(self._status_key, self.update_item)
+            self._update_item_inserted = True
+        log(f"update available: {current_bundle_version()} → v{self.update_available_tag}")
+
+    def _on_update_clicked(self, _sender) -> None:
+        """User clicked the in-menu update item. Brew-installed users get
+        an automated upgrade + relaunch; source-installs and missing-brew
+        cases fall back to opening the releases page in a browser."""
+        if not self.update_available_tag:
+            return
+        if not is_brew_install():
+            log("update click: not a brew install, opening releases page")
+            subprocess.Popen(["open", GITHUB_RELEASES_PAGE])
+            return
+        brew = find_brew()
+        if brew is None:
+            log("update click: brew not found in PATH, opening releases page")
+            subprocess.Popen(["open", GITHUB_RELEASES_PAGE])
+            return
+        self._spawn_update_helper(brew)
+
+    def _spawn_update_helper(self, brew_path: str) -> None:
+        """Write a short shell script that waits for *this* process to die,
+        runs ``brew upgrade --cask parakey``, then re-opens the app. We
+        spawn it detached and ``rumps.quit_application()`` so it can
+        replace the bundle without fighting an open .app."""
+        pid = os.getpid()
+        app_path = "/Applications/Parakey.app"
+        helper = textwrap.dedent(f"""\
+            #!/bin/bash
+            # Generated by Parakey at update time. Safe to delete after run.
+            set -u
+            # Wait for the running Parakey to exit (avoids 'app is open' clash).
+            for _ in $(seq 1 60); do
+                if ! kill -0 {pid} 2>/dev/null; then break; fi
+                sleep 0.5
+            done
+            # Run the brew upgrade. If it fails (e.g. tap unreachable),
+            # surface the releases page so the user has a fallback.
+            if ! "{brew_path}" upgrade --cask parakey >/tmp/parakey-update.log 2>&1; then
+                /usr/bin/open "{GITHUB_RELEASES_PAGE}"
+                exit 1
+            fi
+            # Relaunch.
+            /usr/bin/open "{app_path}"
+        """)
+        fd, path = tempfile.mkstemp(prefix="parakey-update-", suffix=".sh")
+        os.close(fd)
+        with open(path, "w") as f:
+            f.write(helper)
+        os.chmod(path, 0o755)
+        subprocess.Popen([path], start_new_session=True)
+        log(f"spawned update helper: {path}; quitting for upgrade")
+        # Give the helper a beat to start polling our pid, then exit cleanly.
+        threading.Timer(0.5, rumps.quit_application).start()
 
     def _apply_dock_visibility(self) -> None:
         """Switch between Regular (dock visible) and Accessory (menu-bar only)."""

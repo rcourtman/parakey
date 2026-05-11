@@ -21,28 +21,45 @@ Key files:
 
 | Path | Purpose |
 |---|---|
-| `parakey.py` | The whole app. ~1000 lines, single class `Parakey(rumps.App)`. |
-| `bench.py` | Profiling script for the transcription pipeline. |
+| `parakey.py` | The app shell — menu, audio capture, hotkey, history, settings. |
+| `inference_worker.py` | The single dedicated thread that owns the MLX model and runs every `generate()`. MLX (0.31.2+) requires load + use on the same thread; this enforces that and lets warmups run in parallel with the user speaking. |
+| `warmup_gate.py` | Cold-after-idle state machine — `is_cold()`, `try_begin_warmup()`, `transcribe()`. Pure Python; unit-testable. |
+| `update_check.py` | Pure helpers for the in-app updater: `parse_semver`, `find_brew`, `fetch_latest_release_tag`. Imports stdlib only so it runs on Linux CI. |
+| `bench.py` | Steady-state transcription pipeline profile. |
+| `bench_idle.py` | Cold-vs-warm + parallel-warmup-during-speak validation. Apple Silicon only. |
+| `tests/` | `unittest` suites for `WarmupGate`, `InferenceWorker`, `update_check`. ~38 tests, run on Linux CI. |
 | `Parakey.spec` | PyInstaller config for the bundled `.app`. |
 | `entitlements.plist` | Hardened-runtime entitlements (JIT, library validation, microphone). |
 | `release.sh` | Build → sign → notarise → zip pipeline. |
+| `ship.sh` | One-command end-to-end release: version bump, build, tag, push, GitHub release, Homebrew Cask bump. |
 | `install.sh` | Contributor dev install (venv + LaunchAgent + signed shell-launcher bundle). |
-| `icon/` | SVG sources + generated `.icns` and menu-bar PNGs (see `make-icons.sh`). |
+| `icon/` | SVG sources (`hero.svg`, `latency.svg`, `workflow.svg`, `menu-mockup.svg`, `parakey.svg`) + generated `.icns` and menu-bar PNGs. |
 | `templates/` | Skeletons used by `install.sh` to generate the dev `Parakey.app` and LaunchAgent plist. |
 
 ## Build & test
 
-There are no unit tests. Validation is:
+Validation order — what `ship.sh` runs, and what you should run by hand
+before pushing anything load-bearing:
 
 ```sh
 # Type/syntax check
 .venv/bin/python -c "import py_compile; py_compile.compile('parakey.py', doraise=True)"
 
-# Performance regression check
+# Unit tests (Linux-CI-friendly; no MLX needed)
+.venv/bin/python -m unittest discover -s tests
+
+# Steady-state transcription pipeline profile
 .venv/bin/python bench.py
+
+# Cold-vs-warm + parallel-warmup-during-speak (Apple Silicon required)
+.venv/bin/python bench_idle.py
 
 # Production bundle build (signs + notarises + zips)
 ./release.sh
+
+# Or full end-to-end ship (version bump + build + tag + GitHub release + Cask):
+./ship.sh --dry-run   # to validate the pipeline without pushing
+./ship.sh             # actually ship
 
 # Dev install (uses Homebrew Python, fast iteration)
 ./install.sh
@@ -54,8 +71,28 @@ launchctl kickstart -k gui/$(id -u)/com.local.parakey
 After the dev install is set up, you don't rebuild for code edits —
 just edit `parakey.py` and `kickstart` to pick up changes.
 
-CI runs Python + shell + plist syntax checks on push/PR (see
-`.github/workflows/check.yml`). No macOS-specific tests run in CI.
+CI runs Python + shell + plist syntax checks AND the unit-test suite
+on push/PR (see `.github/workflows/check.yml`). GPU-touching benches
+must be run manually on Apple Silicon — they can't run in CI.
+
+## Threading model — important
+
+MLX (≥ 0.31.2) is strict about thread affinity: a model loaded on one
+thread cannot be safely used from another. Calling `model.generate()`
+from a thread that didn't load the model raises
+`RuntimeError: There is no Stream(gpu, 0) in current thread` —
+shape-dependently, so you might not catch it in casual testing.
+
+Therefore: **all `model.generate()` calls go through
+`InferenceWorker`**, which owns the model on its own thread plus a
+`mx.new_thread_local_stream(mx.gpu)`. New inference paths (e.g. a
+streaming mode, a model swap, batch transcription) must use the
+worker's queue, never call `model.generate()` directly from another
+thread.
+
+This isn't a Parakey-specific choice — Apple's own `mlx-lm` server
+hit the same wall and landed the same fix in
+[ml-explore/mlx-lm#1090](https://github.com/ml-explore/mlx-lm/pull/1090).
 
 ## Conventions
 

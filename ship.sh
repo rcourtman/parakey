@@ -125,6 +125,8 @@ say "Compile sanity check"
 "$PROJECT_DIR/.venv/bin/python" -m py_compile \
     "$PROJECT_DIR/parakey.py" \
     "$PROJECT_DIR/warmup_gate.py" \
+    "$PROJECT_DIR/inference_worker.py" \
+    "$PROJECT_DIR/update_check.py" \
     "$PROJECT_DIR/bench.py" \
     "$PROJECT_DIR/bench_idle.py" \
     || die "py_compile failed"
