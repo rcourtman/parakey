@@ -2,20 +2,35 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>Parakey</string>
-    <key>CFBundleIdentifier</key><string>com.local.parakey</string>
-    <key>CFBundleName</key><string>Parakey</string>
-    <key>CFBundleDisplayName</key><string>Parakey</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleIconFile</key><string>Parakey</string>
-    <key>LSMinimumSystemVersion</key><string>26.0</string>
-    <key>LSUIElement</key><true/>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>MIT licensed. github.com/rcourtman/parakey</string>
-    <key>NSMicrophoneUsageDescription</key><string>Parakey records audio while you hold the dictation hotkey, then transcribes it locally on your Mac.</string>
-    <key>NSAppleEventsUsageDescription</key><string>Parakey uses System Events to paste transcribed text at your cursor and to mute the system audio output during recording.</string>
+	<key>CFBundleDisplayName</key>
+	<string>Parakey</string>
+	<key>CFBundleExecutable</key>
+	<string>Parakey</string>
+	<key>CFBundleIconFile</key>
+	<string>Parakey</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.local.parakey</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Parakey</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Parakey uses System Events to paste transcribed text at your cursor and to mute the system audio output during recording.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT licensed. github.com/rcourtman/parakey</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Parakey records audio while you hold the dictation hotkey, then transcribes it locally on your Mac.</string>
 </dict>
 </plist>
