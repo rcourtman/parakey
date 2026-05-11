@@ -27,12 +27,20 @@ say "Building (debug)..."
 say "Wrapping in $APP..."
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$HERE/.build/debug/Parakey" "$APP/Contents/MacOS/Parakey"
+# Single canonical Info.plist (swift/Info.plist) — same file
+# ship-swift.sh uses, so dev and release builds advertise the same
+# bundle id / minimum macOS / usage descriptions.
+cp "$HERE/Info.plist" "$APP/Contents/Info.plist"
 # Menubar PNGs into the canonical Contents/Resources/ slot. NSImage
 # (named:) on Bundle.main finds them under this exact path. We avoid
 # SwiftPM's auto-generated <Package>_<Target>.bundle because it lacks
 # an Info.plist, which makes codesign --deep error out.
 cp "$HERE/Resources/parakey-menubar.png"    "$APP/Contents/Resources/"
 cp "$HERE/Resources/parakey-menubar@2x.png" "$APP/Contents/Resources/"
+# .icns for the About dialog + dock (when "Show in Dock" is on).
+if [[ -f "$REPO/icon/Parakey.icns" ]]; then
+    cp "$REPO/icon/Parakey.icns" "$APP/Contents/Resources/Parakey.icns"
+fi
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
