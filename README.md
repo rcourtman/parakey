@@ -259,8 +259,8 @@ For latency / accuracy numbers and the test methodology, see
 
 Most settings live in the menu's **Settings** submenu (described
 above). All — **Hotkey**, **Trigger mode**, **Mute system audio while
-recording**, **Show Parakey in Dock**, **Check for updates** — persist
-across restarts via `NSUserDefaults`
+recording**, **Show Parakey in Dock**, **Check for updates
+automatically** — persist across restarts via `NSUserDefaults`
 (`~/Library/Preferences/com.local.parakey.plist`).
 
 Power users can also poke them via `defaults` directly:
@@ -303,9 +303,9 @@ an **"Update to vX.Y.Z"** submenu appears at the top of the menu:
 - **Skip vX.Y.Z** — suppresses *just this version* without disabling
   the periodic check. A newer release published later still surfaces.
 
-You can also force a check from **Settings → Check for Updates Now…**
-and disable the periodic check entirely via **Settings → Check for
-updates**.
+You can also force an immediate check via **Settings → Check for
+updates now…**, and disable the periodic poll entirely via **Settings
+→ Check for updates automatically**.
 
 What the update check sends: one anonymous HTTPS `GET` to
 `api.github.com/repos/rcourtman/parakey/releases/latest`. No

@@ -229,7 +229,7 @@ documented here:
    `UPDATE_CHECK_INTERVAL_SECONDS` (6 h), first call 30 s after
    reaching "ready". Anonymous `GET`, no auth header, no identifier
    beyond Swift's default URLSession `User-Agent`. User can disable
-   via Settings → Check for updates.
+   via Settings → Check for updates automatically.
 3. **Update apply** — When the user clicks the in-menu update item
    on a brew install: shells out to `brew upgrade --cask parakey`,
    which then fetches

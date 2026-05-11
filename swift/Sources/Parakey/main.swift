@@ -1151,16 +1151,18 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         dock.state = settings.showInDock ? .on : .off
         sub.addItem(dock)
 
-        // Check for updates toggle.
-        let checkToggle = NSMenuItem(title: "Check for updates",
+        // Periodic-check toggle. The label ends in "automatically" so it
+        // reads distinctly from the "Check for updates now…" action below
+        // — matches the macOS convention (e.g. Mail, Software Update).
+        let checkToggle = NSMenuItem(title: "Check for updates automatically",
                                      action: #selector(toggleCheckForUpdates(_:)),
                                      keyEquivalent: "")
         checkToggle.target = self
         checkToggle.state = settings.checkForUpdates ? .on : .off
         sub.addItem(checkToggle)
 
-        // Check for updates now action.
-        let checkNow = NSMenuItem(title: "Check for Updates Now…",
+        // Immediate-check action.
+        let checkNow = NSMenuItem(title: "Check for updates now…",
                                   action: #selector(checkForUpdatesNowClicked(_:)),
                                   keyEquivalent: "")
         checkNow.target = self
@@ -1257,7 +1259,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    /// Reference to the currently-shown 'Check for Updates Now…' menu
+    /// Reference to the currently-shown 'Check for updates now…' menu
     /// item so we can update its title from the network result.
     /// Settled here because Swift 6 strict concurrency forbids
     /// sending an NSMenuItem across the actor boundary inside a
@@ -1279,7 +1281,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             item.title = hadUpdate ? "✓ Update available" : "✓ You're up to date"
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
                 guard let self, let item = self.checkNowItem else { return }
-                item.title = "Check for Updates Now…"
+                item.title = "Check for updates now…"
                 item.action = #selector(self.checkForUpdatesNowClicked(_:))
             }
         }
