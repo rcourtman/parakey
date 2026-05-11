@@ -8,6 +8,22 @@
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+    <!--
+      Two microphone entitlements. The right one for our distribution
+      mode (Developer ID + Hardened Runtime, NO App Sandbox) is
+      audio-input — that's the key macOS Tahoe 26 checks before letting
+      a hardened-runtime app appear in System Settings → Privacy &
+      Security → Microphone. Older macOS versions accepted the
+      sandbox-flavoured `device.microphone` key as a fallback, but
+      Tahoe stopped tolerating that mismatch: the prompt silently
+      never fires and the app never gets a TCC entry.
+
+      We list both. `device.microphone` stays for belt-and-braces
+      compatibility with older macOS that still wants to see it, and
+      adding it is harmless on Tahoe.
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
     <key>com.apple.security.device.microphone</key>
     <true/>
 </dict>
