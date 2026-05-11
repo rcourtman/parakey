@@ -90,6 +90,30 @@ codesign --force --deep --sign "$CERT" \
 codesign --verify --deep --strict "$APP" >/dev/null
 say "Signature OK ($(codesign --display --verbose=2 "$APP" 2>&1 | awk -F= '/^Authority/ {print $2; exit}'))"
 
+# --- 2.5 Entitlement assertion --------------------------------------------
+# A missing or wrong entitlement is silent at the bundle level — Gatekeeper
+# accepts the signed app, notarisation passes, the user just can't actually
+# use the feature. macOS Tahoe 26 made this worse by tightening which
+# microphone entitlement key it honours. Fail loudly here, before we spend
+# 1–3 minutes notarising a broken build.
+say "Asserting required entitlements are present in the signed bundle"
+EMBEDDED_ENTITLEMENTS="$(codesign -d --entitlements - "$APP" 2>&1)"
+REQUIRED_ENTITLEMENTS=(
+    "com.apple.security.cs.allow-jit"
+    "com.apple.security.cs.allow-unsigned-executable-memory"
+    "com.apple.security.cs.disable-library-validation"
+    "com.apple.security.device.audio-input"   # Tahoe 26+: hardened-runtime microphone
+    "com.apple.security.device.microphone"    # legacy compatibility
+)
+for key in "${REQUIRED_ENTITLEMENTS[@]}"; do
+    if ! grep -q "$key" <<<"$EMBEDDED_ENTITLEMENTS"; then
+        warn "Embedded entitlements:"
+        printf '%s\n' "$EMBEDDED_ENTITLEMENTS" >&2
+        die "missing required entitlement: $key — refusing to ship a build that won't work"
+    fi
+done
+say "All required entitlements present"
+
 # --- 3. Notarise (optional) -------------------------------------------------
 if xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
     say "Notarising (this typically takes 1–3 minutes)"
