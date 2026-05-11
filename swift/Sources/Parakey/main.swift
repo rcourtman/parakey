@@ -209,13 +209,25 @@ final class HotkeyListener {
 //
 // AVAudioEngine tap on the input node, downmix to mono / 16 kHz /
 // Float32 if needed, append to a buffer while recording.
+//
+// Deliberately NOT @MainActor. AVAudioEngine's installTap delivers
+// callbacks on an audio worker thread. Under Swift 6 strict
+// concurrency, calling a @MainActor method from that thread triggers
+// dispatch_assert_queue_fail (SIGTRAP) and kills the process. We
+// instead guard mutable state with NSLock and let the tap callback
+// run wherever AVFoundation calls it.
 
-@MainActor
-final class AudioCapture {
+final class AudioCapture: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
+    private let lock = NSLock()
     private var samples: [Float] = []
-    private(set) var isRunning = false
+    private var _isRunning = false
+
+    var isRunning: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _isRunning
+    }
 
     func startEngine() throws {
         let input = engine.inputNode
@@ -231,6 +243,11 @@ final class AudioCapture {
         converter = AVAudioConverter(from: inputFormat, to: targetFormat)
         log("AudioCapture: input \(inputFormat.sampleRate) Hz \(inputFormat.channelCount)ch → \(targetFormat.sampleRate) Hz mono")
 
+        // Capture targetFormat by value into the closure. self is
+        // weak so the engine doesn't keep AudioCapture alive past
+        // its owner. The closure runs on AVFoundation's audio
+        // thread — handleTap is non-isolated and uses NSLock for
+        // any shared-state access.
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             self?.handleTap(buffer: buffer, target: targetFormat)
         }
@@ -240,41 +257,59 @@ final class AudioCapture {
     }
 
     func beginRecording() {
+        lock.lock(); defer { lock.unlock() }
         samples.removeAll(keepingCapacity: true)
-        isRunning = true
+        _isRunning = true
     }
 
-    /// Stops the recording state and returns the captured samples.
+    /// Stops recording and returns the captured samples.
     func endRecording() -> [Float] {
-        isRunning = false
+        lock.lock(); defer { lock.unlock() }
+        _isRunning = false
         let captured = samples
         samples.removeAll(keepingCapacity: true)
         return captured
     }
 
     private func handleTap(buffer: AVAudioPCMBuffer, target: AVAudioFormat) {
-        guard isRunning else { return }
-        guard let converter else { return }
+        // Snapshot the running flag under lock; bail fast if we're
+        // not recording so we don't pay conversion cost for nothing.
+        lock.lock()
+        let running = _isRunning
+        lock.unlock()
+        guard running, let converter else { return }
 
-        // Compute output capacity for one-shot conversion.
         let ratio = target.sampleRate / buffer.format.sampleRate
         let outCap = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 1024)
         guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCap) else { return }
 
+        // .noDataNow vs .endOfStream: this is reusing the same
+        // AVAudioConverter across every tap callback (~50 Hz). If we
+        // signal .endOfStream after the buffer, the converter goes
+        // into a terminal state and produces 0 samples on every
+        // subsequent call — exactly the "first capture was 0.10s,
+        // every press after that was 0.00s" bug we saw before this
+        // fix. .noDataNow means "I'm out of input *for this call*,
+        // but the stream continues" and leaves the converter usable.
         var fed = false
         var error: NSError?
         let status = converter.convert(to: out, error: &error) { _, outStatus in
-            if fed { outStatus.pointee = .endOfStream; return nil }
+            if fed { outStatus.pointee = .noDataNow; return nil }
             fed = true; outStatus.pointee = .haveData; return buffer
         }
-        if status == .error { log("AudioCapture: convert error: \(error?.localizedDescription ?? "?")"); return }
+        if status == .error {
+            log("AudioCapture: convert error: \(error?.localizedDescription ?? "?")")
+            return
+        }
         guard let ch = out.floatChannelData?[0] else { return }
         let arr = Array(UnsafeBufferPointer(start: ch, count: Int(out.frameLength)))
-        // Hop off the audio thread for the append; samples is owned
-        // by the main actor.
-        Task { @MainActor in
-            self.samples.append(contentsOf: arr)
-        }
+
+        // Re-check running under lock — endRecording() might have
+        // fired during conversion and we don't want straggler frames
+        // appearing in the next clip.
+        lock.lock()
+        if _isRunning { samples.append(contentsOf: arr) }
+        lock.unlock()
     }
 }
 
