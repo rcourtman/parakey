@@ -25,6 +25,18 @@
           linear-gradient(180deg, #ece3d2 0%, #d9cebb 55%, #c2b59c 100%);
       }
 
+      /* Virtual camera: the .scene wrapper is what the camera zooms /
+         pans. Title card and end caption live outside it so they stay
+         fixed to the viewport. Transform-origin (0,0) means the JS
+         can compute translate + scale directly without worrying about
+         CSS's center-relative default. */
+      .scene {
+        position: absolute;
+        inset: 0;
+        transform-origin: 0 0;
+        will-change: transform;
+      }
+
       /* ---------- Beat 1: title card overlay.
          Full-screen cover that fades in at the start, holds, then
          fades out to reveal the workflow scene beneath. ---------- */
@@ -316,6 +328,7 @@
       <div class="title-tag">Local push-to-talk dictation for Apple Silicon Macs</div>
     </div>
 
+    <div class="scene" id="scene">
     <div class="menubar">
       <div class="group">
         <span class="app">TextEdit</span>
@@ -378,6 +391,7 @@
       </div>
       <div class="narration" id="narration">Hold Right Option</div>
     </div>
+    </div><!-- /.scene -->
 
     <div class="caption" id="caption">
       <div class="main" id="captionMain" style="opacity:0; transform: translateY(14px);">Local speech&#8209;to&#8209;text on the <span class="accent">Apple&nbsp;Neural&nbsp;Engine</span>.</div>
@@ -423,6 +437,7 @@
         end:           15.50,
       };
 
+      const scene           = document.getElementById('scene');
       const titleCard       = document.getElementById('titleCard');
       const docText         = document.getElementById('docText');
       const docLine         = document.querySelector('.doc-line');
@@ -439,6 +454,66 @@
 
       docLine.style.transformOrigin = '0% 0%';
 
+      // ---- Virtual camera --------------------------------------------
+      // Three positions. The camera holds wide for context, zooms in
+      // for the two beats the eye would otherwise miss (the menubar
+      // icon flipping red, and the text snapping into the editor),
+      // and pulls back to wide for the workflow + end card.
+      const CAMERA = {
+        full:    { s: 1.00, cx: 960,  cy: 540 },
+        menubar: { s: 1.40, cx: 1700, cy: 240 },
+        editor:  { s: 1.20, cx: 960,  cy: 360 },
+      };
+
+      // Keyframes — t, position. Between keyframes, ease-in-out
+      // between the two surrounding positions. Arrivals are timed to
+      // land ~0.1 s before each beat so the eye is already on the
+      // right spot when the beat fires.
+      const CAMERA_TL = [
+        { t: 0.00,  pos: 'full' },
+        { t: 2.30,  pos: 'full' },     // hold wide after title fades out
+        { t: 2.65,  pos: 'menubar' },  // arrive at menubar just before keydown (2.70)
+        { t: 3.90,  pos: 'menubar' },  // hold: red icon + ripples
+        { t: 4.40,  pos: 'full' },     // pull back to wide
+        { t: 7.50,  pos: 'full' },     // hold wide through recording
+        { t: 7.85,  pos: 'editor' },   // arrive at editor right before paste (7.794)
+        { t: 8.60,  pos: 'editor' },   // hold: read the pasted text
+        { t: 9.15,  pos: 'full' },     // pull back to wide for end card
+        { t: 15.50, pos: 'full' },
+      ];
+
+      function getCamera(t) {
+        let prev = CAMERA_TL[0];
+        let next = CAMERA_TL[CAMERA_TL.length - 1];
+        for (let i = 0; i < CAMERA_TL.length - 1; i++) {
+          if (t >= CAMERA_TL[i].t && t < CAMERA_TL[i + 1].t) {
+            prev = CAMERA_TL[i];
+            next = CAMERA_TL[i + 1];
+            break;
+          }
+        }
+        const range = next.t - prev.t;
+        const p = range === 0 ? 1 : (t - prev.t) / range;
+        const eased = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+        const a = CAMERA[prev.pos];
+        const b = CAMERA[next.pos];
+        return {
+          s:  a.s  + (b.s  - a.s)  * eased,
+          cx: a.cx + (b.cx - a.cx) * eased,
+          cy: a.cy + (b.cy - a.cy) * eased,
+        };
+      }
+
+      function setCamera(t) {
+        const cam = getCamera(t);
+        // translate(tx, ty) scale(s) with transform-origin 0 0 maps
+        // scene point (cx, cy) to viewport centre (960, 540).
+        const tx = 960 - cam.cx * cam.s;
+        const ty = 540 - cam.cy * cam.s;
+        scene.style.transform =
+          'translate(' + tx + 'px, ' + ty + 'px) scale(' + cam.s + ')';
+      }
+
       function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
       function easeOutQuad(p)   { return 1 - Math.pow(1 - clamp(p, 0, 1), 2); }
       function easeOutCubic(p)  { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
@@ -451,6 +526,9 @@
       }
 
       function renderAt(t) {
+        // ----- Virtual camera ------------------------------------
+        setCamera(t);
+
         // ----- Beat 1: title card --------------------------------
         let titleOpacity;
         if (t < TL.titleFullyIn) {
