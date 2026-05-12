@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parakey Benchmarks - Apple Neural Engine Dictation Latency</title>
+    <meta name="description" content="Parakey benchmark results comparing FluidAudio Parakeet TDT v3 on the Apple Neural Engine against the prior GPU path on the same audio clips.">
+    <link rel="canonical" href="https://rcourtman.github.io/parakey/benchmarks.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="./"><span class="brand-mark">P</span><span>Parakey</span></a>
+        <div class="nav-links">
+          <a href="install.html">Install</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="benchmarks.html">Benchmarks</a>
+          <a href="faq.html">FAQ</a>
+          <a href="compare/">Compare</a>
+          <a href="https://github.com/rcourtman/parakey">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap page-title">
+        <h1>Benchmarks</h1>
+        <p>Parakey keeps its latency claims tied to a reproducible benchmark in <code>experiments/swift-bench/</code>.</p>
+      </div>
+
+      <section>
+        <div class="wrap">
+          <h2>Environment</h2>
+          <div class="facts">
+            <div class="fact"><strong>Machine</strong><span>Mac mini M4, 10 cores, 16 GB.</span></div>
+            <div class="fact"><strong>OS and toolchain</strong><span>macOS 26.4.1, Xcode/Swift 6.3.</span></div>
+            <div class="fact"><strong>Trials</strong><span>Five per backend per clip. First inference after model load excluded from p50.</span></div>
+            <div class="fact"><strong>Audio</strong><span>Generated 16 kHz mono Float32 WAV clips, all tested against the same backends.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>Results</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Clip</th>
+                <th>Duration</th>
+                <th>FluidAudio on ANE</th>
+                <th>Prior GPU path</th>
+                <th>Ratio</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>short-clean</code></td>
+                <td>2.50 s</td>
+                <td><strong>92.4 ms</strong></td>
+                <td>145.4 ms</td>
+                <td>1.57x</td>
+              </tr>
+              <tr>
+                <td><code>medium-clean</code></td>
+                <td>3.99 s</td>
+                <td><strong>96.1 ms</strong></td>
+                <td>176.3 ms</td>
+                <td>1.83x</td>
+              </tr>
+              <tr>
+                <td><code>disfluent</code></td>
+                <td>5.31 s</td>
+                <td><strong>94.1 ms</strong></td>
+                <td>185.9 ms</td>
+                <td>1.97x</td>
+              </tr>
+              <tr>
+                <td><code>longer-technical</code></td>
+                <td>9.49 s</td>
+                <td><strong>152.4 ms</strong></td>
+                <td>300.9 ms</td>
+                <td>1.97x</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>Machine-readable results: <a href="benchmarks/results.json">benchmarks/results.json</a>. Reproduction docs: <a href="https://github.com/rcourtman/parakey/tree/main/experiments/swift-bench">experiments/swift-bench</a>.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>Interpretation</h2>
+          <div class="grid">
+            <article class="card">
+              <h3>Latency</h3>
+              <p>The ANE path is consistently faster than the prior GPU path on these clips, with p50 results around 92-152 ms.</p>
+            </article>
+            <article class="card">
+              <h3>Accuracy</h3>
+              <p>Both backends produced essentially identical transcripts on the synthetic test audio, including the same TTS artifacts.</p>
+            </article>
+            <article class="card">
+              <h3>Power</h3>
+              <p>The benchmark measures compute latency, not energy. Power measurement remains a future bench improvement.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>Benchmark docs for Parakey.</span>
+        <span><a href="./">Home</a> · <a href="privacy.html">Privacy</a> · <a href="compare/">Compare</a></span>
+      </div>
+    </footer>
+  </body>
+</html>

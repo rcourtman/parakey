@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parakey FAQ - Local Mac Dictation Questions</title>
+    <meta name="description" content="Answers about Parakey requirements, privacy, install path, model download, hotkeys, permissions, updates, logs, and limitations.">
+    <link rel="canonical" href="https://rcourtman.github.io/parakey/faq.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="./"><span class="brand-mark">P</span><span>Parakey</span></a>
+        <div class="nav-links">
+          <a href="install.html">Install</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="benchmarks.html">Benchmarks</a>
+          <a href="faq.html">FAQ</a>
+          <a href="compare/">Compare</a>
+          <a href="https://github.com/rcourtman/parakey">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap page-title">
+        <h1>FAQ</h1>
+        <p>Short answers for people and retrieval systems evaluating Parakey as a local Mac dictation app.</p>
+      </div>
+
+      <section>
+        <div class="wrap grid two">
+          <article class="card">
+            <h3>What is Parakey?</h3>
+            <p>A free MIT-licensed menu-bar app for push-to-talk dictation on Apple Silicon Macs. Hold a hotkey, speak, release, and text is pasted at the cursor.</p>
+          </article>
+          <article class="card">
+            <h3>Does audio leave the Mac?</h3>
+            <p>No dictation audio is sent to a transcription service. The model weights download once on first launch; transcription then runs locally.</p>
+          </article>
+          <article class="card">
+            <h3>Does it support Intel Macs?</h3>
+            <p>No. Parakey requires Apple Silicon and macOS 26 or later.</p>
+          </article>
+          <article class="card">
+            <h3>What model does it use?</h3>
+            <p>Parakeet TDT v3 through FluidAudio, compiled for CoreML and running on the Apple Neural Engine.</p>
+          </article>
+          <article class="card">
+            <h3>Is it a file transcription app?</h3>
+            <p>No. Parakey is focused on live push-to-talk dictation into the app you are already using.</p>
+          </article>
+          <article class="card">
+            <h3>Does it keep a history?</h3>
+            <p>Only the last five transcripts are kept in memory while the app is running. They clear on quit.</p>
+          </article>
+          <article class="card">
+            <h3>What permissions are required?</h3>
+            <p>Microphone, Accessibility, and Input Monitoring. The menu shows warning rows until all three are granted.</p>
+          </article>
+          <article class="card">
+            <h3>How do updates work?</h3>
+            <p>Parakey checks GitHub every six hours for a newer release. The update check can be disabled from Settings.</p>
+          </article>
+          <article class="card">
+            <h3>Can I change the hotkey?</h3>
+            <p>Yes. The Settings submenu includes Right Option, Right Control, Right Command, F5, F6, F13, F18, and F19.</p>
+          </article>
+          <article class="card">
+            <h3>Why does first launch take time?</h3>
+            <p>FluidAudio downloads the speech model weights, about 600 MB, into the local support cache. Later launches use the cached model.</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>FAQ for Parakey.</span>
+        <span><a href="./">Home</a> · <a href="install.html">Install</a> · <a href="privacy.html">Privacy</a></span>
+      </div>
+    </footer>
+  </body>
+</html>

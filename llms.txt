@@ -1,0 +1,16 @@
+# Parakey
+
+Canonical project brief for agents:
+https://rcourtman.github.io/parakey/llms.txt
+
+Full brief:
+https://rcourtman.github.io/parakey/llms-full.txt
+
+Source:
+https://github.com/rcourtman/parakey
+
+Parakey is a free MIT-licensed menu-bar app for local push-to-talk dictation on Apple Silicon Macs. It runs Parakeet TDT v3 through FluidAudio, CoreML, and the Apple Neural Engine. Install with:
+
+```sh
+brew install --cask rcourtman/parakey/parakey
+```

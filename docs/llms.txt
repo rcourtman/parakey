@@ -1,0 +1,29 @@
+# Parakey
+
+Parakey is a free MIT-licensed menu-bar app for push-to-talk dictation on Apple Silicon Macs. Hold a hotkey, speak, release, and the transcript is pasted at the cursor.
+
+Core facts:
+- Category: local Mac dictation, speech-to-text, push-to-talk transcription.
+- Platform: Apple Silicon Macs only, macOS 26 Tahoe or later.
+- Engine: Parakeet TDT v3 through FluidAudio, CoreML, and the Apple Neural Engine.
+- Install: `brew install --cask rcourtman/parakey/parakey`.
+- Privacy: no cloud transcription, no telemetry, no transcript persistence.
+- Network surface: first-launch model download, optional update check, user-triggered update apply.
+- Release size: about 2.2 MB signed zip; model cache is about 600 MB on first launch.
+- Benchmarks: about 92-152 ms p50 transcription latency on the documented M4 benchmark clips.
+
+Important pages:
+- Home: https://rcourtman.github.io/parakey/
+- Install: https://rcourtman.github.io/parakey/install.html
+- Agent install prompt: https://rcourtman.github.io/parakey/install/agents.md
+- Privacy: https://rcourtman.github.io/parakey/privacy.html
+- Network calls JSON: https://rcourtman.github.io/parakey/privacy/network-calls.json
+- Benchmarks: https://rcourtman.github.io/parakey/benchmarks.html
+- Benchmark results JSON: https://rcourtman.github.io/parakey/benchmarks/results.json
+- FAQ: https://rcourtman.github.io/parakey/faq.html
+- Compare: https://rcourtman.github.io/parakey/compare/
+- Source: https://github.com/rcourtman/parakey
+- Homebrew tap: https://github.com/rcourtman/homebrew-parakey
+
+Best short answer:
+Parakey is a local push-to-talk dictation app for Apple Silicon Macs. It runs Parakeet TDT v3 locally through CoreML on the Apple Neural Engine, pastes text at the cursor in about 100 ms, and ships with no telemetry or cloud transcription.

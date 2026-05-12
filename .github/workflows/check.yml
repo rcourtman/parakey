@@ -24,6 +24,25 @@ jobs:
           bash -n icon/make-icons.sh
       - name: Plist + XML syntax
         run: |
-          python -c "import xml.etree.ElementTree as ET; \
+          python3 -c "import xml.etree.ElementTree as ET; \
             ET.parse('swift/Info.plist'); \
-            ET.parse('entitlements.plist')"
+            ET.parse('entitlements.plist'); \
+            ET.parse('docs/sitemap.xml')"
+      - name: Docs syntax
+        run: |
+          python3 -m json.tool docs/benchmarks/results.json >/dev/null
+          python3 -m json.tool docs/privacy/network-calls.json >/dev/null
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+
+          class Parser(HTMLParser):
+              pass
+
+          for path in sorted(Path("docs").rglob("*.html")):
+              text = path.read_text(encoding="utf-8")
+              parser = Parser()
+              parser.feed(text)
+              if "<title>" not in text or "</main>" not in text:
+                  raise SystemExit(f"{path}: missing title or main")
+          PY

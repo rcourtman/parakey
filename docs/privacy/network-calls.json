@@ -1,0 +1,40 @@
+{
+  "project": "Parakey",
+  "privacy_model": "Local dictation, no telemetry, no cloud transcription endpoint",
+  "network_calls": [
+    {
+      "name": "first_launch_model_download",
+      "when": "First launch, until the model weights are cached locally",
+      "destination": "huggingface.co",
+      "purpose": "FluidAudio downloads the Parakeet TDT v3 CoreML model weights",
+      "approximate_size": "600 MB",
+      "user_triggered": false,
+      "can_disable": false,
+      "data_sent": "Standard HTTPS request metadata; no dictation audio"
+    },
+    {
+      "name": "update_check",
+      "when": "Every 6 hours when automatic update checks are enabled, plus one check shortly after launch",
+      "destination": "api.github.com/repos/rcourtman/parakey/releases/latest",
+      "purpose": "Check whether a newer Parakey release is available",
+      "user_triggered": false,
+      "can_disable": true,
+      "data_sent": "Anonymous GET; no app identifier, transcript, microphone audio, settings, or usage counts"
+    },
+    {
+      "name": "update_apply",
+      "when": "Only when the user chooses to update through the menu or Homebrew",
+      "destination": "github.com/rcourtman/parakey/releases/download/...",
+      "purpose": "Homebrew downloads the signed release archive",
+      "user_triggered": true,
+      "can_disable": true,
+      "data_sent": "Homebrew update/install request metadata; no dictation audio"
+    }
+  ],
+  "local_storage": {
+    "preferences": "~/Library/Preferences/com.local.parakey.plist",
+    "logs": "~/Library/Logs/Parakey.log",
+    "model_cache": "~/Library/Application Support/FluidAudio/",
+    "transcripts": "Recent transcript history is in memory only and clears on quit"
+  }
+}

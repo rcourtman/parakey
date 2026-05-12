@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Install Parakey - Homebrew Cask and Permissions</title>
+    <meta name="description" content="Install Parakey with Homebrew, launch the notarised app, grant macOS Microphone, Accessibility, and Input Monitoring permissions, and start push-to-talk dictation.">
+    <link rel="canonical" href="https://rcourtman.github.io/parakey/install.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="./"><span class="brand-mark">P</span><span>Parakey</span></a>
+        <div class="nav-links">
+          <a href="install.html">Install</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="benchmarks.html">Benchmarks</a>
+          <a href="faq.html">FAQ</a>
+          <a href="compare/">Compare</a>
+          <a href="https://github.com/rcourtman/parakey">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap page-title">
+        <h1>Install Parakey</h1>
+        <p>The canonical install path is the notarised Homebrew Cask. The app then guides the three required macOS privacy grants from its menu.</p>
+      </div>
+
+      <section>
+        <div class="wrap">
+          <h2>Requirements</h2>
+          <div class="facts">
+            <div class="fact"><strong>Apple Silicon</strong><span>M1 or newer. Intel Macs are not supported.</span></div>
+            <div class="fact"><strong>macOS 26+</strong><span>Tahoe or later.</span></div>
+            <div class="fact"><strong>Homebrew</strong><span>Only used for installation and updates. Parakey has no Homebrew runtime dependency after installation.</span></div>
+            <div class="fact"><strong>Network once</strong><span>First launch downloads the Parakeet TDT v3 model, about 600 MB, into the FluidAudio support cache.</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>One-liner</h2>
+          <pre><code>brew install --cask rcourtman/parakey/parakey
+open /Applications/Parakey.app</code></pre>
+          <p>The Parakey icon appears in the menu bar. On first launch, allow 1-5 minutes for the model download before trying the hotkey.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>Permissions</h2>
+          <p>Parakey needs Microphone, Accessibility, and Input Monitoring. Until all three are granted, the menu shows clickable rows for each missing permission.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Permission</th>
+                <th>Why it is needed</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Microphone</td>
+                <td>Capture audio only while the dictation hotkey is active.</td>
+              </tr>
+              <tr>
+                <td>Accessibility</td>
+                <td>Paste the transcript at the current cursor location with a synthetic Cmd+V event.</td>
+              </tr>
+              <tr>
+                <td>Input Monitoring</td>
+                <td>Observe the chosen global hotkey from the menu-bar app.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>Click each warning row in the menu. Parakey triggers the OS prompt and opens the relevant Settings pane as a fallback. Rows turn into checkmarks as macOS reflects the grants.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>Agent install prompt</h2>
+          <p>Use this when asking a shell-capable assistant to install Parakey on the target Mac.</p>
+          <pre><code>Install Parakey from https://github.com/rcourtman/parakey on this Mac.
+
+Parakey is distributed as a notarised Homebrew Cask. Use the Cask path, not a source build.
+
+1. Confirm this Mac is Apple Silicon:
+   uname -m
+   It must print arm64. If it does not, stop.
+2. Confirm macOS is version 26 or later:
+   sw_vers -productVersion
+3. Install Homebrew if it is missing.
+4. Install Parakey:
+   brew install --cask rcourtman/parakey/parakey
+5. Launch it:
+   open /Applications/Parakey.app
+6. Explain that first launch downloads a one-time ~600 MB speech model from Hugging Face and may take 1-5 minutes.
+7. Ask the user to open the Parakey menu-bar icon and grant Microphone, Accessibility, and Input Monitoring from the warning rows.
+8. After all permission rows disappear, tell the user to hold Right Option, speak, and release. The transcript should paste at the cursor.</code></pre>
+          <p>Plain Markdown version: <a href="install/agents.md">install/agents.md</a>.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>Update and uninstall</h2>
+          <pre><code>brew upgrade --cask parakey
+brew uninstall --zap --cask parakey</code></pre>
+          <p>The in-app update menu also appears when Parakey finds a newer GitHub release. The automatic update check can be disabled from Settings.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>Install docs for Parakey.</span>
+        <span><a href="./">Home</a> · <a href="privacy.html">Privacy</a> · <a href="benchmarks.html">Benchmarks</a></span>
+      </div>
+    </footer>
+  </body>
+</html>

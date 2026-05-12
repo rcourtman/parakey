@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parakey Privacy - Local Dictation, No Telemetry</title>
+    <meta name="description" content="Parakey transcribes locally on the Mac, stores no transcript history on disk, ships no telemetry, and has a documented three-call network surface.">
+    <link rel="canonical" href="https://rcourtman.github.io/parakey/privacy.html">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="./"><span class="brand-mark">P</span><span>Parakey</span></a>
+        <div class="nav-links">
+          <a href="install.html">Install</a>
+          <a href="privacy.html">Privacy</a>
+          <a href="benchmarks.html">Benchmarks</a>
+          <a href="faq.html">FAQ</a>
+          <a href="compare/">Compare</a>
+          <a href="https://github.com/rcourtman/parakey">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap page-title">
+        <h1>Privacy model</h1>
+        <p>Parakey is local-first in the strict sense: no analytics SDK, no accounts, no crash reporter, no transcript sync, and no cloud transcription endpoint.</p>
+      </div>
+
+      <section>
+        <div class="wrap">
+          <h2>Transcript handling</h2>
+          <div class="grid">
+            <article class="card">
+              <h3>In memory</h3>
+              <p>Audio is captured while the hotkey is active, transcribed locally, then discarded.</p>
+            </article>
+            <article class="card">
+              <h3>Clipboard paste</h3>
+              <p>The finished text is copied to the general pasteboard and pasted into the focused app with Cmd+V.</p>
+            </article>
+            <article class="card">
+              <h3>No transcript logs</h3>
+              <p>Logs include timing and length metadata only. Transcript content is not written to disk.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>Network calls</h2>
+          <p>This is the complete network surface of Parakey itself and its install/update path.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Destination</th>
+                <th>Purpose</th>
+                <th>User control</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>First launch</td>
+                <td><code>huggingface.co</code></td>
+                <td>FluidAudio downloads the Parakeet TDT v3 CoreML model weights, about 600 MB, into the local support cache.</td>
+                <td>Required once for local transcription.</td>
+              </tr>
+              <tr>
+                <td>Periodic update check</td>
+                <td><code>api.github.com/repos/rcourtman/parakey/releases/latest</code></td>
+                <td>Anonymous release lookup every six hours, plus one check shortly after launch.</td>
+                <td>Disable from Settings.</td>
+              </tr>
+              <tr>
+                <td>User-triggered update</td>
+                <td><code>github.com/rcourtman/parakey/releases/download/...</code></td>
+                <td>Homebrew downloads the signed release archive when the user chooses to update.</td>
+                <td>Only runs when the user updates.</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>Machine-readable version: <a href="privacy/network-calls.json">privacy/network-calls.json</a>.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <h2>Permissions and entitlements</h2>
+          <p>The notarised app uses two hardened-runtime entitlements: audio input and microphone. macOS also requires user-granted Accessibility and Input Monitoring permissions for the hotkey and paste workflow.</p>
+          <div class="note">
+            <p>Parakey does not add JIT, unsigned executable memory, library-validation, network-client, contacts, calendar, location, camera, or file-provider entitlements.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>Privacy docs for Parakey.</span>
+        <span><a href="./">Home</a> · <a href="install.html">Install</a> · <a href="https://github.com/rcourtman/parakey/blob/main/AGENTS.md">Project invariants</a></span>
+      </div>
+    </footer>
+  </body>
+</html>

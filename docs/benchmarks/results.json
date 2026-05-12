@@ -1,0 +1,63 @@
+{
+  "project": "Parakey",
+  "benchmark": "swift-bench",
+  "source": "https://github.com/rcourtman/parakey/tree/main/experiments/swift-bench",
+  "environment": {
+    "machine": "Mac mini M4",
+    "cpu_cores": 10,
+    "memory_gb": 16,
+    "macos": "26.4.1",
+    "swift": "6.3"
+  },
+  "methodology": {
+    "trials_per_backend_per_clip": 5,
+    "reported_statistic": "p50",
+    "warmup": "First inference after model load excluded from p50",
+    "audio_format": "16 kHz mono Float32 WAV produced with experiments/swift-bench/generate-test-audio.sh"
+  },
+  "backends": {
+    "fluid": {
+      "label": "FluidAudio Swift SDK, Parakeet TDT 0.6B v3, CoreML",
+      "hardware": "Apple Neural Engine"
+    },
+    "parakey_mlx": {
+      "label": "Prior parakeet_mlx path through MLX",
+      "hardware": "GPU"
+    }
+  },
+  "results": [
+    {
+      "clip": "short-clean",
+      "duration_seconds": 2.50,
+      "fluid_p50_ms": 92.4,
+      "parakey_mlx_p50_ms": 145.4,
+      "speed_ratio": 1.57
+    },
+    {
+      "clip": "medium-clean",
+      "duration_seconds": 3.99,
+      "fluid_p50_ms": 96.1,
+      "parakey_mlx_p50_ms": 176.3,
+      "speed_ratio": 1.83
+    },
+    {
+      "clip": "disfluent",
+      "duration_seconds": 5.31,
+      "fluid_p50_ms": 94.1,
+      "parakey_mlx_p50_ms": 185.9,
+      "speed_ratio": 1.97
+    },
+    {
+      "clip": "longer-technical",
+      "duration_seconds": 9.49,
+      "fluid_p50_ms": 152.4,
+      "parakey_mlx_p50_ms": 300.9,
+      "speed_ratio": 1.97
+    }
+  ],
+  "notes": [
+    "The benchmark measures compute latency, not energy use.",
+    "Both tested backends produced essentially identical transcripts on the synthetic audio.",
+    "Apple SpeechAnalyzer wiring exists in the benchmark but is currently blocked by a CLI Info.plist and entitlement gap."
+  ]
+}
