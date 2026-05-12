@@ -23,60 +23,61 @@
           linear-gradient(180deg, #ece3d2 0%, #d9cebb 55%, #c2b59c 100%);
       }
 
-      /* ---------- Menu bar ---------- */
+      /* ---------- Menu bar (static — no state changes here so the
+                    viewer's eye isn't pulled to the corner) ---------- */
       .menubar {
         position: absolute; inset: 0 0 auto 0;
-        height: 44px;
+        height: 40px;
         display: flex; align-items: center;
         padding: 0 22px;
-        font-size: 17px;
+        font-size: 15px;
         font-weight: 500;
         background: rgba(255, 255, 255, 0.55);
         backdrop-filter: blur(22px) saturate(170%);
         -webkit-backdrop-filter: blur(22px) saturate(170%);
         border-bottom: 1px solid rgba(0, 0, 0, 0.05);
       }
-      .menubar .group { display: flex; align-items: center; gap: 22px; }
+      .menubar .group { display: flex; align-items: center; gap: 20px; }
       .menubar .app   { font-weight: 700; letter-spacing: -0.005em; }
       .menubar .spacer { flex: 1; }
-      .menubar .right { gap: 18px; }
+      .menubar .right { gap: 16px; }
       .menubar .icon { display: inline-flex; color: #18201d; opacity: 0.85; }
       .menubar .icon svg { display: block; }
       .menubar .clock {
         font-variant-numeric: tabular-nums;
         font-weight: 500;
-        letter-spacing: -0.005em;
       }
       .parakey-mb {
-        width: 30px; height: 30px;
-        border-radius: 7px;
+        width: 26px; height: 26px;
+        border-radius: 6px;
         display: grid; place-items: center;
         color: #18201d;
       }
-      .parakey-mb.active {
-        background: rgba(16, 185, 129, 0.16);
-        color: #0d7f5f;
-      }
-      .parakey-mb svg { width: 18px; height: 18px; }
+      .parakey-mb svg { width: 16px; height: 16px; }
 
-      /* ---------- Window chrome ---------- */
-      .win {
+      /* ---------- Editor window ---------- */
+      .editor {
         position: absolute;
+        left: 50%;
+        top: 110px;
+        transform: translateX(-50%);
+        width: 1240px;
+        height: 700px;
         background: #ffffff;
         border-radius: 12px;
         overflow: hidden;
         box-shadow:
           0 1px 0 rgba(255, 255, 255, 0.5) inset,
           0 0 0 1px rgba(0, 0, 0, 0.07),
-          0 2px 6px rgba(0, 0, 0, 0.06),
-          0 28px 70px rgba(0, 0, 0, 0.22);
+          0 4px 12px rgba(0, 0, 0, 0.06),
+          0 32px 80px rgba(0, 0, 0, 0.22);
       }
       .titlebar {
-        height: 42px;
+        height: 44px;
         background: linear-gradient(180deg, #f6f5ef 0%, #ecebe3 100%);
         border-bottom: 1px solid rgba(0, 0, 0, 0.07);
         display: flex; align-items: center;
-        padding: 0 16px;
+        padding: 0 18px;
         position: relative;
       }
       .traffic { display: flex; gap: 8px; }
@@ -90,27 +91,20 @@
       .traffic .g { background: #28c840; }
       .window-title {
         position: absolute; left: 50%; transform: translateX(-50%);
-        font-size: 13px;
+        font-size: 14px;
         color: #565550;
         font-weight: 500;
-        letter-spacing: 0;
       }
-
-      /* ---------- Editor (left) ---------- */
-      .editor {
-        left: 80px; top: 130px;
-        width: 1060px; height: 820px;
-      }
-      .editor .body {
-        height: calc(100% - 42px);
-        padding: 88px 100px;
+      .doc {
+        height: calc(100% - 44px);
+        padding: 88px 110px;
         box-sizing: border-box;
         position: relative;
       }
       .doc-line {
         margin: 0;
-        font-size: 44px;
-        line-height: 1.42;
+        font-size: 50px;
+        line-height: 1.4;
         color: #18201d;
         letter-spacing: -0.012em;
         font-weight: 400;
@@ -121,207 +115,148 @@
       .cursor {
         display: inline-block;
         width: 3px;
-        height: 50px;
+        height: 56px;
         background: #18201d;
-        vertical-align: -12px;
+        vertical-align: -14px;
         margin-left: 2px;
         border-radius: 1px;
       }
 
-      /* ---------- Terminal (right) ---------- */
-      .terminal {
-        left: 1180px; top: 240px;
-        width: 660px; height: 620px;
-      }
-      .terminal .body {
-        height: calc(100% - 42px);
-        padding: 28px 30px 30px;
-        box-sizing: border-box;
-        font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
-        font-size: 23px;
-        line-height: 1.55;
-        color: #2a2f2d;
-        font-feature-settings: "ss01", "cv11";
-        white-space: pre;
-      }
-      .terminal .prompt { color: #1a8a64; font-weight: 600; }
-      .terminal .cmd { color: #18201d; font-weight: 500; }
-      .terminal .dim { color: #6a766f; }
-      .terminal .ts { color: #6a766f; }
-      .terminal .evt-down { color: #b56d00; font-weight: 600; }
-      .terminal .evt-up   { color: #1f63b4; font-weight: 600; }
-      .terminal .evt-ok   { color: var(--accent); font-weight: 600; }
-      .terminal .latency  { color: var(--accent); font-weight: 700; }
-      .terminal .metric   { color: var(--accent); font-weight: 600; }
-      .terminal .caret {
-        display: inline-block;
-        width: 12px;
-        height: 23px;
-        background: #2a2f2d;
-        vertical-align: -4px;
-        margin-left: 2px;
-      }
-
-      /* ---------- Menu-bar popover ---------- */
-      .popover {
-        position: absolute;
-        top: 50px;
-        right: 90px;
-        width: 460px;
-        will-change: opacity, transform;
-      }
-      .popover .pointer {
-        position: absolute;
-        top: -7px;
-        right: 56px;
-        width: 14px; height: 14px;
-        background: #ffffff;
-        transform: rotate(45deg);
-        box-shadow: -1px -1px 0 0 rgba(0, 0, 0, 0.06);
-        border-top-left-radius: 2px;
-      }
-      .popover .panel {
-        position: relative;
-        background: #ffffff;
-        border-radius: 14px;
-        padding: 22px 26px 24px;
-        box-shadow:
-          0 0 0 1px rgba(0, 0, 0, 0.06),
-          0 18px 50px rgba(0, 0, 0, 0.22);
-      }
-      .popover .status {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        font-size: 30px;
-        font-weight: 600;
-        color: #18201d;
-        letter-spacing: -0.01em;
-      }
-      .popover .dot {
-        width: 14px; height: 14px;
-        border-radius: 50%;
-        background: var(--accent-bright);
-        box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22);
-      }
-      .popover .hint {
-        margin-top: 4px;
-        margin-left: 28px;
-        font-size: 18px;
-        color: var(--text-dim);
-        font-weight: 500;
-      }
-      .popover .hint .glyph {
-        font-family: ui-monospace, "SF Mono", Menlo, monospace;
-        color: var(--text);
-        margin-right: 6px;
-      }
-      .waveform {
-        margin-top: 22px;
-        height: 56px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0 2px;
-      }
-      .waveform span {
-        flex: 0 0 7px;
-        width: 7px;
-        background: linear-gradient(180deg, #12a87c 0%, #0d7f5f 100%);
-        border-radius: 4px;
-        height: 18%;
-      }
-
-      /* ---------- Keyboard widget (bottom centre) ---------- */
-      /* Stylised slice of the MacBook bottom row. The right Option key
-         visibly depresses + glows green while the hotkey is held, so
-         "Right Option" stops being an abstract label in the popover
-         and the terminal log and becomes a thing the viewer sees being
-         pressed. Widget fades in just before key-down, fades out shortly
-         after key-up — gone before the end caption appears. */
-      .keys {
+      /* ---------- HUD chip — the single, focal status indicator.
+         Everything that used to be scattered (popover, terminal log,
+         keyboard widget) is collapsed here, directly below the editor,
+         in the same vertical column as the cursor. ---------- */
+      .hud {
         position: absolute;
         left: 50%;
-        bottom: 84px;
-        transform: translateX(-50%);
+        top: 840px;
+        transform: translate(-50%, 0);
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 12px 14px;
-        background: rgba(255, 255, 255, 0.7);
-        border-radius: 16px;
+        gap: 22px;
+        padding: 16px 22px;
+        min-width: 600px;
+        background: #ffffff;
+        border-radius: 14px;
         box-shadow:
           0 0 0 1px rgba(0, 0, 0, 0.06),
-          0 8px 28px rgba(0, 0, 0, 0.10);
-        backdrop-filter: blur(18px) saturate(160%);
-        -webkit-backdrop-filter: blur(18px) saturate(160%);
-        will-change: opacity;
+          0 18px 50px rgba(0, 0, 0, 0.18);
+        will-change: opacity, transform;
       }
-      .key {
-        width: 56px;
-        height: 56px;
-        border-radius: 8px;
+      .hud-key {
+        width: 60px;
+        height: 60px;
+        border-radius: 10px;
         background: #fdfcf8;
         border: 1px solid rgba(0, 0, 0, 0.08);
         box-shadow: 0 2px 0 rgba(0, 0, 0, 0.06);
         display: grid;
         place-items: center;
-        font-family: -apple-system, system-ui, sans-serif;
-        font-size: 20px;
-        font-weight: 500;
-        color: #18201d;
         position: relative;
+        flex: 0 0 60px;
       }
-      .key .sub {
-        position: absolute;
-        bottom: 4px;
-        font-size: 9px;
+      .hud-key .glyph {
+        font-size: 26px;
+        color: #18201d;
         font-weight: 500;
+        line-height: 1;
+        margin-top: -8px;
+      }
+      .hud-key .lbl {
+        position: absolute;
+        bottom: 7px;
+        font-size: 9px;
         color: #8a948e;
-        letter-spacing: 0.04em;
+        font-weight: 600;
+        letter-spacing: 0.06em;
         text-transform: uppercase;
       }
-      .key.space {
-        width: 220px;
-      }
-      .key.pressed {
+      .hud-key.pressed {
         background: #d6efe3;
         border-color: rgba(13, 127, 95, 0.45);
-        color: #075941;
         box-shadow:
           0 0 0 2px rgba(13, 127, 95, 0.18),
-          0 0 14px rgba(16, 185, 129, 0.25);
+          0 0 16px rgba(16, 185, 129, 0.30);
         transform: translateY(2px);
       }
-      .key.pressed .sub { color: #1a8a64; }
-      .keys-label {
-        position: absolute;
-        left: 0; right: 0;
-        bottom: -22px;
-        text-align: center;
-        font-size: 13px;
-        font-weight: 500;
-        color: var(--text-dim);
-        letter-spacing: 0.005em;
+      .hud-key.pressed .glyph { color: #075941; }
+      .hud-key.pressed .lbl   { color: #1a8a64; }
+
+      .hud-wave {
+        flex: 0 0 240px;
+        height: 50px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
       }
-      .keys-label .arrow {
-        display: inline-block;
-        margin-right: 6px;
-        color: var(--accent);
+      .hud-wave span {
+        flex: 0 0 9px;
+        width: 9px;
+        background: linear-gradient(180deg, #12a87c 0%, #0d7f5f 100%);
+        border-radius: 4px;
+        height: 16%;
       }
 
-      /* ---------- End caption ---------- */
+      .hud-label {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        min-width: 260px;
+        font-size: 28px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        color: #18201d;
+      }
+      .hud-label .state { color: #18201d; font-weight: 600; }
+      .hud-label .timer {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-feature-settings: "ss01", "cv11";
+        font-variant-numeric: tabular-nums;
+        font-size: 24px;
+        color: var(--text-dim);
+        font-weight: 500;
+      }
+      .hud-label.done .state {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .hud-label.done .check {
+        display: inline-grid;
+        place-items: center;
+        width: 26px; height: 26px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: white;
+        font-size: 14px;
+        font-weight: 800;
+        margin-right: 4px;
+        transform: translateY(2px);
+      }
+
+      /* ---------- End caption (main + lightweight subtitle) ---------- */
       .caption {
         position: absolute;
         left: 0; right: 0;
-        bottom: 58px;
+        bottom: 60px;
         text-align: center;
+      }
+      .caption .main {
         font-size: 42px;
         color: #18201d;
-        font-weight: 500;
-        letter-spacing: -0.012em;
+        font-weight: 600;
+        letter-spacing: -0.015em;
       }
-      .caption .dim { color: #5d6a64; font-weight: 400; }
+      .caption .main .dim { color: #5d6a64; font-weight: 400; }
+      .caption .sub {
+        margin-top: 10px;
+        font-size: 22px;
+        color: #6a766f;
+        font-weight: 500;
+        letter-spacing: 0;
+        font-variant-numeric: tabular-nums;
+      }
+      .caption .sub .accent { color: var(--accent); font-weight: 700; }
     </style>
   </head>
   <body>
@@ -338,31 +273,21 @@
       <span class="spacer"></span>
       <div class="group right">
         <span class="icon" aria-hidden="true">
-          <svg width="28" height="14" viewBox="0 0 28 14" fill="none">
+          <svg width="26" height="13" viewBox="0 0 28 14" fill="none">
             <rect x="0.7" y="0.7" width="22.6" height="12.6" rx="2.6" stroke="currentColor" stroke-width="1.1"/>
             <rect x="2.4" y="2.4" width="15.5" height="9.2" rx="1.2" fill="currentColor"/>
             <rect x="24" y="4.6" width="1.6" height="4.8" rx="0.7" fill="currentColor"/>
           </svg>
         </span>
         <span class="icon" aria-hidden="true">
-          <svg width="22" height="18" viewBox="0 0 22 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <svg width="20" height="16" viewBox="0 0 22 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
             <path d="M2 6 Q11 -2 20 6"/>
             <path d="M5 9.5 Q11 4 17 9.5"/>
             <path d="M8 13 Q11 10.5 14 13"/>
             <circle cx="11" cy="16" r="1.2" fill="currentColor" stroke="none"/>
           </svg>
         </span>
-        <span class="icon" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
-            <line x1="4" y1="6" x2="20" y2="6"/>
-            <circle cx="14" cy="6" r="2.4" fill="currentColor"/>
-            <line x1="4" y1="12" x2="20" y2="12"/>
-            <circle cx="9" cy="12" r="2.4" fill="currentColor"/>
-            <line x1="4" y1="18" x2="20" y2="18"/>
-            <circle cx="16" cy="18" r="2.4" fill="currentColor"/>
-          </svg>
-        </span>
-        <span class="parakey-mb" id="parakeyMb" aria-hidden="true">
+        <span class="parakey-mb" aria-hidden="true">
           <svg viewBox="0 0 100 100" fill="currentColor">
             <rect x="35" y="10" width="30" height="55" rx="15"/>
             <rect x="48.5" y="65" width="3" height="15"/>
@@ -373,85 +298,67 @@
       </div>
     </div>
 
-    <div class="win editor">
+    <div class="editor">
       <div class="titlebar">
         <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
         <div class="window-title">Untitled.txt</div>
       </div>
-      <div class="body">
+      <div class="doc">
         <p class="doc-line"><span class="text" id="docText"></span><span class="cursor" id="cursor"></span></p>
       </div>
     </div>
 
-    <div class="win terminal">
-      <div class="titlebar">
-        <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
-        <div class="window-title">parakey — bench — 84×18</div>
+    <div class="hud" id="hud" style="opacity:0; transform: translate(-50%, 8px);">
+      <div class="hud-key" id="hudKey">
+        <span class="glyph">⌥</span>
+        <span class="lbl">option</span>
       </div>
-      <div class="body" id="terminalBody"></div>
-    </div>
-
-    <div class="popover" id="popover" style="opacity:0; transform: translateY(-12px);">
-      <span class="pointer"></span>
-      <div class="panel">
-        <div class="status">
-          <span class="dot"></span>
-          <span>Listening</span>
-        </div>
-        <div class="hint">
-          <span class="glyph">&#8997;</span>Right Option held
-        </div>
-        <div class="waveform" id="waveform">
-          <span></span><span></span><span></span><span></span>
-          <span></span><span></span><span></span><span></span>
-          <span></span><span></span><span></span><span></span>
-          <span></span><span></span><span></span><span></span>
-        </div>
+      <div class="hud-wave" id="hudWave">
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
       </div>
-    </div>
-
-    <div class="keys" id="keys" style="opacity:0;">
-      <div class="key">⌃<span class="sub">control</span></div>
-      <div class="key">⌥<span class="sub">option</span></div>
-      <div class="key">⌘<span class="sub">command</span></div>
-      <div class="key space"><span class="sub">space</span></div>
-      <div class="key">⌘<span class="sub">command</span></div>
-      <div class="key" id="rightOption">⌥<span class="sub">option</span></div>
-      <div class="keys-label" id="keysLabel"><span class="arrow">↑</span>Right Option</div>
+      <div class="hud-label" id="hudLabel">
+        <span class="state">Hold Right Option</span>
+        <span class="timer" id="hudTimer"></span>
+      </div>
     </div>
 
     <div class="caption" id="caption" style="opacity:0;">
-      Local on-device dictation. <span class="dim">No cloud transcription.</span>
+      <div class="main">Local on-device dictation. <span class="dim">No cloud transcription.</span></div>
+      <div class="sub"><span class="accent">2.2 MB</span> download &middot; <span class="accent">~80 MB</span> RAM idle &middot; <span class="accent">~94 ms</span> end-to-end</div>
     </div>
 
     <script>
       const FULL_TEXT = "Parakey is a local push-to-talk dictation app for Apple Silicon Macs.";
 
-      // 14-second deterministic timeline. The 94 ms paste-after-release
-      // gap matches the real-product p50 from the published benchmark.
+      // 14-second deterministic timeline. The 94 ms gap matches the
+      // published p50.
       const TL = {
-        keyDown:        0.8,    // popover begins sliding in
-        popoverFullyIn: 1.1,
-        recordingEnd:   5.6,    // KEY UP — bars freeze, then meter quiets
-        textAppear:     5.694,  // PASTE — 94 ms after release (real p50)
-        textRevealEnd:  5.864,  // 170 ms soft fade-in
-        popoverOut:     5.694,  // popover starts fading the moment we paste
-        popoverGone:    6.15,
+        hudIn:          0.5,   // chip slides up + fades in (sets the stage)
+        keyDown:        1.0,   // key depresses, "Listening" begins
+        recordingEnd:   6.0,   // KEY UP — waveform freezes
+        textAppear:     6.094, // PASTE — 94 ms after release
+        textRevealEnd:  6.264, // 170 ms snap-in fade
+        badgeHold:      8.0,   // "94 ms" badge stays visible until this t
+        hudOut:         8.0,   // chip starts fading
+        hudGone:        8.6,
         captionIn:      9.7,
-        captionFullyIn: 10.3,
+        captionFullyIn: 10.4,
         end:           14.0,
       };
 
-      const docText     = document.getElementById('docText');
-      const docLine     = document.querySelector('.doc-line');
-      const cursor      = document.getElementById('cursor');
-      const popover     = document.getElementById('popover');
-      const parakeyMb   = document.getElementById('parakeyMb');
-      const caption     = document.getElementById('caption');
-      const bars        = document.querySelectorAll('#waveform span');
-      const term        = document.getElementById('terminalBody');
-      const keys        = document.getElementById('keys');
-      const rightOption = document.getElementById('rightOption');
+      const docText = document.getElementById('docText');
+      const docLine = document.querySelector('.doc-line');
+      const cursor  = document.getElementById('cursor');
+      const hud     = document.getElementById('hud');
+      const hudKey  = document.getElementById('hudKey');
+      const hudLabel = document.getElementById('hudLabel');
+      const hudTimer = document.getElementById('hudTimer');
+      const caption = document.getElementById('caption');
+      const bars    = document.querySelectorAll('#hudWave span');
 
       docLine.style.transformOrigin = '0% 0%';
 
@@ -460,75 +367,17 @@
       function easeOutCubic(p)  { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
       function easeInOut(p)     { p = clamp(p, 0, 1); return p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2; }
 
-      // ---- Terminal log ---------------------------------------------
-      // Each event's `t` is the demo-time at which the line appears.
-      // The displayed timestamp is derived from the same `t` so the
-      // numbers the viewer reads in the log line up exactly with what
-      // they just saw happen on screen.
-      function ts(t) {
-        // Map demo-time → wall clock starting at 09:41:00.000.
-        const secsTotal = t;
-        const s = Math.floor(secsTotal);
-        const ms = Math.round((secsTotal - s) * 1000);
-        const mm = String(Math.floor(s / 60)).padStart(2, '0');
-        const ss = String(s % 60).padStart(2, '0');
-        const mmm = String(ms).padStart(3, '0');
-        return `09:41:${mm === '00' ? ss : mm + ':' + ss}.${mmm}`;
-      }
-      // simpler: always show ss.mmm under a fixed 09:41:00 anchor
-      function stamp(t) {
-        const s = Math.floor(t);
-        const ms = Math.round((t - s) * 1000);
-        return `09:41:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
-      }
-
-      function setTerminal(t) {
-        let html = '';
-        // Pre-roll: prompt + startup banner + listening (always visible).
-        // The banner line carries the "lightweight" claim — download size
-        // and idle RAM in the same green as (94 ms), so the eye learns
-        // green = the numbers worth remembering.
-        html += '<span class="prompt">$</span> <span class="cmd">parakey --watch</span>\n';
-        html += '<span class="dim">parakey 0.2.1  ·  </span>'
-              + '<span class="metric">2.2 MB</span>'
-              + '<span class="dim">  ·  </span>'
-              + '<span class="metric">~80 MB RAM</span>\n';
-        html += '<span class="dim">listening for hotkey…</span>\n';
-        html += '\n';
-
-        if (t >= TL.keyDown) {
-          html += '<span class="ts">' + stamp(TL.keyDown) + '</span>  '
-                + '<span class="evt-down">▼</span> Right Option\n';
-        }
-        if (t >= TL.recordingEnd) {
-          html += '<span class="ts">' + stamp(TL.recordingEnd) + '</span>  '
-                + '<span class="evt-up">▲</span> Right Option\n';
-        }
-        if (t >= TL.textAppear) {
-          html += '<span class="ts">' + stamp(TL.textAppear) + '</span>  '
-                + '<span class="evt-ok">✓</span> pasted '
-                + '<span class="latency">(94 ms)</span>\n';
-        }
-
-        // Blinking caret on the current line. Freeze the caret on
-        // during the paste reveal so the eye doesn't catch it flashing.
-        const blinkOn = (t >= TL.textAppear && t < TL.textAppear + 0.4)
-                          ? true
-                          : ((t * 1.88) % 1) < 0.55;
-        html += blinkOn ? '<span class="caret"></span>'
-                        : '<span class="caret" style="background:transparent"></span>';
-
-        term.innerHTML = html;
-      }
-
-      // ---- Waveform -------------------------------------------------
-      function setWaveform(t, intensity, quiet) {
+      function setWaveform(t, intensity, freeze) {
+        // Deterministic per-bar sine mixture. `freeze` collapses the
+        // bars to a uniform low height once the key is released and
+        // again after the paste, so the line goes calm in step with
+        // the rest of the story.
         for (let i = 0; i < bars.length; i++) {
           let finalH;
-          if (quiet > 0) {
-            const pulse = 0.5 + 0.5 * Math.sin(t * 4.2);
-            const quietH = 0.16 + pulse * 0.06;
-            const phase = i * 0.62;
+          if (freeze >= 1) {
+            finalH = 0.16;
+          } else {
+            const phase = i * 0.55;
             const v =
                 0.50
               + 0.30 * Math.sin(t * 6.4 + phase)
@@ -536,25 +385,15 @@
               + 0.10 * Math.sin(t * 11.7 + phase * 0.7);
             const h = clamp(v, 0.06, 0.96) * intensity;
             const liveH = 0.14 + 0.82 * h;
-            finalH = liveH * (1 - quiet) + quietH * quiet;
-          } else {
-            const phase = i * 0.62;
-            const v =
-                0.50
-              + 0.30 * Math.sin(t * 6.4 + phase)
-              + 0.22 * Math.sin(t * 3.1 + i * 0.9)
-              + 0.10 * Math.sin(t * 11.7 + phase * 0.7);
-            const h = clamp(v, 0.06, 0.96) * intensity;
-            finalH = 0.14 + 0.82 * h;
+            finalH = liveH * (1 - freeze) + 0.16 * freeze;
           }
           bars[i].style.height = (clamp(finalH, 0.08, 1) * 100) + '%';
         }
       }
 
-      // ---- Main render ----------------------------------------------
       function renderAt(t) {
-        // Editor cursor blink — frozen ON briefly during the paste so
-        // it doesn't catch a flicker.
+        // ----- Cursor blink (frozen ON briefly during the paste so
+        //       the eye doesn't catch a flicker right as text lands).
         let blinkOn;
         if (t >= TL.textAppear && t < TL.textRevealEnd + 0.4) {
           blinkOn = 1;
@@ -563,43 +402,74 @@
         }
         cursor.style.opacity = blinkOn;
 
-        // Menubar Parakey icon.
-        if (t >= TL.keyDown && t < TL.popoverGone) {
-          parakeyMb.classList.add('active');
+        // ----- HUD visibility (single fade in/out for the whole chip).
+        let hudP;
+        if      (t < TL.hudIn)        hudP = 0;
+        else if (t < TL.hudIn + 0.3)  hudP = easeOutCubic((t - TL.hudIn) / 0.3);
+        else if (t < TL.hudOut)       hudP = 1;
+        else if (t < TL.hudGone)      hudP = 1 - easeOutQuad((t - TL.hudOut) / (TL.hudGone - TL.hudOut));
+        else                          hudP = 0;
+        hud.style.opacity = hudP;
+        hud.style.transform = 'translate(-50%, ' + ((1 - hudP) * 8) + 'px)';
+
+        // ----- Keycap state (pressed only while the hotkey is held).
+        if (t >= TL.keyDown && t < TL.recordingEnd) {
+          hudKey.classList.add('pressed');
         } else {
-          parakeyMb.classList.remove('active');
+          hudKey.classList.remove('pressed');
         }
 
-        // Popover open/close.
-        let popoverP;
-        if      (t < TL.keyDown)        popoverP = 0;
-        else if (t < TL.popoverFullyIn) popoverP = easeOutCubic((t - TL.keyDown) / (TL.popoverFullyIn - TL.keyDown));
-        else if (t < TL.popoverOut)     popoverP = 1;
-        else if (t < TL.popoverGone)    popoverP = 1 - easeOutQuad((t - TL.popoverOut) / (TL.popoverGone - TL.popoverOut));
-        else                            popoverP = 0;
-        popover.style.opacity = popoverP;
-        popover.style.transform = 'translateY(' + ((1 - popoverP) * -12) + 'px)';
-
-        // Waveform envelope.
-        let intensity, quiet;
+        // ----- Waveform envelope.
+        let intensity, freeze;
         if (t < TL.keyDown) {
-          intensity = 0; quiet = 0;
-        } else if (t < TL.popoverFullyIn) {
-          intensity = (t - TL.keyDown) / (TL.popoverFullyIn - TL.keyDown);
-          quiet = 0;
+          intensity = 0; freeze = 1;
+        } else if (t < TL.keyDown + 0.25) {
+          intensity = (t - TL.keyDown) / 0.25;
+          freeze = 1 - (t - TL.keyDown) / 0.25;
         } else if (t < TL.recordingEnd) {
-          intensity = 1; quiet = 0;
-        } else if (t < TL.popoverGone) {
-          const p = clamp((t - TL.recordingEnd) / 0.3, 0, 1);
-          intensity = 1 - 0.6 * p;
-          quiet = easeInOut(p);
+          intensity = 1; freeze = 0;
+        } else if (t < TL.textAppear) {
+          // 94 ms between key-up and paste — bars freeze the instant
+          // the key releases.
+          intensity = 0; freeze = 1;
         } else {
-          intensity = 0; quiet = 0;
+          intensity = 0; freeze = 1;
         }
-        setWaveform(t, intensity, quiet);
+        setWaveform(t, intensity, freeze);
 
-        // Pasted text (snap-in with scale on the parent paragraph so
-        // the inline cursor continues to flow next to the wrap).
+        // ----- HUD label — the single status string tracks the story.
+        //   t < keyDown:        "Hold Right Option"
+        //   keyDown..recording: "Listening" + live elapsed counter
+        //   recording..paste:   "Listening" frozen at audio length
+        //   paste..hudOut:      "✓ pasted in 94 ms"
+        const labelState = hudLabel.querySelector('.state');
+        const labelCheck = hudLabel.querySelector('.check');
+        if (t < TL.keyDown) {
+          hudLabel.classList.remove('done');
+          if (labelCheck) labelCheck.remove();
+          labelState.textContent = 'Hold Right Option';
+          hudTimer.textContent = '';
+        } else if (t < TL.textAppear) {
+          hudLabel.classList.remove('done');
+          if (labelCheck) labelCheck.remove();
+          labelState.textContent = 'Listening';
+          const elapsed = Math.min(t, TL.recordingEnd) - TL.keyDown;
+          hudTimer.textContent = elapsed.toFixed(1) + 's';
+        } else {
+          if (!hudLabel.classList.contains('done')) {
+            hudLabel.classList.add('done');
+            if (!hudLabel.querySelector('.check')) {
+              const c = document.createElement('span');
+              c.className = 'check';
+              c.textContent = '✓';
+              hudLabel.insertBefore(c, labelState);
+            }
+          }
+          labelState.textContent = 'pasted in 94 ms';
+          hudTimer.textContent = '';
+        }
+
+        // ----- Pasted text snap-in.
         if (t >= TL.textAppear) {
           docText.textContent = FULL_TEXT;
           const p = clamp((t - TL.textAppear) / (TL.textRevealEnd - TL.textAppear), 0, 1);
@@ -612,30 +482,7 @@
           docLine.style.transform = 'scale(1)';
         }
 
-        // Keyboard widget — fade in just before key-down, depress the
-        // right Option key while held, release on key-up, fade out a
-        // beat later so the eye sees both the press and the release.
-        const KEYS_IN_START   = TL.keyDown - 0.4;
-        const KEYS_IN_END     = TL.keyDown - 0.1;
-        const KEYS_OUT_START  = TL.recordingEnd + 0.4;
-        const KEYS_OUT_END    = TL.recordingEnd + 0.9;
-        let keysP;
-        if      (t < KEYS_IN_START)  keysP = 0;
-        else if (t < KEYS_IN_END)    keysP = easeOutCubic((t - KEYS_IN_START) / (KEYS_IN_END - KEYS_IN_START));
-        else if (t < KEYS_OUT_START) keysP = 1;
-        else if (t < KEYS_OUT_END)   keysP = 1 - easeOutQuad((t - KEYS_OUT_START) / (KEYS_OUT_END - KEYS_OUT_START));
-        else                         keysP = 0;
-        keys.style.opacity = keysP;
-        if (t >= TL.keyDown && t < TL.recordingEnd) {
-          rightOption.classList.add('pressed');
-        } else {
-          rightOption.classList.remove('pressed');
-        }
-
-        // Terminal log lines.
-        setTerminal(t);
-
-        // End caption.
+        // ----- Caption fade.
         let cP;
         if      (t < TL.captionIn)       cP = 0;
         else if (t < TL.captionFullyIn)  cP = easeInOut((t - TL.captionIn) / (TL.captionFullyIn - TL.captionIn));
