@@ -19,8 +19,6 @@
         color: var(--text);
         overflow: hidden;
         position: relative;
-        /* Soft dawn-cream desktop wallpaper. No orbs, no blobs — just a
-           quiet vertical gradient that reads as a real Mac desktop. */
         background:
           linear-gradient(180deg, #ece3d2 0%, #d9cebb 55%, #c2b59c 100%);
       }
@@ -33,7 +31,6 @@
         padding: 0 22px;
         font-size: 17px;
         font-weight: 500;
-        color: #18201d;
         background: rgba(255, 255, 255, 0.55);
         backdrop-filter: blur(22px) saturate(170%);
         -webkit-backdrop-filter: blur(22px) saturate(170%);
@@ -43,19 +40,13 @@
       .menubar .app   { font-weight: 700; letter-spacing: -0.005em; }
       .menubar .spacer { flex: 1; }
       .menubar .right { gap: 18px; }
-      .menubar .icon {
-        display: inline-flex; align-items: center; justify-content: center;
-        color: #18201d; opacity: 0.85;
-      }
+      .menubar .icon { display: inline-flex; color: #18201d; opacity: 0.85; }
       .menubar .icon svg { display: block; }
       .menubar .clock {
         font-variant-numeric: tabular-nums;
         font-weight: 500;
         letter-spacing: -0.005em;
       }
-
-      /* Parakey menubar icon: idle = dark template; active = subtle
-         green-tinted background, no chrome flash. */
       .parakey-mb {
         width: 30px; height: 30px;
         border-radius: 7px;
@@ -68,12 +59,9 @@
       }
       .parakey-mb svg { width: 18px; height: 18px; }
 
-      /* ---------- Editor window ---------- */
-      .window {
+      /* ---------- Window chrome ---------- */
+      .win {
         position: absolute;
-        left: 50%; top: 132px;
-        transform: translateX(-50%);
-        width: 1340px; height: 760px;
         background: #ffffff;
         border-radius: 12px;
         overflow: hidden;
@@ -81,19 +69,19 @@
           0 1px 0 rgba(255, 255, 255, 0.5) inset,
           0 0 0 1px rgba(0, 0, 0, 0.07),
           0 2px 6px rgba(0, 0, 0, 0.06),
-          0 32px 80px rgba(0, 0, 0, 0.22);
+          0 28px 70px rgba(0, 0, 0, 0.22);
       }
       .titlebar {
-        height: 48px;
+        height: 42px;
         background: linear-gradient(180deg, #f6f5ef 0%, #ecebe3 100%);
         border-bottom: 1px solid rgba(0, 0, 0, 0.07);
         display: flex; align-items: center;
-        padding: 0 18px;
+        padding: 0 16px;
         position: relative;
       }
       .traffic { display: flex; gap: 8px; }
       .traffic span {
-        width: 13px; height: 13px;
+        width: 12px; height: 12px;
         border-radius: 50%;
         box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
       }
@@ -102,18 +90,26 @@
       .traffic .g { background: #28c840; }
       .window-title {
         position: absolute; left: 50%; transform: translateX(-50%);
-        font-size: 14px;
+        font-size: 13px;
         color: #565550;
         font-weight: 500;
+        letter-spacing: 0;
       }
-      .doc {
-        height: calc(100% - 48px);
-        padding: 96px 110px;
+
+      /* ---------- Editor (left) ---------- */
+      .editor {
+        left: 80px; top: 130px;
+        width: 1060px; height: 820px;
+      }
+      .editor .body {
+        height: calc(100% - 42px);
+        padding: 88px 100px;
         box-sizing: border-box;
         position: relative;
       }
       .doc-line {
-        font-size: 52px;
+        margin: 0;
+        font-size: 44px;
         line-height: 1.42;
         color: #18201d;
         letter-spacing: -0.012em;
@@ -122,27 +118,54 @@
         word-break: normal;
         overflow-wrap: break-word;
       }
-      .doc-line .text {
-        display: inline;
-      }
-      /* Vertical cursor bar; height is tuned to match the line metrics.
-         Sits inline at end of text so it follows wrapping naturally. */
       .cursor {
         display: inline-block;
         width: 3px;
-        height: 58px;
+        height: 50px;
         background: #18201d;
-        vertical-align: -14px;
+        vertical-align: -12px;
         margin-left: 2px;
         border-radius: 1px;
       }
 
-      /* ---------- Menu-bar popover (the Parakey HUD) ---------- */
+      /* ---------- Terminal (right) ---------- */
+      .terminal {
+        left: 1180px; top: 240px;
+        width: 660px; height: 620px;
+      }
+      .terminal .body {
+        height: calc(100% - 42px);
+        padding: 28px 30px 30px;
+        box-sizing: border-box;
+        font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+        font-size: 23px;
+        line-height: 1.55;
+        color: #2a2f2d;
+        font-feature-settings: "ss01", "cv11";
+        white-space: pre;
+      }
+      .terminal .prompt { color: #1a8a64; font-weight: 600; }
+      .terminal .cmd { color: #18201d; font-weight: 500; }
+      .terminal .dim { color: #6a766f; }
+      .terminal .ts { color: #6a766f; }
+      .terminal .evt-down { color: #b56d00; font-weight: 600; }
+      .terminal .evt-up   { color: #1f63b4; font-weight: 600; }
+      .terminal .evt-ok   { color: var(--accent); font-weight: 600; }
+      .terminal .latency  { color: var(--accent); font-weight: 700; }
+      .terminal .metric   { color: var(--accent); font-weight: 600; }
+      .terminal .caret {
+        display: inline-block;
+        width: 12px;
+        height: 23px;
+        background: #2a2f2d;
+        vertical-align: -4px;
+        margin-left: 2px;
+      }
+
+      /* ---------- Menu-bar popover ---------- */
       .popover {
         position: absolute;
         top: 50px;
-        /* Anchored under the Parakey icon. The icon sits ~140px from the
-           right edge; popover is 460px wide with its pointer at right side. */
         right: 90px;
         width: 460px;
         will-change: opacity, transform;
@@ -187,7 +210,6 @@
         font-size: 18px;
         color: var(--text-dim);
         font-weight: 500;
-        letter-spacing: 0;
       }
       .popover .hint .glyph {
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -196,27 +218,105 @@
       }
       .waveform {
         margin-top: 22px;
-        height: 64px;
+        height: 56px;
         display: flex;
         align-items: center;
         justify-content: space-between;
         padding: 0 2px;
       }
       .waveform span {
-        flex: 0 0 8px;
-        width: 8px;
+        flex: 0 0 7px;
+        width: 7px;
         background: linear-gradient(180deg, #12a87c 0%, #0d7f5f 100%);
         border-radius: 4px;
         height: 18%;
+      }
+
+      /* ---------- Keyboard widget (bottom centre) ---------- */
+      /* Stylised slice of the MacBook bottom row. The right Option key
+         visibly depresses + glows green while the hotkey is held, so
+         "Right Option" stops being an abstract label in the popover
+         and the terminal log and becomes a thing the viewer sees being
+         pressed. Widget fades in just before key-down, fades out shortly
+         after key-up — gone before the end caption appears. */
+      .keys {
+        position: absolute;
+        left: 50%;
+        bottom: 84px;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 14px;
+        background: rgba(255, 255, 255, 0.7);
+        border-radius: 16px;
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.06),
+          0 8px 28px rgba(0, 0, 0, 0.10);
+        backdrop-filter: blur(18px) saturate(160%);
+        -webkit-backdrop-filter: blur(18px) saturate(160%);
+        will-change: opacity;
+      }
+      .key {
+        width: 56px;
+        height: 56px;
+        border-radius: 8px;
+        background: #fdfcf8;
+        border: 1px solid rgba(0, 0, 0, 0.08);
+        box-shadow: 0 2px 0 rgba(0, 0, 0, 0.06);
+        display: grid;
+        place-items: center;
+        font-family: -apple-system, system-ui, sans-serif;
+        font-size: 20px;
+        font-weight: 500;
+        color: #18201d;
+        position: relative;
+      }
+      .key .sub {
+        position: absolute;
+        bottom: 4px;
+        font-size: 9px;
+        font-weight: 500;
+        color: #8a948e;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .key.space {
+        width: 220px;
+      }
+      .key.pressed {
+        background: #d6efe3;
+        border-color: rgba(13, 127, 95, 0.45);
+        color: #075941;
+        box-shadow:
+          0 0 0 2px rgba(13, 127, 95, 0.18),
+          0 0 14px rgba(16, 185, 129, 0.25);
+        transform: translateY(2px);
+      }
+      .key.pressed .sub { color: #1a8a64; }
+      .keys-label {
+        position: absolute;
+        left: 0; right: 0;
+        bottom: -22px;
+        text-align: center;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-dim);
+        letter-spacing: 0.005em;
+      }
+      .keys-label .arrow {
+        display: inline-block;
+        margin-right: 6px;
+        color: var(--accent);
       }
 
       /* ---------- End caption ---------- */
       .caption {
         position: absolute;
         left: 0; right: 0;
-        bottom: 72px;
+        bottom: 58px;
         text-align: center;
-        font-size: 44px;
+        font-size: 42px;
         color: #18201d;
         font-weight: 500;
         letter-spacing: -0.012em;
@@ -237,14 +337,14 @@
       </div>
       <span class="spacer"></span>
       <div class="group right">
-        <span class="icon" aria-hidden="true" title="Battery">
+        <span class="icon" aria-hidden="true">
           <svg width="28" height="14" viewBox="0 0 28 14" fill="none">
             <rect x="0.7" y="0.7" width="22.6" height="12.6" rx="2.6" stroke="currentColor" stroke-width="1.1"/>
             <rect x="2.4" y="2.4" width="15.5" height="9.2" rx="1.2" fill="currentColor"/>
             <rect x="24" y="4.6" width="1.6" height="4.8" rx="0.7" fill="currentColor"/>
           </svg>
         </span>
-        <span class="icon" aria-hidden="true" title="Wi-Fi">
+        <span class="icon" aria-hidden="true">
           <svg width="22" height="18" viewBox="0 0 22 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
             <path d="M2 6 Q11 -2 20 6"/>
             <path d="M5 9.5 Q11 4 17 9.5"/>
@@ -252,7 +352,7 @@
             <circle cx="11" cy="16" r="1.2" fill="currentColor" stroke="none"/>
           </svg>
         </span>
-        <span class="icon" aria-hidden="true" title="Control Center">
+        <span class="icon" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
             <line x1="4" y1="6" x2="20" y2="6"/>
             <circle cx="14" cy="6" r="2.4" fill="currentColor"/>
@@ -269,22 +369,26 @@
             <rect x="22" y="80" width="56" height="6" rx="3"/>
           </svg>
         </span>
-        <span class="clock" id="clock">9:41</span>
+        <span class="clock">9:41</span>
       </div>
     </div>
 
-    <div class="window">
+    <div class="win editor">
       <div class="titlebar">
-        <div class="traffic">
-          <span class="r"></span>
-          <span class="y"></span>
-          <span class="g"></span>
-        </div>
+        <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
         <div class="window-title">Untitled.txt</div>
       </div>
-      <div class="doc">
+      <div class="body">
         <p class="doc-line"><span class="text" id="docText"></span><span class="cursor" id="cursor"></span></p>
       </div>
+    </div>
+
+    <div class="win terminal">
+      <div class="titlebar">
+        <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+        <div class="window-title">parakey — bench — 84×18</div>
+      </div>
+      <div class="body" id="terminalBody"></div>
     </div>
 
     <div class="popover" id="popover" style="opacity:0; transform: translateY(-12px);">
@@ -292,7 +396,7 @@
       <div class="panel">
         <div class="status">
           <span class="dot"></span>
-          <span id="statusText">Listening</span>
+          <span>Listening</span>
         </div>
         <div class="hint">
           <span class="glyph">&#8997;</span>Right Option held
@@ -306,6 +410,16 @@
       </div>
     </div>
 
+    <div class="keys" id="keys" style="opacity:0;">
+      <div class="key">⌃<span class="sub">control</span></div>
+      <div class="key">⌥<span class="sub">option</span></div>
+      <div class="key">⌘<span class="sub">command</span></div>
+      <div class="key space"><span class="sub">space</span></div>
+      <div class="key">⌘<span class="sub">command</span></div>
+      <div class="key" id="rightOption">⌥<span class="sub">option</span></div>
+      <div class="keys-label" id="keysLabel"><span class="arrow">↑</span>Right Option</div>
+    </div>
+
     <div class="caption" id="caption" style="opacity:0;">
       Local on-device dictation. <span class="dim">No cloud transcription.</span>
     </div>
@@ -313,52 +427,107 @@
     <script>
       const FULL_TEXT = "Parakey is a local push-to-talk dictation app for Apple Silicon Macs.";
 
-      // Phase boundaries in seconds. Total duration = 14s.
+      // 14-second deterministic timeline. The 94 ms paste-after-release
+      // gap matches the real-product p50 from the published benchmark.
       const TL = {
-        popoverIn:      1.2,   // popover begins sliding in
-        popoverFullyIn: 1.6,
-        recordingEnd:   6.6,   // user releases the key
-        transcribing:   6.6,   // status flips to "Transcribing"
-        textAppear:     7.0,   // pasted text begins reveal
-        textRevealEnd:  7.22,  // text fully visible
-        popoverOut:     7.5,
-        popoverGone:    7.95,
-        captionIn:     10.4,
-        captionFullyIn:11.05,
+        keyDown:        0.8,    // popover begins sliding in
+        popoverFullyIn: 1.1,
+        recordingEnd:   5.6,    // KEY UP — bars freeze, then meter quiets
+        textAppear:     5.694,  // PASTE — 94 ms after release (real p50)
+        textRevealEnd:  5.864,  // 170 ms soft fade-in
+        popoverOut:     5.694,  // popover starts fading the moment we paste
+        popoverGone:    6.15,
+        captionIn:      9.7,
+        captionFullyIn: 10.3,
         end:           14.0,
       };
 
-      const docText = document.getElementById('docText');
-      const docLine = document.querySelector('.doc-line');
-      const cursor = document.getElementById('cursor');
-      const popover = document.getElementById('popover');
-      const statusText = document.getElementById('statusText');
-      const parakeyMb = document.getElementById('parakeyMb');
-      const caption = document.getElementById('caption');
-      const bars = document.querySelectorAll('#waveform span');
+      const docText     = document.getElementById('docText');
+      const docLine     = document.querySelector('.doc-line');
+      const cursor      = document.getElementById('cursor');
+      const popover     = document.getElementById('popover');
+      const parakeyMb   = document.getElementById('parakeyMb');
+      const caption     = document.getElementById('caption');
+      const bars        = document.querySelectorAll('#waveform span');
+      const term        = document.getElementById('terminalBody');
+      const keys        = document.getElementById('keys');
+      const rightOption = document.getElementById('rightOption');
 
-      // Pre-bake transform origin once so the snap-in scale is anchored
-      // at the top-left of the document text (i.e. doesn't drift).
       docLine.style.transformOrigin = '0% 0%';
 
       function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
-      function easeOutCubic(p) { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
-      function easeOutQuad(p)  { return 1 - Math.pow(1 - clamp(p, 0, 1), 2); }
-      function easeInOut(p)    { p = clamp(p, 0, 1); return p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2; }
+      function easeOutQuad(p)   { return 1 - Math.pow(1 - clamp(p, 0, 1), 2); }
+      function easeOutCubic(p)  { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
+      function easeInOut(p)     { p = clamp(p, 0, 1); return p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2; }
 
+      // ---- Terminal log ---------------------------------------------
+      // Each event's `t` is the demo-time at which the line appears.
+      // The displayed timestamp is derived from the same `t` so the
+      // numbers the viewer reads in the log line up exactly with what
+      // they just saw happen on screen.
+      function ts(t) {
+        // Map demo-time → wall clock starting at 09:41:00.000.
+        const secsTotal = t;
+        const s = Math.floor(secsTotal);
+        const ms = Math.round((secsTotal - s) * 1000);
+        const mm = String(Math.floor(s / 60)).padStart(2, '0');
+        const ss = String(s % 60).padStart(2, '0');
+        const mmm = String(ms).padStart(3, '0');
+        return `09:41:${mm === '00' ? ss : mm + ':' + ss}.${mmm}`;
+      }
+      // simpler: always show ss.mmm under a fixed 09:41:00 anchor
+      function stamp(t) {
+        const s = Math.floor(t);
+        const ms = Math.round((t - s) * 1000);
+        return `09:41:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+      }
+
+      function setTerminal(t) {
+        let html = '';
+        // Pre-roll: prompt + startup banner + listening (always visible).
+        // The banner line carries the "lightweight" claim — download size
+        // and idle RAM in the same green as (94 ms), so the eye learns
+        // green = the numbers worth remembering.
+        html += '<span class="prompt">$</span> <span class="cmd">parakey --watch</span>\n';
+        html += '<span class="dim">parakey 0.2.1  ·  </span>'
+              + '<span class="metric">2.2 MB</span>'
+              + '<span class="dim">  ·  </span>'
+              + '<span class="metric">~80 MB RAM</span>\n';
+        html += '<span class="dim">listening for hotkey…</span>\n';
+        html += '\n';
+
+        if (t >= TL.keyDown) {
+          html += '<span class="ts">' + stamp(TL.keyDown) + '</span>  '
+                + '<span class="evt-down">▼</span> Right Option\n';
+        }
+        if (t >= TL.recordingEnd) {
+          html += '<span class="ts">' + stamp(TL.recordingEnd) + '</span>  '
+                + '<span class="evt-up">▲</span> Right Option\n';
+        }
+        if (t >= TL.textAppear) {
+          html += '<span class="ts">' + stamp(TL.textAppear) + '</span>  '
+                + '<span class="evt-ok">✓</span> pasted '
+                + '<span class="latency">(94 ms)</span>\n';
+        }
+
+        // Blinking caret on the current line. Freeze the caret on
+        // during the paste reveal so the eye doesn't catch it flashing.
+        const blinkOn = (t >= TL.textAppear && t < TL.textAppear + 0.4)
+                          ? true
+                          : ((t * 1.88) % 1) < 0.55;
+        html += blinkOn ? '<span class="caret"></span>'
+                        : '<span class="caret" style="background:transparent"></span>';
+
+        term.innerHTML = html;
+      }
+
+      // ---- Waveform -------------------------------------------------
       function setWaveform(t, intensity, quiet) {
-        // Mixed sinusoids per bar produce a non-repeating "alive" look
-        // without any random component (so frames are deterministic).
-        // `quiet` mode (transcribing phase) collapses everything to a
-        // gentle uniform breathing pulse so the meter clearly reads as
-        // "no longer listening".
         for (let i = 0; i < bars.length; i++) {
           let finalH;
           if (quiet > 0) {
-            // Soft synchronised pulse across all bars while transcribing.
             const pulse = 0.5 + 0.5 * Math.sin(t * 4.2);
-            const quietH = 0.18 + pulse * 0.06;
-            // Crossfade from the active meter into the quiet pulse.
+            const quietH = 0.16 + pulse * 0.06;
             const phase = i * 0.62;
             const v =
                 0.50
@@ -382,68 +551,55 @@
         }
       }
 
+      // ---- Main render ----------------------------------------------
       function renderAt(t) {
-        // Cursor blink: ~530ms period. Frozen ON while text is being
-        // pasted so the eye doesn't catch a flash mid-paste.
-        let blinkVisible;
+        // Editor cursor blink — frozen ON briefly during the paste so
+        // it doesn't catch a flicker.
+        let blinkOn;
         if (t >= TL.textAppear && t < TL.textRevealEnd + 0.4) {
-          blinkVisible = 1;
+          blinkOn = 1;
         } else {
-          blinkVisible = ((t * 1.88) % 1) < 0.55 ? 1 : 0;
+          blinkOn = ((t * 1.88) % 1) < 0.55 ? 1 : 0;
         }
-        cursor.style.opacity = blinkVisible;
+        cursor.style.opacity = blinkOn;
 
-        // Menubar Parakey icon state — active during the whole popover
-        // visibility window.
-        if (t >= TL.popoverIn && t < TL.popoverGone) {
+        // Menubar Parakey icon.
+        if (t >= TL.keyDown && t < TL.popoverGone) {
           parakeyMb.classList.add('active');
         } else {
           parakeyMb.classList.remove('active');
         }
 
-        // Popover open/close interpolation.
+        // Popover open/close.
         let popoverP;
-        if      (t < TL.popoverIn)      popoverP = 0;
-        else if (t < TL.popoverFullyIn) popoverP = easeOutCubic((t - TL.popoverIn) / (TL.popoverFullyIn - TL.popoverIn));
+        if      (t < TL.keyDown)        popoverP = 0;
+        else if (t < TL.popoverFullyIn) popoverP = easeOutCubic((t - TL.keyDown) / (TL.popoverFullyIn - TL.keyDown));
         else if (t < TL.popoverOut)     popoverP = 1;
         else if (t < TL.popoverGone)    popoverP = 1 - easeOutQuad((t - TL.popoverOut) / (TL.popoverGone - TL.popoverOut));
         else                            popoverP = 0;
         popover.style.opacity = popoverP;
         popover.style.transform = 'translateY(' + ((1 - popoverP) * -12) + 'px)';
 
-        // Popover status text swap.
-        if (t >= TL.transcribing && t < TL.popoverOut) {
-          statusText.textContent = 'Transcribing';
-        } else {
-          statusText.textContent = 'Listening';
-        }
-
-        // Waveform intensity envelope: rises into recording, falls during
-        // transcription, dies with the popover. `quiet` rises from 0 to
-        // 1 as we enter the transcribing phase so the bars settle into a
-        // synchronised breathing pulse.
+        // Waveform envelope.
         let intensity, quiet;
-        if (t < TL.popoverIn) {
+        if (t < TL.keyDown) {
           intensity = 0; quiet = 0;
         } else if (t < TL.popoverFullyIn) {
-          intensity = (t - TL.popoverIn) / (TL.popoverFullyIn - TL.popoverIn);
+          intensity = (t - TL.keyDown) / (TL.popoverFullyIn - TL.keyDown);
           quiet = 0;
         } else if (t < TL.recordingEnd) {
           intensity = 1; quiet = 0;
-        } else if (t < TL.popoverOut) {
-          // 0.4s ease from active meter → quiet pulse.
-          const p = clamp((t - TL.recordingEnd) / 0.35, 0, 1);
-          intensity = 1 - 0.7 * p;
+        } else if (t < TL.popoverGone) {
+          const p = clamp((t - TL.recordingEnd) / 0.3, 0, 1);
+          intensity = 1 - 0.6 * p;
           quiet = easeInOut(p);
         } else {
           intensity = 0; quiet = 0;
         }
         setWaveform(t, intensity, quiet);
 
-        // Pasted document text. Snap-in with a brief scale + opacity
-        // settle (~220ms) so it reads like a real paste, not a typewriter.
-        // Scale is applied to the parent paragraph so the inline cursor
-        // continues to flow correctly next to the wrapped text.
+        // Pasted text (snap-in with scale on the parent paragraph so
+        // the inline cursor continues to flow next to the wrap).
         if (t >= TL.textAppear) {
           docText.textContent = FULL_TEXT;
           const p = clamp((t - TL.textAppear) / (TL.textRevealEnd - TL.textAppear), 0, 1);
@@ -456,7 +612,30 @@
           docLine.style.transform = 'scale(1)';
         }
 
-        // End caption fade.
+        // Keyboard widget — fade in just before key-down, depress the
+        // right Option key while held, release on key-up, fade out a
+        // beat later so the eye sees both the press and the release.
+        const KEYS_IN_START   = TL.keyDown - 0.4;
+        const KEYS_IN_END     = TL.keyDown - 0.1;
+        const KEYS_OUT_START  = TL.recordingEnd + 0.4;
+        const KEYS_OUT_END    = TL.recordingEnd + 0.9;
+        let keysP;
+        if      (t < KEYS_IN_START)  keysP = 0;
+        else if (t < KEYS_IN_END)    keysP = easeOutCubic((t - KEYS_IN_START) / (KEYS_IN_END - KEYS_IN_START));
+        else if (t < KEYS_OUT_START) keysP = 1;
+        else if (t < KEYS_OUT_END)   keysP = 1 - easeOutQuad((t - KEYS_OUT_START) / (KEYS_OUT_END - KEYS_OUT_START));
+        else                         keysP = 0;
+        keys.style.opacity = keysP;
+        if (t >= TL.keyDown && t < TL.recordingEnd) {
+          rightOption.classList.add('pressed');
+        } else {
+          rightOption.classList.remove('pressed');
+        }
+
+        // Terminal log lines.
+        setTerminal(t);
+
+        // End caption.
         let cP;
         if      (t < TL.captionIn)       cP = 0;
         else if (t < TL.captionFullyIn)  cP = easeInOut((t - TL.captionIn) / (TL.captionFullyIn - TL.captionIn));
@@ -464,10 +643,7 @@
         caption.style.opacity = cP;
       }
 
-      // Initial state at t=0.
       renderAt(0);
-
-      // Expose deterministic API for the headless renderer.
       window.renderAt = renderAt;
       window.demoReady = true;
     </script>
