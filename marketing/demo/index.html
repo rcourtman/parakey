@@ -124,10 +124,10 @@
       .editor {
         position: absolute;
         left: 50%;
-        top: 110px;
+        top: 200px;
         transform: translateX(-50%);
         width: 1240px;
-        height: 700px;
+        height: 660px;
         background: #ffffff;
         border-radius: 12px;
         overflow: hidden;
@@ -189,25 +189,25 @@
       }
 
       /* ---------- Keypress visualisation + narration. ---------- */
+      /* The input zone — keycap and narration — sits in the desktop
+         band just below the menubar, right of centre. This way the
+         menubar's Parakey icon and the keycap are in the same vertical
+         neighbourhood: when the camera zooms to the menubar, both
+         appear in the same frame, so the press and the icon flip
+         visibly tie together. */
       .stage {
         position: absolute;
-        left: 50%;
-        top: 852px;
-        transform: translateX(-50%);
+        left: 1300px;
+        top: 60px;
         display: flex;
         align-items: center;
-        gap: 42px;
-        width: 760px;
+        gap: 18px;
       }
-      /* A clearly-drawn keyboard cap. Sits in the desktop area (not
-         inside any window), so it reads as input visualisation, not
-         Parakey UI. Camera will zoom in on this cap at the press beat
-         so a 120 px cap fills most of the frame. */
       .keycap {
-        flex: 0 0 130px;
-        width: 130px;
-        height: 130px;
-        border-radius: 14px;
+        flex: 0 0 110px;
+        width: 110px;
+        height: 110px;
+        border-radius: 12px;
         background: #fdfcf8;
         border: 1px solid rgba(0, 0, 0, 0.10);
         box-shadow: 0 4px 0 rgba(0, 0, 0, 0.10), 0 1px 0 rgba(255,255,255,0.6) inset;
@@ -215,18 +215,19 @@
         place-items: center;
         position: relative;
         will-change: transform, box-shadow, background;
+        order: 2;
       }
       .keycap .glyph {
-        font-size: 56px;
+        font-size: 46px;
         color: #18201d;
         line-height: 1;
         font-weight: 500;
-        margin-top: -16px;
+        margin-top: -12px;
       }
       .keycap .lbl {
         position: absolute;
-        bottom: 14px;
-        font-size: 13px;
+        bottom: 11px;
+        font-size: 11px;
         color: #8a948e;
         font-weight: 700;
         letter-spacing: 0.10em;
@@ -244,13 +245,30 @@
       .keycap.pressed .lbl   { color: #962031; }
 
       .narration {
-        flex: 1;
-        font-size: 26px;
+        order: 1;
+        font-size: 24px;
         color: var(--text-dim);
         font-weight: 500;
         letter-spacing: -0.005em;
         font-variant-numeric: tabular-nums;
-        text-align: left;
+        text-align: right;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      /* A small pulsing red dot that appears next to the "Speaking…"
+         narration during the recording beat. Communicates "live audio
+         right now" without faking an app waveform. Clearly sits in
+         the demo's subtitle voice (next to plain narration text),
+         not pretending to be Parakey UI. */
+      .narration-pulse {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--rec);
+        opacity: 0;
+        will-change: opacity, transform;
       }
 
       /* ---------- End caption (main + lightweight subtitle) ---------- */
@@ -351,7 +369,10 @@
         <span class="glyph">⌥</span>
         <span class="lbl">right option</span>
       </div>
-      <div class="narration" id="narration">Hold Right Option</div>
+      <div class="narration" id="narration">
+        <span class="narration-text" id="narrationText">Hold Right Option</span>
+        <span class="narration-pulse" id="narrationPulse"></span>
+      </div>
     </div>
     </div><!-- /.scene -->
 
@@ -396,17 +417,18 @@
         end:           15.50,
       };
 
-      const scene       = document.getElementById('scene');
-      const titleCard   = document.getElementById('titleCard');
-      const docText     = document.getElementById('docText');
-      const docLine     = document.querySelector('.doc-line');
-      const cursor      = document.getElementById('cursor');
-      const stage       = document.getElementById('stage');
-      const keycap      = document.getElementById('keycap');
-      const narration   = document.getElementById('narration');
-      const parakeyMb   = document.getElementById('parakeyMb');
-      const captionMain = document.getElementById('captionMain');
-      const captionSub  = document.getElementById('captionSub');
+      const scene           = document.getElementById('scene');
+      const titleCard       = document.getElementById('titleCard');
+      const docText         = document.getElementById('docText');
+      const docLine         = document.querySelector('.doc-line');
+      const cursor          = document.getElementById('cursor');
+      const stage           = document.getElementById('stage');
+      const keycap          = document.getElementById('keycap');
+      const narrationText   = document.getElementById('narrationText');
+      const narrationPulse  = document.getElementById('narrationPulse');
+      const parakeyMb       = document.getElementById('parakeyMb');
+      const captionMain     = document.getElementById('captionMain');
+      const captionSub      = document.getElementById('captionSub');
 
       docLine.style.transformOrigin = '0% 0%';
 
@@ -417,31 +439,23 @@
       // and pulls back to wide for the workflow + end card.
       const CAMERA = {
         full:    { s: 1.00, cx: 960,  cy: 540 },
-        keycap:  { s: 1.85, cx: 770,  cy: 915 },   // close on the keycap
-        menubar: { s: 1.80, cx: 1820, cy: 200 },   // close on the Parakey menubar icon
-        editor:  { s: 1.20, cx: 960,  cy: 360 },
+        // The menubar shot now frames BOTH the menubar AND the keycap+
+        // narration that sits in the desktop band just below it. The
+        // press happens entirely inside this shot, so the eye sees the
+        // keycap depress and the icon flip red in the same frame, as
+        // one cause-and-effect.
+        menubar: { s: 1.80, cx: 1620, cy: 100 },
+        editor:  { s: 1.20, cx: 960,  cy: 480 },
       };
 
-      // Beat structure:
-      //   2.30 – 2.65   full → keycap (camera moves to the keycap)
-      //   2.65 – 3.50   hold on keycap; key depresses at 2.70 in close-up
-      //   3.50 – 3.95   keycap → menubar (pan up to the menubar)
-      //   3.95 – 4.80   hold on menubar; viewer sees the icon is now red
-      //   4.80 – 5.30   menubar → full (pull back for the recording wide)
-      //   5.30 – 7.50   hold wide; live counter ticks
-      //   7.50 – 7.85   full → editor (move to editor just before paste)
-      //   7.85 – 8.60   hold on editor; viewer reads the pasted text
-      //   8.60 – 9.15   editor → full (pull back for end card)
       const CAMERA_TL = [
         { t: 0.00,  pos: 'full' },
         { t: 2.30,  pos: 'full' },
-        { t: 2.65,  pos: 'keycap' },
-        { t: 3.50,  pos: 'keycap' },
-        { t: 3.95,  pos: 'menubar' },
-        { t: 4.80,  pos: 'menubar' },
-        { t: 5.30,  pos: 'full' },
+        { t: 2.55,  pos: 'menubar' },   // arrive at menubar before keydown (2.70)
+        { t: 4.40,  pos: 'menubar' },   // hold long enough to see press + icon flip
+        { t: 4.95,  pos: 'full' },      // pull back for the recording wide
         { t: 7.50,  pos: 'full' },
-        { t: 7.85,  pos: 'editor' },
+        { t: 7.85,  pos: 'editor' },    // arrive at editor before paste (7.794)
         { t: 8.60,  pos: 'editor' },
         { t: 9.15,  pos: 'full' },
         { t: 15.50, pos: 'full' },
@@ -561,13 +575,24 @@
         keycap.style.boxShadow = kcShadow;
 
         // ----- Narration ------------------------------------------
+        // Live red "audio-in" pulse appears while the user is
+        // speaking, so it reads as live activity instead of a frozen
+        // counter.
         if (t < TL.keyDown) {
-          narration.textContent = 'Hold Right Option';
+          narrationText.textContent = 'Hold Right Option';
+          narrationPulse.style.opacity = 0;
+          narrationPulse.style.transform = 'scale(1)';
         } else if (t < TL.textAppear) {
           const elapsed = Math.min(t, TL.recordingEnd) - TL.keyDown;
-          narration.textContent = 'Listening · ' + elapsed.toFixed(1) + 's';
+          narrationText.textContent = 'Speaking · ' + elapsed.toFixed(1) + 's';
+          // 1.3 Hz heartbeat — visible "live audio" without flashing.
+          const pulse = 0.5 + 0.5 * Math.sin((t - TL.keyDown) * 8.2);
+          narrationPulse.style.opacity = 0.55 + pulse * 0.45;
+          narrationPulse.style.transform = 'scale(' + (0.85 + pulse * 0.35) + ')';
         } else {
-          narration.textContent = 'Transcribed on-device';
+          narrationText.textContent = 'Transcribed on-device';
+          narrationPulse.style.opacity = 0;
+          narrationPulse.style.transform = 'scale(1)';
         }
 
         // ----- Stage fade-out (hands the floor to the caption) ----
