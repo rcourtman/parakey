@@ -439,23 +439,23 @@
       // and pulls back to wide for the workflow + end card.
       const CAMERA = {
         full:    { s: 1.00, cx: 960,  cy: 540 },
-        // The menubar shot now frames BOTH the menubar AND the keycap+
-        // narration that sits in the desktop band just below it. The
-        // press happens entirely inside this shot, so the eye sees the
-        // keycap depress and the icon flip red in the same frame, as
-        // one cause-and-effect.
+        // Menubar close-up that frames the menubar + the keycap +
+        // narration sitting just below it. The entire workflow — set
+        // up, press, recording, release — plays out here, so the eye
+        // never has to leave this zone while the user is "speaking".
         menubar: { s: 1.80, cx: 1620, cy: 100 },
         editor:  { s: 1.20, cx: 960,  cy: 480 },
       };
 
+      // Camera is at the menubar close-up from frame 0; the title
+      // card overlays it during the intro, then fades to reveal it.
+      // We stay on the menubar straight through the recording (so
+      // there's no dead "empty editor" pause), then glide to the
+      // editor exactly as the paste lands.
       const CAMERA_TL = [
-        { t: 0.00,  pos: 'full' },
-        { t: 2.30,  pos: 'full' },
-        { t: 2.55,  pos: 'menubar' },   // arrive at menubar before keydown (2.70)
-        { t: 4.40,  pos: 'menubar' },   // hold long enough to see press + icon flip
-        { t: 4.95,  pos: 'full' },      // pull back for the recording wide
-        { t: 7.50,  pos: 'full' },
-        { t: 7.85,  pos: 'editor' },    // arrive at editor before paste (7.794)
+        { t: 0.00,  pos: 'menubar' },
+        { t: 7.70,  pos: 'menubar' },   // hold through release (key up at 7.70)
+        { t: 7.85,  pos: 'editor' },    // glide to editor as the paste lands (7.794)
         { t: 8.60,  pos: 'editor' },
         { t: 9.15,  pos: 'full' },
         { t: 15.50, pos: 'full' },
