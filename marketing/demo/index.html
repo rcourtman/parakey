@@ -23,8 +23,11 @@
           linear-gradient(180deg, #ece3d2 0%, #d9cebb 55%, #c2b59c 100%);
       }
 
-      /* ---------- Menu bar (static — no state changes here so the
-                    viewer's eye isn't pulled to the corner) ---------- */
+      /* ---------- Menu bar (kept static — Parakey's real menubar icon
+                    presence is enough; we don't fake any glow state
+                    here because we don't know exactly what the real
+                    app does and over-claiming on that is what got us
+                    in trouble before.) ---------- */
       .menubar {
         position: absolute; inset: 0 0 auto 0;
         height: 40px;
@@ -111,6 +114,7 @@
         white-space: pre-wrap;
         word-break: normal;
         overflow-wrap: break-word;
+        position: relative;
       }
       .cursor {
         display: inline-block;
@@ -122,127 +126,100 @@
         border-radius: 1px;
       }
 
-      /* ---------- HUD chip — the single, focal status indicator.
-         Everything that used to be scattered (popover, terminal log,
-         keyboard widget) is collapsed here, directly below the editor,
-         in the same vertical column as the cursor. ---------- */
-      .hud {
-        position: absolute;
-        left: 50%;
-        top: 840px;
-        transform: translate(-50%, 0);
-        display: flex;
-        align-items: center;
-        gap: 22px;
-        padding: 16px 22px;
-        min-width: 600px;
-        background: #ffffff;
-        border-radius: 14px;
-        box-shadow:
-          0 0 0 1px rgba(0, 0, 0, 0.06),
-          0 18px 50px rgba(0, 0, 0, 0.18);
+      /* The inline "94 ms" annotation is small, light-weight, and
+         clearly a callout (no rounded card, no shadow) — it's not
+         pretending to be Parakey's UI. It just labels what the viewer
+         just saw happen. */
+      .latency-badge {
+        display: inline-block;
+        margin-left: 18px;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: rgba(13, 127, 95, 0.10);
+        color: var(--accent);
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.005em;
+        font-variant-numeric: tabular-nums;
+        vertical-align: 12px;
         will-change: opacity, transform;
       }
-      .hud-key {
-        width: 60px;
-        height: 60px;
-        border-radius: 10px;
+
+      /* ---------- Keypress visualisation.
+         A single clearly-drawn keycap below the editor, sitting on the
+         desktop. This visualises the user's keyboard *input*. It is
+         not styled like Parakey's UI — it's a keyboard cap. Beside it
+         sits a small dim narration line that walks the viewer through
+         the beats, like a movie subtitle, not like an app HUD. ---------- */
+      .stage {
+        position: absolute;
+        left: 50%;
+        top: 868px;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 24px;
+      }
+      .keycap {
+        width: 86px;
+        height: 86px;
+        border-radius: 12px;
         background: #fdfcf8;
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        box-shadow: 0 2px 0 rgba(0, 0, 0, 0.06);
+        border: 1px solid rgba(0, 0, 0, 0.10);
+        box-shadow: 0 3px 0 rgba(0, 0, 0, 0.08), 0 1px 0 rgba(255,255,255,0.6) inset;
         display: grid;
         place-items: center;
         position: relative;
-        flex: 0 0 60px;
+        will-change: transform, box-shadow, background;
       }
-      .hud-key .glyph {
-        font-size: 26px;
+      .keycap .glyph {
+        font-size: 38px;
         color: #18201d;
-        font-weight: 500;
         line-height: 1;
-        margin-top: -8px;
+        font-weight: 500;
+        margin-top: -10px;
       }
-      .hud-key .lbl {
+      .keycap .lbl {
         position: absolute;
-        bottom: 7px;
-        font-size: 9px;
+        bottom: 9px;
+        font-size: 11px;
         color: #8a948e;
         font-weight: 600;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
       }
-      .hud-key.pressed {
+      .keycap.pressed {
         background: #d6efe3;
         border-color: rgba(13, 127, 95, 0.45);
         box-shadow:
-          0 0 0 2px rgba(13, 127, 95, 0.18),
-          0 0 16px rgba(16, 185, 129, 0.30);
-        transform: translateY(2px);
+          0 1px 0 rgba(0, 0, 0, 0.06),
+          0 0 0 3px rgba(13, 127, 95, 0.16),
+          0 0 24px rgba(16, 185, 129, 0.28);
+        transform: translateY(3px);
       }
-      .hud-key.pressed .glyph { color: #075941; }
-      .hud-key.pressed .lbl   { color: #1a8a64; }
+      .keycap.pressed .glyph { color: #075941; }
+      .keycap.pressed .lbl   { color: #1a8a64; }
 
-      .hud-wave {
-        flex: 0 0 240px;
-        height: 50px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-      }
-      .hud-wave span {
-        flex: 0 0 9px;
-        width: 9px;
-        background: linear-gradient(180deg, #12a87c 0%, #0d7f5f 100%);
-        border-radius: 4px;
-        height: 16%;
-      }
-
-      .hud-label {
-        flex: 0 0 auto;
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
-        min-width: 260px;
-        font-size: 28px;
-        font-weight: 500;
-        letter-spacing: -0.01em;
-        color: #18201d;
-      }
-      .hud-label .state { color: #18201d; font-weight: 600; }
-      .hud-label .timer {
-        font-family: ui-monospace, "SF Mono", Menlo, monospace;
-        font-feature-settings: "ss01", "cv11";
-        font-variant-numeric: tabular-nums;
-        font-size: 24px;
+      .narration {
+        font-size: 26px;
         color: var(--text-dim);
         font-weight: 500;
+        letter-spacing: -0.005em;
+        font-variant-numeric: tabular-nums;
+        min-width: 320px;
       }
-      .hud-label.done .state {
-        color: var(--accent);
-        font-weight: 700;
-      }
-      .hud-label .check {
-        display: none;
-        place-items: center;
-        width: 26px; height: 26px;
-        border-radius: 50%;
-        background: var(--accent);
-        color: white;
-        font-size: 14px;
-        font-weight: 800;
-        margin-right: 4px;
-        transform: translateY(2px);
-        will-change: transform, opacity;
-      }
-      .hud-label.done .check {
-        display: inline-grid;
+      .narration .timer {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        color: var(--text-dim);
+        margin-left: 8px;
+        font-size: 22px;
       }
 
       /* ---------- End caption (main + lightweight subtitle) ---------- */
       .caption {
         position: absolute;
         left: 0; right: 0;
-        bottom: 60px;
+        bottom: 56px;
         text-align: center;
       }
       .caption .main,
@@ -312,26 +289,16 @@
         <div class="window-title">Untitled.txt</div>
       </div>
       <div class="doc">
-        <p class="doc-line"><span class="text" id="docText"></span><span class="cursor" id="cursor"></span></p>
+        <p class="doc-line"><span class="text" id="docText"></span><span class="cursor" id="cursor"></span><span class="latency-badge" id="latencyBadge" style="opacity:0; transform: scale(0.6);">94&nbsp;ms</span></p>
       </div>
     </div>
 
-    <div class="hud" id="hud" style="opacity:0; transform: translate(-50%, 8px);">
-      <div class="hud-key" id="hudKey">
+    <div class="stage">
+      <div class="keycap" id="keycap">
         <span class="glyph">⌥</span>
         <span class="lbl">option</span>
       </div>
-      <div class="hud-wave" id="hudWave">
-        <span></span><span></span><span></span><span></span>
-        <span></span><span></span><span></span><span></span>
-        <span></span><span></span><span></span><span></span>
-        <span></span><span></span><span></span><span></span>
-        <span></span><span></span><span></span><span></span>
-      </div>
-      <div class="hud-label" id="hudLabel">
-        <span class="state">Hold Right Option</span>
-        <span class="timer" id="hudTimer"></span>
-      </div>
+      <div class="narration" id="narration">Hold Right Option</div>
     </div>
 
     <div class="caption" id="caption">
@@ -342,19 +309,15 @@
     <script>
       const FULL_TEXT = "Parakey is a local push-to-talk dictation app for Apple Silicon Macs.";
 
-      // 14-second deterministic timeline. The 94 ms gap matches the
-      // published p50.
       const TL = {
-        hudIn:          0.40,  // chip spring-entrance begins
-        hudInEnd:       0.85,  // chip fully settled
-        keyDown:        1.05,  // key depresses, "Listening" begins
-        recordingEnd:   6.05,  // KEY UP — waveform freezes
-        textAppear:     6.144, // PASTE — 94 ms after release
-        textRevealEnd:  6.314, // 170 ms snap-in fade
-        badgePop:       6.144, // ✓ badge spring-in (same moment as paste)
-        badgePopEnd:    6.49,
-        hudOut:         8.10,  // chip exit begins
-        hudGone:        8.42,
+        keyDown:        1.0,   // user begins holding the key
+        recordingEnd:   6.0,   // key released
+        textAppear:     6.094, // text pastes 94 ms after release
+        textRevealEnd:  6.264,
+        badgePop:       6.144, // little "94 ms" annotation springs in
+        badgePopEnd:    6.50,
+        badgeFade:      7.80,  // badge starts fading
+        badgeGone:      8.30,
         captionMainIn:  9.50,
         captionMainEnd: 9.83,
         captionSubIn:   9.66,
@@ -365,30 +328,17 @@
       const docText     = document.getElementById('docText');
       const docLine     = document.querySelector('.doc-line');
       const cursor      = document.getElementById('cursor');
-      const hud         = document.getElementById('hud');
-      const hudKey      = document.getElementById('hudKey');
-      const hudLabel    = document.getElementById('hudLabel');
-      const hudTimer    = document.getElementById('hudTimer');
+      const keycap      = document.getElementById('keycap');
+      const narration   = document.getElementById('narration');
+      const badge       = document.getElementById('latencyBadge');
       const captionMain = document.getElementById('captionMain');
       const captionSub  = document.getElementById('captionSub');
-      const bars        = document.querySelectorAll('#hudWave span');
 
       docLine.style.transformOrigin = '0% 0%';
-
-      // Pre-create the ✓ badge once so it can be animated independently
-      // each frame instead of being created/removed (which would defeat
-      // the deterministic per-frame render).
-      const hudCheck = document.createElement('span');
-      hudCheck.className = 'check';
-      hudCheck.textContent = '✓';
-      hudLabel.insertBefore(hudCheck, hudLabel.firstChild);
 
       function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
       function easeOutQuad(p)   { return 1 - Math.pow(1 - clamp(p, 0, 1), 2); }
       function easeOutCubic(p)  { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
-      function easeInOut(p)     { p = clamp(p, 0, 1); return p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2; }
-      // Spring-overshoot ease — settles past 1.0 then back. Good for
-      // entrances that should feel "alive" without bouncing forever.
       function easeOutBack(p, k) {
         p = clamp(p, 0, 1);
         const c1 = k == null ? 1.7 : k;
@@ -396,33 +346,9 @@
         return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2);
       }
 
-      function setWaveform(t, intensity, freeze) {
-        // Deterministic per-bar sine mixture. `freeze` collapses the
-        // bars to a uniform low height once the key is released and
-        // again after the paste, so the line goes calm in step with
-        // the rest of the story.
-        for (let i = 0; i < bars.length; i++) {
-          let finalH;
-          if (freeze >= 1) {
-            finalH = 0.16;
-          } else {
-            const phase = i * 0.55;
-            const v =
-                0.50
-              + 0.30 * Math.sin(t * 6.4 + phase)
-              + 0.22 * Math.sin(t * 3.1 + i * 0.9)
-              + 0.10 * Math.sin(t * 11.7 + phase * 0.7);
-            const h = clamp(v, 0.06, 0.96) * intensity;
-            const liveH = 0.14 + 0.82 * h;
-            finalH = liveH * (1 - freeze) + 0.16 * freeze;
-          }
-          bars[i].style.height = (clamp(finalH, 0.08, 1) * 100) + '%';
-        }
-      }
-
       function renderAt(t) {
-        // ----- Cursor blink (frozen ON briefly during the paste so
-        //       the eye doesn't catch a flicker right as text lands).
+        // Cursor blink — frozen ON briefly during the paste so the eye
+        // doesn't catch a flicker right as the text lands.
         let blinkOn;
         if (t >= TL.textAppear && t < TL.textRevealEnd + 0.4) {
           blinkOn = 1;
@@ -431,97 +357,29 @@
         }
         cursor.style.opacity = blinkOn;
 
-        // ----- HUD visibility — spring entrance + slide-down exit.
-        // Entrance: opacity fades while scale + translateY overshoot in
-        // (a back-ease, so the chip settles past 1.0 then to 1.0).
-        // Exit: faster, scales down slightly and slides away.
-        let hudOpacity = 0, hudScale = 0.94, hudTy = 22;
-        if (t < TL.hudIn) {
-          hudOpacity = 0; hudScale = 0.94; hudTy = 22;
-        } else if (t < TL.hudInEnd) {
-          const p = (t - TL.hudIn) / (TL.hudInEnd - TL.hudIn);
-          const back = easeOutBack(p, 1.6);
-          const fade = easeOutCubic(p);
-          hudOpacity = fade;
-          hudScale = 0.94 + back * 0.06;
-          hudTy = (1 - back) * 22;
-        } else if (t < TL.hudOut) {
-          hudOpacity = 1; hudScale = 1; hudTy = 0;
-        } else if (t < TL.hudGone) {
-          const p = (t - TL.hudOut) / (TL.hudGone - TL.hudOut);
-          const eased = easeOutQuad(p);
-          hudOpacity = 1 - eased;
-          hudScale = 1 - eased * 0.04;
-          hudTy = eased * 16;
-        } else {
-          hudOpacity = 0; hudScale = 0.96; hudTy = 16;
-        }
-        hud.style.opacity = hudOpacity;
-        hud.style.transform =
-          'translate(-50%, ' + hudTy + 'px) scale(' + hudScale + ')';
-
-        // ----- Keycap state (pressed only while the hotkey is held).
+        // Keycap state — depressed only while the hotkey is held.
         if (t >= TL.keyDown && t < TL.recordingEnd) {
-          hudKey.classList.add('pressed');
+          keycap.classList.add('pressed');
         } else {
-          hudKey.classList.remove('pressed');
+          keycap.classList.remove('pressed');
         }
 
-        // ----- Waveform envelope.
-        let intensity, freeze;
+        // Narration line — three beats, plain text, no card chrome.
+        //   before keyDown:        "Hold Right Option"
+        //   during recording:      "Speaking… 2.3s"  (live counter)
+        //   key-up to paste land:  "Speaking… 5.0s"  (frozen briefly)
+        //   after paste:           "Pasted at the cursor."
         if (t < TL.keyDown) {
-          intensity = 0; freeze = 1;
-        } else if (t < TL.keyDown + 0.22) {
-          // Ramp up over ~220ms so the meter doesn't snap to full from
-          // a flat baseline — feels like the mic spinning up.
-          const ramp = (t - TL.keyDown) / 0.22;
-          intensity = ramp; freeze = 1 - ramp;
-        } else if (t < TL.recordingEnd) {
-          intensity = 1; freeze = 0;
-        } else {
-          // Key released — bars freeze the instant the key lifts.
-          intensity = 0; freeze = 1;
-        }
-        setWaveform(t, intensity, freeze);
-
-        // ----- HUD label — the single status string tracks the story.
-        //   t < keyDown:        "Hold Right Option"
-        //   keyDown..recording: "Listening" + live elapsed counter
-        //   recording..paste:   "Listening" frozen at audio length
-        //   paste..hudOut:      "✓ pasted in 94 ms"  (badge springs in)
-        const labelState = hudLabel.querySelector('.state');
-        if (t < TL.keyDown) {
-          hudLabel.classList.remove('done');
-          labelState.textContent = 'Hold Right Option';
-          hudTimer.textContent = '';
+          narration.textContent = 'Hold Right Option';
         } else if (t < TL.textAppear) {
-          hudLabel.classList.remove('done');
-          labelState.textContent = 'Listening';
           const elapsed = Math.min(t, TL.recordingEnd) - TL.keyDown;
-          hudTimer.textContent = elapsed.toFixed(1) + 's';
+          narration.textContent = 'Speaking… ' + elapsed.toFixed(1) + 's';
         } else {
-          hudLabel.classList.add('done');
-          labelState.textContent = 'pasted in 94 ms';
-          hudTimer.textContent = '';
+          narration.textContent = 'Pasted at the cursor.';
         }
 
-        // ----- ✓ badge pop on paste. Starts at scale 0, springs past
-        // 1 with a back-ease, settles at 1. Opacity fades in over the
-        // first half of the animation so we don't see a tiny dot.
-        if (t < TL.badgePop) {
-          hudCheck.style.opacity = 0;
-          hudCheck.style.transform = 'translateY(2px) scale(0)';
-        } else if (t < TL.badgePopEnd) {
-          const p = (t - TL.badgePop) / (TL.badgePopEnd - TL.badgePop);
-          const back = easeOutBack(p, 2.4);
-          hudCheck.style.opacity = clamp(p * 2, 0, 1);
-          hudCheck.style.transform = 'translateY(2px) scale(' + back + ')';
-        } else {
-          hudCheck.style.opacity = 1;
-          hudCheck.style.transform = 'translateY(2px) scale(1)';
-        }
-
-        // ----- Pasted text snap-in.
+        // Pasted text snap-in (scale applied to the parent paragraph so
+        // the inline cursor + badge flow correctly).
         if (t >= TL.textAppear) {
           docText.textContent = FULL_TEXT;
           const p = clamp((t - TL.textAppear) / (TL.textRevealEnd - TL.textAppear), 0, 1);
@@ -534,8 +392,29 @@
           docLine.style.transform = 'scale(1)';
         }
 
-        // ----- Caption — main line and subtitle slide up + fade,
-        // staggered so the eye reads them as two beats, not one.
+        // Inline "94 ms" annotation — appears alongside the just-pasted
+        // text as a clearly-labelled callout, then fades. Styled as a
+        // pill of text, not a fake notification.
+        let badgeOpacity = 0, badgeScale = 0.6;
+        if (t < TL.badgePop) {
+          badgeOpacity = 0; badgeScale = 0.6;
+        } else if (t < TL.badgePopEnd) {
+          const p = (t - TL.badgePop) / (TL.badgePopEnd - TL.badgePop);
+          badgeOpacity = clamp(p * 2, 0, 1);
+          badgeScale = easeOutBack(p, 2.2);
+        } else if (t < TL.badgeFade) {
+          badgeOpacity = 1; badgeScale = 1;
+        } else if (t < TL.badgeGone) {
+          const p = (t - TL.badgeFade) / (TL.badgeGone - TL.badgeFade);
+          badgeOpacity = 1 - easeOutQuad(p);
+          badgeScale = 1 - p * 0.05;
+        } else {
+          badgeOpacity = 0; badgeScale = 0.95;
+        }
+        badge.style.opacity = badgeOpacity;
+        badge.style.transform = 'scale(' + badgeScale + ')';
+
+        // Caption — main + subtitle slide up + fade, staggered.
         function captionReveal(el, start, end) {
           let p;
           if      (t < start) p = 0;
