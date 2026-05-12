@@ -10,6 +10,8 @@
         --line: #d9d4c7;
         --accent: #0d7f5f;
         --accent-bright: #10b981;
+        --rec: #e0334a; /* matches macOS systemRed, which is what the
+                          real app uses for the recording menubar state */
       }
       html, body { margin: 0; padding: 0; }
       body {
@@ -23,11 +25,53 @@
           linear-gradient(180deg, #ece3d2 0%, #d9cebb 55%, #c2b59c 100%);
       }
 
-      /* ---------- Menu bar (kept static — Parakey's real menubar icon
-                    presence is enough; we don't fake any glow state
-                    here because we don't know exactly what the real
-                    app does and over-claiming on that is what got us
-                    in trouble before.) ---------- */
+      /* ---------- Beat 1: title card overlay.
+         Full-screen cover that fades in at the start, holds, then
+         fades out to reveal the workflow scene beneath. ---------- */
+      .title {
+        position: absolute;
+        inset: 0;
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 28px;
+        background: linear-gradient(180deg, #ece3d2 0%, #d9cebb 55%, #c2b59c 100%);
+        will-change: opacity;
+      }
+      .title-icon {
+        width: 180px;
+        height: 180px;
+        border-radius: 42px;
+        background: var(--accent);
+        display: grid;
+        place-items: center;
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.4) inset,
+          0 18px 60px rgba(13, 127, 95, 0.25);
+      }
+      .title-icon svg {
+        width: 100px;
+        height: 100px;
+        color: #ffffff;
+      }
+      .title-word {
+        font-size: 96px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: #18201d;
+        line-height: 1;
+      }
+      .title-tag {
+        font-size: 30px;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+        color: var(--text-dim);
+        margin-top: 4px;
+      }
+
+      /* ---------- Menu bar ---------- */
       .menubar {
         position: absolute; inset: 0 0 auto 0;
         height: 40px;
@@ -50,13 +94,54 @@
         font-variant-numeric: tabular-nums;
         font-weight: 500;
       }
+      /* Parakey menubar icon — black template by default, switches to
+         the macOS-systemRed tint while the hotkey is held. Mirrors
+         setMenuBarState(.recording) → button.contentTintColor =
+         .systemRed in swift/Sources/Parakey/main.swift. */
       .parakey-mb {
-        width: 26px; height: 26px;
-        border-radius: 6px;
+        position: relative;
+        width: 30px; height: 30px;
+        border-radius: 7px;
         display: grid; place-items: center;
         color: #18201d;
       }
-      .parakey-mb svg { width: 16px; height: 16px; }
+      .parakey-mb svg { width: 18px; height: 18px; transition: none; }
+      .parakey-mb.recording { color: var(--rec); }
+
+      /* Attention ring — quick pulse around the menubar icon the moment
+         it changes state, so the viewer's eye catches the icon flip. */
+      .parakey-attention {
+        position: absolute;
+        inset: -6px;
+        border-radius: 12px;
+        border: 2px solid var(--rec);
+        pointer-events: none;
+        will-change: opacity, transform;
+        opacity: 0;
+      }
+
+      /* Audio-input visualisation — concentric arcs ripple outward
+         from the menubar icon while the hotkey is held. Lives in the
+         menubar region (where the real activity indicator is), not
+         pretending to be a separate Parakey UI element. */
+      .audio-waves {
+        position: absolute;
+        right: 88px;
+        top: 20px;
+        width: 4px;
+        height: 4px;
+        pointer-events: none;
+      }
+      .audio-waves span {
+        position: absolute;
+        left: 50%; top: 50%;
+        width: 16px; height: 16px;
+        margin-left: -8px; margin-top: -8px;
+        border-radius: 50%;
+        border: 1.5px solid var(--rec);
+        opacity: 0;
+        will-change: opacity, transform;
+      }
 
       /* ---------- Editor window ---------- */
       .editor {
@@ -126,12 +211,7 @@
         border-radius: 1px;
       }
 
-      /* ---------- Keypress visualisation.
-         A single clearly-drawn keycap below the editor, sitting on the
-         desktop. This visualises the user's keyboard *input*. It is
-         not styled like Parakey's UI — it's a keyboard cap. Beside it
-         sits a small dim narration line that walks the viewer through
-         the beats, like a movie subtitle, not like an app HUD. ---------- */
+      /* ---------- Keypress visualisation + narration. ---------- */
       .stage {
         position: absolute;
         left: 50%;
@@ -172,15 +252,15 @@
         text-transform: uppercase;
       }
       .keycap.pressed {
-        background: #d6efe3;
-        border-color: rgba(13, 127, 95, 0.45);
+        background: rgba(224, 51, 74, 0.10);
+        border-color: rgba(224, 51, 74, 0.40);
         box-shadow:
           0 1px 0 rgba(0, 0, 0, 0.06),
-          0 0 0 2px rgba(13, 127, 95, 0.14);
+          0 0 0 2px rgba(224, 51, 74, 0.14);
         transform: translateY(3px);
       }
-      .keycap.pressed .glyph { color: #075941; }
-      .keycap.pressed .lbl   { color: #1a8a64; }
+      .keycap.pressed .glyph { color: #962031; }
+      .keycap.pressed .lbl   { color: #962031; }
 
       .narration {
         flex: 1;
@@ -223,6 +303,19 @@
     </style>
   </head>
   <body>
+    <!-- Beat 1: title card. Fades in at t=0, fades out by ~2 s. -->
+    <div class="title" id="titleCard">
+      <div class="title-icon">
+        <svg viewBox="0 0 100 100" fill="currentColor">
+          <rect x="35" y="10" width="30" height="55" rx="15"/>
+          <rect x="48.5" y="65" width="3" height="15"/>
+          <rect x="22" y="80" width="56" height="6" rx="3"/>
+        </svg>
+      </div>
+      <div class="title-word">Parakey</div>
+      <div class="title-tag">Local push-to-talk dictation for Apple Silicon Macs</div>
+    </div>
+
     <div class="menubar">
       <div class="group">
         <span class="app">TextEdit</span>
@@ -250,7 +343,8 @@
             <circle cx="11" cy="16" r="1.2" fill="currentColor" stroke="none"/>
           </svg>
         </span>
-        <span class="parakey-mb" aria-hidden="true">
+        <span class="parakey-mb" id="parakeyMb" aria-hidden="true">
+          <span class="parakey-attention" id="parakeyAttention"></span>
           <svg viewBox="0 0 100 100" fill="currentColor">
             <rect x="35" y="10" width="30" height="55" rx="15"/>
             <rect x="48.5" y="65" width="3" height="15"/>
@@ -259,6 +353,12 @@
         </span>
         <span class="clock">9:41</span>
       </div>
+    </div>
+
+    <!-- Audio-input ripples that emanate from the menubar icon area
+         while the hotkey is held. -->
+    <div class="audio-waves" id="audioWaves">
+      <span></span><span></span><span></span>
     </div>
 
     <div class="editor">
@@ -287,37 +387,62 @@
     <script>
       const FULL_TEXT = "Parakey is a local push-to-talk dictation app for Apple Silicon Macs.";
 
+      // Beats:
+      //  0.0 – 1.8 s   Title card ("Parakey — local push-to-talk…")
+      //  1.8 – 2.7 s   Title fades out, scene fades in, narration reads
+      //                "Hold Right Option"
+      //  2.7 s         KEY DOWN. Keycap depresses. Menubar Parakey icon
+      //                switches to systemRed; attention ring pulses
+      //                once around it. Audio-input ripples begin.
+      //  2.7 – 7.7 s   Recording. Live "Listening · x.xs" counter.
+      //  7.7 s         KEY UP. Menubar icon returns to default. Ripples
+      //                stop.
+      //  7.794 s       Text pastes (94 ms after release).
+      //  9.0 – 9.5 s   Stage (keycap + narration) fades out.
+      //  9.5 – 10 s    End caption fades in with tech + lightweight stats.
+      // 10.0 – 15.5 s  Hold final frame.
       const TL = {
-        keyDown:        1.0,   // user begins holding the key
-        recordingEnd:   6.0,   // key released
-        textAppear:     6.094, // text pastes 94 ms after release
-        textRevealEnd:  6.264,
-        // Stage (keycap + narration) fades out before the end caption
-        // appears so the bottom of the screen never has two subtitle
-        // voices at once.
-        stageOut:       9.10,
-        stageGone:      9.55,
+        titleFullyIn:   0.30,
+        titleHoldEnd:   1.70,
+        titleGone:      2.10,
+        sceneIn:        1.85,
+        sceneFullyIn:   2.45,
+
+        keyDown:        2.70,
+        attentionEnd:   3.30,  // attention ring pulses around the icon
+        recordingEnd:   7.70,
+        textAppear:     7.794, // PASTE — 94 ms after release
+        textRevealEnd:  7.964,
+
+        stageOut:       9.00,
+        stageGone:      9.45,
         captionMainIn:  9.50,
         captionMainEnd: 9.83,
         captionSubIn:   9.66,
         captionSubEnd:  10.02,
-        end:           14.0,
+        end:           15.50,
       };
 
-      const docText     = document.getElementById('docText');
-      const docLine     = document.querySelector('.doc-line');
-      const cursor      = document.getElementById('cursor');
-      const stage       = document.getElementById('stage');
-      const keycap      = document.getElementById('keycap');
-      const narration   = document.getElementById('narration');
-      const captionMain = document.getElementById('captionMain');
-      const captionSub  = document.getElementById('captionSub');
+      const titleCard       = document.getElementById('titleCard');
+      const docText         = document.getElementById('docText');
+      const docLine         = document.querySelector('.doc-line');
+      const cursor          = document.getElementById('cursor');
+      const stage           = document.getElementById('stage');
+      const keycap          = document.getElementById('keycap');
+      const narration       = document.getElementById('narration');
+      const parakeyMb       = document.getElementById('parakeyMb');
+      const parakeyAttention = document.getElementById('parakeyAttention');
+      const audioWaves      = document.getElementById('audioWaves');
+      const waveSpans       = audioWaves.querySelectorAll('span');
+      const captionMain     = document.getElementById('captionMain');
+      const captionSub      = document.getElementById('captionSub');
 
       docLine.style.transformOrigin = '0% 0%';
 
       function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
       function easeOutQuad(p)   { return 1 - Math.pow(1 - clamp(p, 0, 1), 2); }
       function easeOutCubic(p)  { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
+      function easeInOut(p)     { p = clamp(p, 0, 1); return p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2; }
       function easeOutBack(p, k) {
         p = clamp(p, 0, 1);
         const c1 = k == null ? 1.7 : k;
@@ -326,8 +451,24 @@
       }
 
       function renderAt(t) {
-        // Cursor blink — frozen ON briefly during the paste so the eye
-        // doesn't catch a flicker right as the text lands.
+        // ----- Beat 1: title card --------------------------------
+        let titleOpacity;
+        if (t < TL.titleFullyIn) {
+          titleOpacity = easeOutCubic(t / TL.titleFullyIn);
+        } else if (t < TL.titleHoldEnd) {
+          titleOpacity = 1;
+        } else if (t < TL.titleGone) {
+          titleOpacity = 1 - easeOutQuad((t - TL.titleHoldEnd) / (TL.titleGone - TL.titleHoldEnd));
+        } else {
+          titleOpacity = 0;
+        }
+        titleCard.style.opacity = titleOpacity;
+        // Hide entirely once gone so it never blocks anything.
+        titleCard.style.pointerEvents = titleOpacity > 0 ? 'auto' : 'none';
+
+        // ----- Cursor blink ---------------------------------------
+        // Frozen ON briefly during paste so the eye doesn't catch a
+        // flicker right as the text lands.
         let blinkOn;
         if (t >= TL.textAppear && t < TL.textRevealEnd + 0.4) {
           blinkOn = 1;
@@ -336,19 +477,43 @@
         }
         cursor.style.opacity = blinkOn;
 
-        // Keycap state — depressed only while the hotkey is held.
-        if (t >= TL.keyDown && t < TL.recordingEnd) {
-          keycap.classList.add('pressed');
+        // ----- Keycap + menubar state during the hotkey hold -----
+        const isRecording = (t >= TL.keyDown && t < TL.recordingEnd);
+        keycap.classList.toggle('pressed', isRecording);
+        parakeyMb.classList.toggle('recording', isRecording);
+
+        // Brief attention pulse around the menubar icon when state
+        // changes — keeps the viewer's eye on the colour flip.
+        if (t >= TL.keyDown && t < TL.attentionEnd) {
+          const p = (t - TL.keyDown) / (TL.attentionEnd - TL.keyDown);
+          const eased = easeOutCubic(p);
+          parakeyAttention.style.opacity = (1 - eased) * 0.85;
+          parakeyAttention.style.transform = 'scale(' + (1 + eased * 0.6) + ')';
         } else {
-          keycap.classList.remove('pressed');
+          parakeyAttention.style.opacity = 0;
+          parakeyAttention.style.transform = 'scale(1)';
         }
 
-        // Narration line — three beats of plain text on the desktop,
-        // no card chrome. Walks the viewer through the workflow but
-        // deliberately *doesn't* claim the speed number — that belongs
-        // to the end caption, where it sits next to the technology
-        // (ANE + Parakeet TDT v3) that actually earns it. Saying "94
-        // ms" twice would just repeat the proof and bury the story.
+        // ----- Audio-input ripples emanating from the icon --------
+        // Three staggered concentric circles that scale up and fade
+        // out, like sonar pings. Active only while the key is held.
+        if (isRecording) {
+          for (let i = 0; i < waveSpans.length; i++) {
+            const period = 1.2;
+            const offset = i * (period / waveSpans.length);
+            const localT = ((t - TL.keyDown + offset) % period) / period; // 0..1
+            const scale = 1 + localT * 6;
+            const opacity = (1 - localT) * 0.65;
+            waveSpans[i].style.transform = 'scale(' + scale + ')';
+            waveSpans[i].style.opacity = opacity;
+          }
+        } else {
+          for (let i = 0; i < waveSpans.length; i++) {
+            waveSpans[i].style.opacity = 0;
+          }
+        }
+
+        // ----- Narration ------------------------------------------
         if (t < TL.keyDown) {
           narration.textContent = 'Hold Right Option';
         } else if (t < TL.textAppear) {
@@ -358,16 +523,14 @@
           narration.textContent = 'Transcribed on-device';
         }
 
-        // Stage (keycap + narration) fade-out — hands the bottom of
-        // the screen over to the end caption.
+        // ----- Stage fade-out (hands the floor to the caption) ----
         let stageOpacity = 1;
         if (t < TL.stageOut) stageOpacity = 1;
         else if (t < TL.stageGone) stageOpacity = 1 - easeOutQuad((t - TL.stageOut) / (TL.stageGone - TL.stageOut));
         else stageOpacity = 0;
         stage.style.opacity = stageOpacity;
 
-        // Pasted text snap-in (scale applied to the parent paragraph so
-        // the inline cursor + badge flow correctly).
+        // ----- Pasted text snap-in --------------------------------
         if (t >= TL.textAppear) {
           docText.textContent = FULL_TEXT;
           const p = clamp((t - TL.textAppear) / (TL.textRevealEnd - TL.textAppear), 0, 1);
@@ -380,7 +543,7 @@
           docLine.style.transform = 'scale(1)';
         }
 
-        // Caption — main + subtitle slide up + fade, staggered.
+        // ----- Caption — main + subtitle slide up + fade, staggered.
         function captionReveal(el, start, end) {
           let p;
           if      (t < start) p = 0;

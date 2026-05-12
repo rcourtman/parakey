@@ -18,8 +18,8 @@ const FFMPEG = '/opt/homebrew/bin/ffmpeg';
 const WIDTH       = 1920;
 const HEIGHT      = 1080;
 const FPS         = 30;
-const DURATION_S  = 14;
-const TOTAL       = FPS * DURATION_S;     // 420 frames
+const DURATION_S  = 15.5;
+const TOTAL       = Math.round(FPS * DURATION_S);     // 465 frames
 
 const FRAMES_DIR  = path.join(__dirname, 'frames');
 const DIST_DIR    = path.join(__dirname, 'dist');
