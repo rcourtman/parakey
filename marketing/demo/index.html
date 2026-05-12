@@ -126,25 +126,6 @@
         border-radius: 1px;
       }
 
-      /* The inline "94 ms" annotation is small, light-weight, and
-         clearly a callout (no rounded card, no shadow) — it's not
-         pretending to be Parakey's UI. It just labels what the viewer
-         just saw happen. */
-      .latency-badge {
-        display: inline-block;
-        margin-left: 18px;
-        padding: 4px 12px;
-        border-radius: 999px;
-        background: rgba(13, 127, 95, 0.10);
-        color: var(--accent);
-        font-size: 22px;
-        font-weight: 700;
-        letter-spacing: -0.005em;
-        font-variant-numeric: tabular-nums;
-        vertical-align: 12px;
-        will-change: opacity, transform;
-      }
-
       /* ---------- Keypress visualisation.
          A single clearly-drawn keycap below the editor, sitting on the
          desktop. This visualises the user's keyboard *input*. It is
@@ -208,11 +189,11 @@
         font-variant-numeric: tabular-nums;
         min-width: 320px;
       }
-      .narration .timer {
-        font-family: ui-monospace, "SF Mono", Menlo, monospace;
-        color: var(--text-dim);
-        margin-left: 8px;
-        font-size: 22px;
+      .narration .latency {
+        color: var(--accent);
+        font-weight: 700;
+        will-change: transform;
+        display: inline-block;
       }
 
       /* ---------- End caption (main + lightweight subtitle) ---------- */
@@ -289,7 +270,7 @@
         <div class="window-title">Untitled.txt</div>
       </div>
       <div class="doc">
-        <p class="doc-line"><span class="text" id="docText"></span><span class="cursor" id="cursor"></span><span class="latency-badge" id="latencyBadge" style="opacity:0; transform: scale(0.6);">94&nbsp;ms</span></p>
+        <p class="doc-line"><span class="text" id="docText"></span><span class="cursor" id="cursor"></span></p>
       </div>
     </div>
 
@@ -330,7 +311,6 @@
       const cursor      = document.getElementById('cursor');
       const keycap      = document.getElementById('keycap');
       const narration   = document.getElementById('narration');
-      const badge       = document.getElementById('latencyBadge');
       const captionMain = document.getElementById('captionMain');
       const captionSub  = document.getElementById('captionSub');
 
@@ -364,18 +344,28 @@
           keycap.classList.remove('pressed');
         }
 
-        // Narration line — three beats, plain text, no card chrome.
-        //   before keyDown:        "Hold Right Option"
-        //   during recording:      "Speaking… 2.3s"  (live counter)
-        //   key-up to paste land:  "Speaking… 5.0s"  (frozen briefly)
-        //   after paste:           "Pasted at the cursor."
+        // Narration line — three beats of plain text on the desktop,
+        // no card chrome. The 94 ms claim rides in this line (in
+        // brand-green, slightly bolder) instead of as an inline pill
+        // inside the editor, because anything inside the editor reads
+        // as something Parakey put there — and Parakey doesn't.
         if (t < TL.keyDown) {
           narration.textContent = 'Hold Right Option';
         } else if (t < TL.textAppear) {
           const elapsed = Math.min(t, TL.recordingEnd) - TL.keyDown;
           narration.textContent = 'Speaking… ' + elapsed.toFixed(1) + 's';
         } else {
-          narration.textContent = 'Pasted at the cursor.';
+          // Spring-scale the "94 ms" portion the moment the text lands,
+          // so the eye snaps from the editor to the proof.
+          let badgeScale = 1;
+          if (t < TL.badgePop) {
+            badgeScale = 0.6;
+          } else if (t < TL.badgePopEnd) {
+            const p = (t - TL.badgePop) / (TL.badgePopEnd - TL.badgePop);
+            badgeScale = easeOutBack(p, 2.2);
+          }
+          narration.innerHTML =
+            'Pasted in <span class="latency" style="transform: scale(' + badgeScale + ')">94 ms</span>';
         }
 
         // Pasted text snap-in (scale applied to the parent paragraph so
@@ -391,28 +381,6 @@
           docText.style.opacity = 0;
           docLine.style.transform = 'scale(1)';
         }
-
-        // Inline "94 ms" annotation — appears alongside the just-pasted
-        // text as a clearly-labelled callout, then fades. Styled as a
-        // pill of text, not a fake notification.
-        let badgeOpacity = 0, badgeScale = 0.6;
-        if (t < TL.badgePop) {
-          badgeOpacity = 0; badgeScale = 0.6;
-        } else if (t < TL.badgePopEnd) {
-          const p = (t - TL.badgePop) / (TL.badgePopEnd - TL.badgePop);
-          badgeOpacity = clamp(p * 2, 0, 1);
-          badgeScale = easeOutBack(p, 2.2);
-        } else if (t < TL.badgeFade) {
-          badgeOpacity = 1; badgeScale = 1;
-        } else if (t < TL.badgeGone) {
-          const p = (t - TL.badgeFade) / (TL.badgeGone - TL.badgeFade);
-          badgeOpacity = 1 - easeOutQuad(p);
-          badgeScale = 1 - p * 0.05;
-        } else {
-          badgeOpacity = 0; badgeScale = 0.95;
-        }
-        badge.style.opacity = badgeOpacity;
-        badge.style.transform = 'scale(' + badgeScale + ')';
 
         // Caption — main + subtitle slide up + fade, staggered.
         function captionReveal(el, start, end) {
