@@ -139,9 +139,11 @@
         transform: translateX(-50%);
         display: flex;
         align-items: center;
-        gap: 24px;
+        gap: 42px;
+        width: 720px;
       }
       .keycap {
+        flex: 0 0 86px;
         width: 86px;
         height: 86px;
         border-radius: 12px;
@@ -174,26 +176,20 @@
         border-color: rgba(13, 127, 95, 0.45);
         box-shadow:
           0 1px 0 rgba(0, 0, 0, 0.06),
-          0 0 0 3px rgba(13, 127, 95, 0.16),
-          0 0 24px rgba(16, 185, 129, 0.28);
+          0 0 0 2px rgba(13, 127, 95, 0.14);
         transform: translateY(3px);
       }
       .keycap.pressed .glyph { color: #075941; }
       .keycap.pressed .lbl   { color: #1a8a64; }
 
       .narration {
+        flex: 1;
         font-size: 26px;
         color: var(--text-dim);
         font-weight: 500;
         letter-spacing: -0.005em;
         font-variant-numeric: tabular-nums;
-        min-width: 320px;
-      }
-      .narration .latency {
-        color: var(--accent);
-        font-weight: 700;
-        will-change: transform;
-        display: inline-block;
+        text-align: left;
       }
 
       /* ---------- End caption (main + lightweight subtitle) ---------- */
@@ -214,6 +210,7 @@
         letter-spacing: -0.015em;
       }
       .caption .main .dim { color: #5d6a64; font-weight: 400; }
+      .caption .main .accent { color: var(--accent); font-weight: 700; }
       .caption .sub {
         margin-top: 10px;
         font-size: 22px;
@@ -274,7 +271,7 @@
       </div>
     </div>
 
-    <div class="stage">
+    <div class="stage" id="stage">
       <div class="keycap" id="keycap">
         <span class="glyph">⌥</span>
         <span class="lbl">option</span>
@@ -283,8 +280,8 @@
     </div>
 
     <div class="caption" id="caption">
-      <div class="main" id="captionMain" style="opacity:0; transform: translateY(14px);">Local on-device dictation. <span class="dim">No cloud transcription.</span></div>
-      <div class="sub" id="captionSub" style="opacity:0; transform: translateY(14px);"><span class="accent">2.2 MB</span> download &middot; <span class="accent">~80 MB</span> RAM idle &middot; <span class="accent">~94 ms</span> end-to-end</div>
+      <div class="main" id="captionMain" style="opacity:0; transform: translateY(14px);">Local speech&#8209;to&#8209;text on the <span class="accent">Apple&nbsp;Neural&nbsp;Engine</span>.</div>
+      <div class="sub" id="captionSub" style="opacity:0; transform: translateY(14px);"><span class="accent">Parakeet&nbsp;TDT&nbsp;v3</span> &middot; CoreML &middot; <span class="accent">~94&nbsp;ms</span> transcription &middot; 2.2&nbsp;MB &middot; ~80&nbsp;MB&nbsp;RAM</div>
     </div>
 
     <script>
@@ -295,10 +292,11 @@
         recordingEnd:   6.0,   // key released
         textAppear:     6.094, // text pastes 94 ms after release
         textRevealEnd:  6.264,
-        badgePop:       6.144, // little "94 ms" annotation springs in
-        badgePopEnd:    6.50,
-        badgeFade:      7.80,  // badge starts fading
-        badgeGone:      8.30,
+        // Stage (keycap + narration) fades out before the end caption
+        // appears so the bottom of the screen never has two subtitle
+        // voices at once.
+        stageOut:       9.10,
+        stageGone:      9.55,
         captionMainIn:  9.50,
         captionMainEnd: 9.83,
         captionSubIn:   9.66,
@@ -309,6 +307,7 @@
       const docText     = document.getElementById('docText');
       const docLine     = document.querySelector('.doc-line');
       const cursor      = document.getElementById('cursor');
+      const stage       = document.getElementById('stage');
       const keycap      = document.getElementById('keycap');
       const narration   = document.getElementById('narration');
       const captionMain = document.getElementById('captionMain');
@@ -345,28 +344,27 @@
         }
 
         // Narration line — three beats of plain text on the desktop,
-        // no card chrome. The 94 ms claim rides in this line (in
-        // brand-green, slightly bolder) instead of as an inline pill
-        // inside the editor, because anything inside the editor reads
-        // as something Parakey put there — and Parakey doesn't.
+        // no card chrome. Walks the viewer through the workflow but
+        // deliberately *doesn't* claim the speed number — that belongs
+        // to the end caption, where it sits next to the technology
+        // (ANE + Parakeet TDT v3) that actually earns it. Saying "94
+        // ms" twice would just repeat the proof and bury the story.
         if (t < TL.keyDown) {
           narration.textContent = 'Hold Right Option';
         } else if (t < TL.textAppear) {
           const elapsed = Math.min(t, TL.recordingEnd) - TL.keyDown;
-          narration.textContent = 'Speaking… ' + elapsed.toFixed(1) + 's';
+          narration.textContent = 'Listening · ' + elapsed.toFixed(1) + 's';
         } else {
-          // Spring-scale the "94 ms" portion the moment the text lands,
-          // so the eye snaps from the editor to the proof.
-          let badgeScale = 1;
-          if (t < TL.badgePop) {
-            badgeScale = 0.6;
-          } else if (t < TL.badgePopEnd) {
-            const p = (t - TL.badgePop) / (TL.badgePopEnd - TL.badgePop);
-            badgeScale = easeOutBack(p, 2.2);
-          }
-          narration.innerHTML =
-            'Pasted in <span class="latency" style="transform: scale(' + badgeScale + ')">94 ms</span>';
+          narration.textContent = 'Transcribed on-device';
         }
+
+        // Stage (keycap + narration) fade-out — hands the bottom of
+        // the screen over to the end caption.
+        let stageOpacity = 1;
+        if (t < TL.stageOut) stageOpacity = 1;
+        else if (t < TL.stageGone) stageOpacity = 1 - easeOutQuad((t - TL.stageOut) / (TL.stageGone - TL.stageOut));
+        else stageOpacity = 0;
+        stage.style.opacity = stageOpacity;
 
         // Pasted text snap-in (scale applied to the parent paragraph so
         // the inline cursor + badge flow correctly).
