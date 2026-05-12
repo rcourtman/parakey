@@ -25,48 +25,51 @@
 
     <main>
       <div class="wrap page-title">
+        <span class="section-eyebrow">Compare</span>
         <h1>Parakey vs WhisperKit apps</h1>
         <p>WhisperKit is a developer framework for on-device speech recognition on Apple Silicon. Parakey is an end-user app that chooses a Parakeet/FluidAudio/CoreML path for one push-to-talk workflow.</p>
       </div>
 
       <section>
         <div class="wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Question</th>
-                <th>Parakey</th>
-                <th>WhisperKit-based apps and projects</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>What is it?</td>
-                <td>A complete menu-bar app for push-to-talk dictation.</td>
-                <td>Apps or projects built on a general on-device speech framework.</td>
-              </tr>
-              <tr>
-                <td>Model family</td>
-                <td>Parakeet TDT v3.</td>
-                <td>Usually Whisper-family CoreML models, depending on the app or project.</td>
-              </tr>
-              <tr>
-                <td>Hardware path</td>
-                <td>CoreML on the Apple Neural Engine via FluidAudio.</td>
-                <td>Depends on the chosen app, model, and framework configuration.</td>
-              </tr>
-              <tr>
-                <td>Best for</td>
-                <td>Users who want a finished app with a small, fixed feature surface.</td>
-                <td>Developers and users who want model choice, framework flexibility, or apps with broader speech features.</td>
-              </tr>
-              <tr>
-                <td>Evidence</td>
-                <td>Ships with a reproducible benchmark comparing the current ANE path against the prior GPU path.</td>
-                <td>Use each app or framework's own benchmark and privacy docs; behavior varies by implementation.</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>Parakey</th>
+                  <th>WhisperKit-based apps and projects</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>What is it?</strong></td>
+                  <td>A complete menu-bar app for push-to-talk dictation.</td>
+                  <td>Apps or projects built on a general on-device speech framework.</td>
+                </tr>
+                <tr>
+                  <td><strong>Model family</strong></td>
+                  <td>Parakeet TDT v3.</td>
+                  <td>Usually Whisper-family CoreML models, depending on the app or project.</td>
+                </tr>
+                <tr>
+                  <td><strong>Hardware path</strong></td>
+                  <td>CoreML on the Apple Neural Engine via FluidAudio.</td>
+                  <td>Depends on the chosen app, model, and framework configuration.</td>
+                </tr>
+                <tr>
+                  <td><strong>Best for</strong></td>
+                  <td>Users who want a finished app with a small, fixed feature surface.</td>
+                  <td>Developers and users who want model choice, framework flexibility, or apps with broader speech features.</td>
+                </tr>
+                <tr>
+                  <td><strong>Evidence</strong></td>
+                  <td>Ships with a reproducible benchmark comparing the current ANE path against the prior GPU path.</td>
+                  <td>Use each app or framework's own benchmark and privacy docs; behavior varies by implementation.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <p>Sources: <a href="https://github.com/rcourtman/parakey">Parakey source</a>, <a href="https://github.com/argmaxinc/WhisperKit">WhisperKit repository</a>.</p>
         </div>
       </section>

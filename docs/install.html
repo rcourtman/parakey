@@ -25,17 +25,23 @@
 
     <main>
       <div class="wrap page-title">
+        <span class="section-eyebrow">Install</span>
         <h1>Install Parakey</h1>
         <p>The canonical install path is the notarised Homebrew Cask. The app then guides the three required macOS privacy grants from its menu.</p>
+        <div class="install-line" aria-label="Install command">
+          <span class="prompt" aria-hidden="true">$</span>
+          <code>brew install --cask rcourtman/parakey/parakey</code>
+        </div>
       </div>
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">Before you start</span>
           <h2>Requirements</h2>
           <div class="facts">
             <div class="fact"><strong>Apple Silicon</strong><span>M1 or newer. Intel Macs are not supported.</span></div>
             <div class="fact"><strong>macOS 26+</strong><span>Tahoe or later.</span></div>
-            <div class="fact"><strong>Homebrew</strong><span>Only used for installation and updates. Parakey has no Homebrew runtime dependency after installation.</span></div>
+            <div class="fact"><strong>Homebrew</strong><span>Used for install and updates. Parakey has no Homebrew runtime dependency after installation.</span></div>
             <div class="fact"><strong>Network once</strong><span>First launch downloads the Parakeet TDT v3 model, about 600 MB, into the FluidAudio support cache.</span></div>
           </div>
         </div>
@@ -43,7 +49,8 @@
 
       <section>
         <div class="wrap">
-          <h2>One-liner</h2>
+          <span class="section-eyebrow">Two commands</span>
+          <h2>Install and launch</h2>
           <pre><code>brew install --cask rcourtman/parakey/parakey
 open /Applications/Parakey.app</code></pre>
           <p>The Parakey icon appears in the menu bar. On first launch, allow 1-5 minutes for the model download before trying the hotkey.</p>
@@ -52,36 +59,73 @@ open /Applications/Parakey.app</code></pre>
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">Three grants</span>
           <h2>Permissions</h2>
           <p>Parakey needs Microphone, Accessibility, and Input Monitoring. Until all three are granted, the menu shows clickable rows for each missing permission.</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Permission</th>
-                <th>Why it is needed</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Microphone</td>
-                <td>Capture audio only while the dictation hotkey is active.</td>
-              </tr>
-              <tr>
-                <td>Accessibility</td>
-                <td>Paste the transcript at the current cursor location with a synthetic Cmd+V event.</td>
-              </tr>
-              <tr>
-                <td>Input Monitoring</td>
-                <td>Observe the chosen global hotkey from the menu-bar app.</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Permission</th>
+                  <th>Why it is needed</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Microphone</strong></td>
+                  <td>Capture audio only while the dictation hotkey is active.</td>
+                </tr>
+                <tr>
+                  <td><strong>Accessibility</strong></td>
+                  <td>Paste the transcript at the current cursor location with a synthetic <span class="kbd">⌘ V</span> event.</td>
+                </tr>
+                <tr>
+                  <td><strong>Input Monitoring</strong></td>
+                  <td>Observe the chosen global hotkey from the menu-bar app.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <p>Click each warning row in the menu. Parakey triggers the OS prompt and opens the relevant Settings pane as a fallback. Rows turn into checkmarks as macOS reflects the grants.</p>
         </div>
       </section>
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">From zero to dictation</span>
+          <h2>Step-by-step</h2>
+          <ol class="steps">
+            <li>
+              <strong>Confirm the hardware</strong>
+              <p>Run <code>uname -m</code>. It must print <code>arm64</code>.</p>
+            </li>
+            <li>
+              <strong>Confirm macOS version</strong>
+              <p>Run <code>sw_vers -productVersion</code>. It should report 26 or later.</p>
+            </li>
+            <li>
+              <strong>Install with Homebrew</strong>
+              <p><code>brew install --cask rcourtman/parakey/parakey</code></p>
+            </li>
+            <li>
+              <strong>Launch the app</strong>
+              <p><code>open /Applications/Parakey.app</code>. First launch downloads the speech model (~600 MB, 1-5 minutes).</p>
+            </li>
+            <li>
+              <strong>Grant the three permissions</strong>
+              <p>Open the Parakey menu and click each warning row. macOS prompts for Microphone, Accessibility, and Input Monitoring.</p>
+            </li>
+            <li>
+              <strong>Hold Right Option, speak, release</strong>
+              <p>The transcript pastes at the cursor in about 100 ms.</p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <span class="section-eyebrow">For shell-capable assistants</span>
           <h2>Agent install prompt</h2>
           <p>Use this when asking a shell-capable assistant to install Parakey on the target Mac.</p>
           <pre><code>Install Parakey from https://github.com/rcourtman/parakey on this Mac.
@@ -107,6 +151,7 @@ Parakey is distributed as a notarised Homebrew Cask. Use the Cask path, not a so
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">Maintenance</span>
           <h2>Update and uninstall</h2>
           <pre><code>brew upgrade --cask parakey
 brew uninstall --zap --cask parakey</code></pre>

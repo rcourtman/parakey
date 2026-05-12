@@ -25,12 +25,14 @@
 
     <main>
       <div class="wrap page-title">
+        <span class="section-eyebrow">Privacy</span>
         <h1>Privacy model</h1>
         <p>Parakey is local-first in the strict sense: no analytics SDK, no accounts, no crash reporter, no transcript sync, and no cloud transcription endpoint.</p>
       </div>
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">What happens to the audio</span>
           <h2>Transcript handling</h2>
           <div class="grid">
             <article class="card">
@@ -39,7 +41,7 @@
             </article>
             <article class="card">
               <h3>Clipboard paste</h3>
-              <p>The finished text is copied to the general pasteboard and pasted into the focused app with Cmd+V.</p>
+              <p>The finished text is copied to the general pasteboard and pasted into the focused app with <span class="kbd">⌘ V</span>.</p>
             </article>
             <article class="card">
               <h3>No transcript logs</h3>
@@ -51,44 +53,48 @@
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">Three calls, fully listed</span>
           <h2>Network calls</h2>
           <p>This is the complete network surface of Parakey itself and its install/update path.</p>
-          <table>
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Destination</th>
-                <th>Purpose</th>
-                <th>User control</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>First launch</td>
-                <td><code>huggingface.co</code></td>
-                <td>FluidAudio downloads the Parakeet TDT v3 CoreML model weights, about 600 MB, into the local support cache.</td>
-                <td>Required once for local transcription.</td>
-              </tr>
-              <tr>
-                <td>Periodic update check</td>
-                <td><code>api.github.com/repos/rcourtman/parakey/releases/latest</code></td>
-                <td>Anonymous release lookup every six hours, plus one check shortly after launch.</td>
-                <td>Disable from Settings.</td>
-              </tr>
-              <tr>
-                <td>User-triggered update</td>
-                <td><code>github.com/rcourtman/parakey/releases/download/...</code></td>
-                <td>Homebrew downloads the signed release archive when the user chooses to update.</td>
-                <td>Only runs when the user updates.</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Destination</th>
+                  <th>Purpose</th>
+                  <th>User control</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>First launch</strong></td>
+                  <td><code>huggingface.co</code></td>
+                  <td>FluidAudio downloads the Parakeet TDT v3 CoreML model weights, about 600 MB, into the local support cache.</td>
+                  <td>Required once for local transcription.</td>
+                </tr>
+                <tr>
+                  <td><strong>Periodic update check</strong></td>
+                  <td><code>api.github.com/repos/rcourtman/parakey/releases/latest</code></td>
+                  <td>Anonymous release lookup every six hours, plus one check shortly after launch.</td>
+                  <td>Disable from Settings.</td>
+                </tr>
+                <tr>
+                  <td><strong>User-triggered update</strong></td>
+                  <td><code>github.com/rcourtman/parakey/releases/download/...</code></td>
+                  <td>Homebrew downloads the signed release archive when the user chooses to update.</td>
+                  <td>Only runs when the user updates.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <p>Machine-readable version: <a href="privacy/network-calls.json">privacy/network-calls.json</a>.</p>
         </div>
       </section>
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">Sandbox surface</span>
           <h2>Permissions and entitlements</h2>
           <p>The notarised app uses two hardened-runtime entitlements: audio input and microphone. macOS also requires user-granted Accessibility and Input Monitoring permissions for the hotkey and paste workflow.</p>
           <div class="note">

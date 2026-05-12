@@ -25,12 +25,14 @@
 
     <main>
       <div class="wrap page-title">
-        <h1>Benchmarks</h1>
-        <p>Parakey keeps its latency claims tied to a reproducible benchmark in <code>experiments/swift-bench/</code>.</p>
+        <span class="section-eyebrow">Benchmarks</span>
+        <h1>How fast is Parakey?</h1>
+        <p>Parakey keeps its latency claims tied to a reproducible benchmark in <code>experiments/swift-bench/</code>. Numbers below are p50 across five trials per backend, first inference excluded.</p>
       </div>
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">Setup</span>
           <h2>Environment</h2>
           <div class="facts">
             <div class="fact"><strong>Machine</strong><span>Mac mini M4, 10 cores, 16 GB.</span></div>
@@ -43,54 +45,98 @@
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">p50 latency</span>
           <h2>Results</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Clip</th>
-                <th>Duration</th>
-                <th>FluidAudio on ANE</th>
-                <th>Prior GPU path</th>
-                <th>Ratio</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><code>short-clean</code></td>
-                <td>2.50 s</td>
-                <td><strong>92.4 ms</strong></td>
-                <td>145.4 ms</td>
-                <td>1.57x</td>
-              </tr>
-              <tr>
-                <td><code>medium-clean</code></td>
-                <td>3.99 s</td>
-                <td><strong>96.1 ms</strong></td>
-                <td>176.3 ms</td>
-                <td>1.83x</td>
-              </tr>
-              <tr>
-                <td><code>disfluent</code></td>
-                <td>5.31 s</td>
-                <td><strong>94.1 ms</strong></td>
-                <td>185.9 ms</td>
-                <td>1.97x</td>
-              </tr>
-              <tr>
-                <td><code>longer-technical</code></td>
-                <td>9.49 s</td>
-                <td><strong>152.4 ms</strong></td>
-                <td>300.9 ms</td>
-                <td>1.97x</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Clip</th>
+                  <th>Duration</th>
+                  <th>FluidAudio on ANE</th>
+                  <th>Prior GPU path</th>
+                  <th>Speedup</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>short-clean</code></td>
+                  <td>2.50 s</td>
+                  <td>
+                    <div class="bar-cell">
+                      <span class="bar"><span style="width:30.7%"></span></span>
+                      <strong>92.4 ms</strong>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="bar-cell">
+                      <span class="bar bar--muted"><span style="width:48.3%"></span></span>
+                      <span>145.4 ms</span>
+                    </div>
+                  </td>
+                  <td>1.57&times;</td>
+                </tr>
+                <tr>
+                  <td><code>medium-clean</code></td>
+                  <td>3.99 s</td>
+                  <td>
+                    <div class="bar-cell">
+                      <span class="bar"><span style="width:31.9%"></span></span>
+                      <strong>96.1 ms</strong>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="bar-cell">
+                      <span class="bar bar--muted"><span style="width:58.6%"></span></span>
+                      <span>176.3 ms</span>
+                    </div>
+                  </td>
+                  <td>1.83&times;</td>
+                </tr>
+                <tr>
+                  <td><code>disfluent</code></td>
+                  <td>5.31 s</td>
+                  <td>
+                    <div class="bar-cell">
+                      <span class="bar"><span style="width:31.3%"></span></span>
+                      <strong>94.1 ms</strong>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="bar-cell">
+                      <span class="bar bar--muted"><span style="width:61.8%"></span></span>
+                      <span>185.9 ms</span>
+                    </div>
+                  </td>
+                  <td>1.97&times;</td>
+                </tr>
+                <tr>
+                  <td><code>longer-technical</code></td>
+                  <td>9.49 s</td>
+                  <td>
+                    <div class="bar-cell">
+                      <span class="bar"><span style="width:50.6%"></span></span>
+                      <strong>152.4 ms</strong>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="bar-cell">
+                      <span class="bar bar--muted"><span style="width:100%"></span></span>
+                      <span>300.9 ms</span>
+                    </div>
+                  </td>
+                  <td>1.97&times;</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <p>Machine-readable results: <a href="benchmarks/results.json">benchmarks/results.json</a>. Reproduction docs: <a href="https://github.com/rcourtman/parakey/tree/main/experiments/swift-bench">experiments/swift-bench</a>.</p>
         </div>
       </section>
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">Reading the numbers</span>
           <h2>Interpretation</h2>
           <div class="grid">
             <article class="card">

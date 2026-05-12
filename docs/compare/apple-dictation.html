@@ -25,48 +25,51 @@
 
     <main>
       <div class="wrap page-title">
+        <span class="section-eyebrow">Compare</span>
         <h1>Parakey vs Apple Dictation</h1>
         <p>Apple Dictation is built into macOS. Parakey is a focused third-party menu-bar app for local push-to-talk dictation with a documented engine, benchmark, and network surface.</p>
       </div>
 
       <section>
         <div class="wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Question</th>
-                <th>Parakey</th>
-                <th>Apple Dictation</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Install</td>
-                <td>Homebrew Cask, notarised app, three explicit privacy grants.</td>
-                <td>Built into macOS, enabled from Keyboard settings.</td>
-              </tr>
-              <tr>
-                <td>Trigger model</td>
-                <td>Hold-to-talk by default, toggle mode optional.</td>
-                <td>Starts from the configured Dictation shortcut and stops manually or after inactivity.</td>
-              </tr>
-              <tr>
-                <td>Engine transparency</td>
-                <td>Parakeet TDT v3 through FluidAudio and CoreML on the Apple Neural Engine.</td>
-                <td>Apple documents where to check whether general text Dictation is processed on device for the current configuration.</td>
-              </tr>
-              <tr>
-                <td>Privacy posture</td>
-                <td>No telemetry, no accounts, no transcript persistence.</td>
-                <td>Governed by Apple's Dictation and privacy settings.</td>
-              </tr>
-              <tr>
-                <td>Best for</td>
-                <td>Users who want a small auditable utility with a fixed local transcription path.</td>
-                <td>Users who want the built-in system feature and do not want to install another app.</td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>Parakey</th>
+                  <th>Apple Dictation</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Install</strong></td>
+                  <td>Homebrew Cask, notarised app, three explicit privacy grants.</td>
+                  <td>Built into macOS, enabled from Keyboard settings.</td>
+                </tr>
+                <tr>
+                  <td><strong>Trigger model</strong></td>
+                  <td>Hold-to-talk by default, toggle mode optional.</td>
+                  <td>Starts from the configured Dictation shortcut and stops manually or after inactivity.</td>
+                </tr>
+                <tr>
+                  <td><strong>Engine transparency</strong></td>
+                  <td>Parakeet TDT v3 through FluidAudio and CoreML on the Apple Neural Engine.</td>
+                  <td>Apple documents where to check whether general text Dictation is processed on device for the current configuration.</td>
+                </tr>
+                <tr>
+                  <td><strong>Privacy posture</strong></td>
+                  <td>No telemetry, no accounts, no transcript persistence.</td>
+                  <td>Governed by Apple's Dictation and privacy settings.</td>
+                </tr>
+                <tr>
+                  <td><strong>Best for</strong></td>
+                  <td>Users who want a small auditable utility with a fixed local transcription path.</td>
+                  <td>Users who want the built-in system feature and do not want to install another app.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <p>Sources: <a href="https://github.com/rcourtman/parakey">Parakey source</a>, <a href="https://support.apple.com/guide/mac-help/use-dictation-mh40584/mac">Apple Dictation guide</a>.</p>
         </div>
       </section>

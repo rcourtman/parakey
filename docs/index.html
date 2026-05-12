@@ -67,12 +67,16 @@
 
     <main>
       <div class="wrap hero">
-        <div>
+        <div class="hero-copy">
           <h1>Local push-to-talk dictation for Apple Silicon Macs.</h1>
-          <p>Hold a key, speak, release. Parakey pastes text at the cursor in about 100 ms using Parakeet TDT v3 through CoreML on the Apple Neural Engine.</p>
+          <p>Hold a key, speak, release. Parakey pastes the transcript at the cursor in about 100 ms using Parakeet TDT v3 through CoreML on the Apple Neural Engine.</p>
+          <div class="install-line" aria-label="Install command">
+            <span class="prompt" aria-hidden="true">$</span>
+            <code>brew install --cask rcourtman/parakey/parakey</code>
+          </div>
           <div class="actions">
             <a class="button" href="install.html">Install Parakey</a>
-            <a class="button secondary" href="benchmarks.html">View Benchmarks</a>
+            <a class="button secondary" href="benchmarks.html">View benchmarks</a>
           </div>
           <div class="stat-row" aria-label="Parakey summary">
             <div class="stat"><strong>~100 ms</strong><span>key release to pasted text</span></div>
@@ -81,37 +85,61 @@
             <div class="stat"><strong>0% CPU</strong><span>between dictations</span></div>
           </div>
         </div>
-        <div class="hero-visual" aria-label="Parakey workflow preview">
-          <div class="workflow-panel">
-            <div class="app-strip">
-              <span class="status-dot" aria-hidden="true"></span>
-              <strong>Parakey</strong>
-              <span>Ready</span>
+        <div class="hero-visual">
+          <figure class="menu-mock" aria-label="Parakey menu bar preview">
+            <div class="menu-mock__bar">
+              <span class="menu-mock__time">9:41</span>
+              <span class="menu-mock__bar-icons" aria-hidden="true">
+                <span class="icon-dot"></span>
+                <span class="icon-rect"></span>
+                <span class="menu-mock__active" title="Parakey">
+                  <svg viewBox="0 0 100 100" aria-hidden="true">
+                    <g fill="currentColor">
+                      <rect x="35" y="10" width="30" height="55" rx="15"/>
+                      <rect x="48.5" y="65" width="3" height="15"/>
+                      <rect x="22" y="80" width="56" height="6" rx="3"/>
+                    </g>
+                  </svg>
+                </span>
+              </span>
             </div>
-            <div class="workflow-step">
-              <span>Hold</span>
-              <strong>Right Option</strong>
+            <span class="menu-mock__pointer" aria-hidden="true"></span>
+            <div class="menu-mock__panel" role="presentation">
+              <div class="menu-mock__row menu-mock__row--header">
+                <strong>Parakey</strong>
+                <span class="ready">Ready</span>
+              </div>
+              <div class="menu-mock__sep"></div>
+              <div class="menu-mock__row menu-mock__row--recent">
+                <span class="label">Most recent</span>
+                <span class="recent-text">Parakey pastes text at the cursor.</span>
+              </div>
+              <div class="menu-mock__sep"></div>
+              <div class="menu-mock__row menu-mock__row--hover">
+                <span>Settings</span>
+                <span class="menu-mock__chev" aria-hidden="true">›</span>
+              </div>
+              <div class="menu-mock__row">
+                <span>Pause</span>
+              </div>
+              <div class="menu-mock__row">
+                <span>About Parakey</span>
+              </div>
+              <div class="menu-mock__sep"></div>
+              <div class="menu-mock__row">
+                <span>Quit Parakey</span>
+                <span class="menu-mock__kbd">⌘ Q</span>
+              </div>
             </div>
-            <div class="waveform" aria-hidden="true">
-              <span></span>
-              <span></span>
-              <span></span>
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
-            <div class="workflow-arrow" aria-hidden="true">&darr;</div>
-            <div class="paste-preview">
-              <span>Text at cursor</span>
-              <strong>Parakey is fast local dictation.</strong>
-            </div>
-          </div>
+            <figcaption class="menu-mock__caption">Lives in the menu bar. No dock icon, no preferences window.</figcaption>
+          </figure>
         </div>
       </div>
 
       <section>
         <div class="wrap">
-          <h2>Built for one workflow</h2>
+          <span class="section-eyebrow">One workflow</span>
+          <h2>Built for one thing, not ten</h2>
           <div class="grid">
             <article class="card">
               <h3>Press and speak</h3>
@@ -131,7 +159,8 @@
 
       <section>
         <div class="wrap">
-          <h2>Good fit</h2>
+          <span class="section-eyebrow">Good fit</span>
+          <h2>When Parakey is the right pick</h2>
           <div class="grid two">
             <article class="card">
               <h3>Use Parakey when you want</h3>
@@ -147,6 +176,7 @@
 
       <section>
         <div class="wrap">
+          <span class="section-eyebrow">Why trust it</span>
           <h2>Evidence and install paths</h2>
           <div class="facts">
             <div class="fact"><strong>Benchmarked</strong><span>FluidAudio on the Apple Neural Engine is measured against the prior GPU path on the same WAV clips.</span></div>
