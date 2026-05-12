@@ -131,18 +131,121 @@ a:hover {
   gap: 18px;
 }
 
-.signal {
+.workflow-panel {
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 8px;
+  padding: clamp(18px, 3vw, 28px);
+  box-shadow: 0 22px 60px rgba(24, 32, 29, 0.08);
+}
+
+.app-strip,
+.workflow-step,
+.paste-preview {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--soft) 42%, white);
+}
+
+.app-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  color: var(--muted);
+}
+
+.app-strip strong {
+  color: var(--text);
+  margin-right: auto;
+}
+
+.status-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.workflow-step {
+  margin-top: 18px;
   padding: 22px;
 }
 
-.signal img {
+.workflow-step span,
+.paste-preview span {
   display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 680;
+  text-transform: uppercase;
+}
+
+.workflow-step strong {
+  display: block;
+  margin-top: 5px;
+  font-size: clamp(2rem, 4vw, 3.1rem);
+  line-height: 1;
+}
+
+.waveform {
+  height: 118px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 20px 0 6px;
+}
+
+.waveform span {
+  width: clamp(16px, 3.4vw, 28px);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #12a87c, #075941);
+}
+
+.waveform span:nth-child(1) {
+  height: 36px;
+}
+
+.waveform span:nth-child(2) {
+  height: 76px;
+}
+
+.waveform span:nth-child(3) {
+  height: 112px;
+}
+
+.waveform span:nth-child(4) {
+  height: 86px;
+}
+
+.waveform span:nth-child(5) {
+  height: 58px;
+}
+
+.waveform span:nth-child(6) {
+  height: 96px;
+}
+
+.workflow-arrow {
+  color: var(--accent-dark);
+  font-size: 2rem;
+  line-height: 1;
+  text-align: center;
+  margin: 2px 0 10px;
+}
+
+.paste-preview {
+  padding: 20px;
+  background: white;
+}
+
+.paste-preview strong {
+  display: block;
+  margin-top: 7px;
+  font-size: clamp(1.35rem, 2.6vw, 2rem);
+  line-height: 1.18;
 }
 
 .stat-row {
