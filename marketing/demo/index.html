@@ -120,41 +120,6 @@
       .parakey-mb svg { width: 18px; height: 18px; transition: none; }
       .parakey-mb.recording { color: var(--rec); }
 
-      /* Attention ring — quick pulse around the menubar icon the moment
-         it changes state, so the viewer's eye catches the icon flip. */
-      .parakey-attention {
-        position: absolute;
-        inset: -6px;
-        border-radius: 12px;
-        border: 2px solid var(--rec);
-        pointer-events: none;
-        will-change: opacity, transform;
-        opacity: 0;
-      }
-
-      /* Audio-input visualisation — concentric arcs ripple outward
-         from the menubar icon while the hotkey is held. Lives in the
-         menubar region (where the real activity indicator is), not
-         pretending to be a separate Parakey UI element. */
-      .audio-waves {
-        position: absolute;
-        right: 88px;
-        top: 20px;
-        width: 4px;
-        height: 4px;
-        pointer-events: none;
-      }
-      .audio-waves span {
-        position: absolute;
-        left: 50%; top: 50%;
-        width: 16px; height: 16px;
-        margin-left: -8px; margin-top: -8px;
-        border-radius: 50%;
-        border: 1.5px solid var(--rec);
-        opacity: 0;
-        will-change: opacity, transform;
-      }
-
       /* ---------- Editor window ---------- */
       .editor {
         position: absolute;
@@ -227,49 +192,53 @@
       .stage {
         position: absolute;
         left: 50%;
-        top: 868px;
+        top: 852px;
         transform: translateX(-50%);
         display: flex;
         align-items: center;
         gap: 42px;
-        width: 720px;
+        width: 760px;
       }
+      /* A clearly-drawn keyboard cap. Sits in the desktop area (not
+         inside any window), so it reads as input visualisation, not
+         Parakey UI. Camera will zoom in on this cap at the press beat
+         so a 120 px cap fills most of the frame. */
       .keycap {
-        flex: 0 0 86px;
-        width: 86px;
-        height: 86px;
-        border-radius: 12px;
+        flex: 0 0 130px;
+        width: 130px;
+        height: 130px;
+        border-radius: 14px;
         background: #fdfcf8;
         border: 1px solid rgba(0, 0, 0, 0.10);
-        box-shadow: 0 3px 0 rgba(0, 0, 0, 0.08), 0 1px 0 rgba(255,255,255,0.6) inset;
+        box-shadow: 0 4px 0 rgba(0, 0, 0, 0.10), 0 1px 0 rgba(255,255,255,0.6) inset;
         display: grid;
         place-items: center;
         position: relative;
         will-change: transform, box-shadow, background;
       }
       .keycap .glyph {
-        font-size: 38px;
+        font-size: 56px;
         color: #18201d;
         line-height: 1;
         font-weight: 500;
-        margin-top: -10px;
+        margin-top: -16px;
       }
       .keycap .lbl {
         position: absolute;
-        bottom: 9px;
-        font-size: 11px;
+        bottom: 14px;
+        font-size: 13px;
         color: #8a948e;
-        font-weight: 600;
-        letter-spacing: 0.08em;
+        font-weight: 700;
+        letter-spacing: 0.10em;
         text-transform: uppercase;
+        white-space: nowrap;
       }
+      /* Press state — the cap actually moves down with a brief
+         spring overshoot (handled in JS) and gains a subtle red
+         shadow that's animated as a held-glow pulse. */
       .keycap.pressed {
         background: rgba(224, 51, 74, 0.10);
-        border-color: rgba(224, 51, 74, 0.40);
-        box-shadow:
-          0 1px 0 rgba(0, 0, 0, 0.06),
-          0 0 0 2px rgba(224, 51, 74, 0.14);
-        transform: translateY(3px);
+        border-color: rgba(224, 51, 74, 0.45);
       }
       .keycap.pressed .glyph { color: #962031; }
       .keycap.pressed .lbl   { color: #962031; }
@@ -357,7 +326,6 @@
           </svg>
         </span>
         <span class="parakey-mb" id="parakeyMb" aria-hidden="true">
-          <span class="parakey-attention" id="parakeyAttention"></span>
           <svg viewBox="0 0 100 100" fill="currentColor">
             <rect x="35" y="10" width="30" height="55" rx="15"/>
             <rect x="48.5" y="65" width="3" height="15"/>
@@ -366,12 +334,6 @@
         </span>
         <span class="clock">9:41</span>
       </div>
-    </div>
-
-    <!-- Audio-input ripples that emanate from the menubar icon area
-         while the hotkey is held. -->
-    <div class="audio-waves" id="audioWaves">
-      <span></span><span></span><span></span>
     </div>
 
     <div class="editor">
@@ -387,7 +349,7 @@
     <div class="stage" id="stage">
       <div class="keycap" id="keycap">
         <span class="glyph">⌥</span>
-        <span class="lbl">option</span>
+        <span class="lbl">right option</span>
       </div>
       <div class="narration" id="narration">Hold Right Option</div>
     </div>
@@ -419,11 +381,8 @@
         titleFullyIn:   0.30,
         titleHoldEnd:   1.70,
         titleGone:      2.10,
-        sceneIn:        1.85,
-        sceneFullyIn:   2.45,
 
         keyDown:        2.70,
-        attentionEnd:   3.30,  // attention ring pulses around the icon
         recordingEnd:   7.70,
         textAppear:     7.794, // PASTE — 94 ms after release
         textRevealEnd:  7.964,
@@ -437,20 +396,17 @@
         end:           15.50,
       };
 
-      const scene           = document.getElementById('scene');
-      const titleCard       = document.getElementById('titleCard');
-      const docText         = document.getElementById('docText');
-      const docLine         = document.querySelector('.doc-line');
-      const cursor          = document.getElementById('cursor');
-      const stage           = document.getElementById('stage');
-      const keycap          = document.getElementById('keycap');
-      const narration       = document.getElementById('narration');
-      const parakeyMb       = document.getElementById('parakeyMb');
-      const parakeyAttention = document.getElementById('parakeyAttention');
-      const audioWaves      = document.getElementById('audioWaves');
-      const waveSpans       = audioWaves.querySelectorAll('span');
-      const captionMain     = document.getElementById('captionMain');
-      const captionSub      = document.getElementById('captionSub');
+      const scene       = document.getElementById('scene');
+      const titleCard   = document.getElementById('titleCard');
+      const docText     = document.getElementById('docText');
+      const docLine     = document.querySelector('.doc-line');
+      const cursor      = document.getElementById('cursor');
+      const stage       = document.getElementById('stage');
+      const keycap      = document.getElementById('keycap');
+      const narration   = document.getElementById('narration');
+      const parakeyMb   = document.getElementById('parakeyMb');
+      const captionMain = document.getElementById('captionMain');
+      const captionSub  = document.getElementById('captionSub');
 
       docLine.style.transformOrigin = '0% 0%';
 
@@ -461,24 +417,33 @@
       // and pulls back to wide for the workflow + end card.
       const CAMERA = {
         full:    { s: 1.00, cx: 960,  cy: 540 },
-        menubar: { s: 1.40, cx: 1700, cy: 240 },
+        keycap:  { s: 1.85, cx: 770,  cy: 915 },   // close on the keycap
+        menubar: { s: 1.80, cx: 1820, cy: 200 },   // close on the Parakey menubar icon
         editor:  { s: 1.20, cx: 960,  cy: 360 },
       };
 
-      // Keyframes — t, position. Between keyframes, ease-in-out
-      // between the two surrounding positions. Arrivals are timed to
-      // land ~0.1 s before each beat so the eye is already on the
-      // right spot when the beat fires.
+      // Beat structure:
+      //   2.30 – 2.65   full → keycap (camera moves to the keycap)
+      //   2.65 – 3.50   hold on keycap; key depresses at 2.70 in close-up
+      //   3.50 – 3.95   keycap → menubar (pan up to the menubar)
+      //   3.95 – 4.80   hold on menubar; viewer sees the icon is now red
+      //   4.80 – 5.30   menubar → full (pull back for the recording wide)
+      //   5.30 – 7.50   hold wide; live counter ticks
+      //   7.50 – 7.85   full → editor (move to editor just before paste)
+      //   7.85 – 8.60   hold on editor; viewer reads the pasted text
+      //   8.60 – 9.15   editor → full (pull back for end card)
       const CAMERA_TL = [
         { t: 0.00,  pos: 'full' },
-        { t: 2.30,  pos: 'full' },     // hold wide after title fades out
-        { t: 2.65,  pos: 'menubar' },  // arrive at menubar just before keydown (2.70)
-        { t: 3.90,  pos: 'menubar' },  // hold: red icon + ripples
-        { t: 4.40,  pos: 'full' },     // pull back to wide
-        { t: 7.50,  pos: 'full' },     // hold wide through recording
-        { t: 7.85,  pos: 'editor' },   // arrive at editor right before paste (7.794)
-        { t: 8.60,  pos: 'editor' },   // hold: read the pasted text
-        { t: 9.15,  pos: 'full' },     // pull back to wide for end card
+        { t: 2.30,  pos: 'full' },
+        { t: 2.65,  pos: 'keycap' },
+        { t: 3.50,  pos: 'keycap' },
+        { t: 3.95,  pos: 'menubar' },
+        { t: 4.80,  pos: 'menubar' },
+        { t: 5.30,  pos: 'full' },
+        { t: 7.50,  pos: 'full' },
+        { t: 7.85,  pos: 'editor' },
+        { t: 8.60,  pos: 'editor' },
+        { t: 9.15,  pos: 'full' },
         { t: 15.50, pos: 'full' },
       ];
 
@@ -560,36 +525,40 @@
         keycap.classList.toggle('pressed', isRecording);
         parakeyMb.classList.toggle('recording', isRecording);
 
-        // Brief attention pulse around the menubar icon when state
-        // changes — keeps the viewer's eye on the colour flip.
-        if (t >= TL.keyDown && t < TL.attentionEnd) {
-          const p = (t - TL.keyDown) / (TL.attentionEnd - TL.keyDown);
-          const eased = easeOutCubic(p);
-          parakeyAttention.style.opacity = (1 - eased) * 0.85;
-          parakeyAttention.style.transform = 'scale(' + (1 + eased * 0.6) + ')';
-        } else {
-          parakeyAttention.style.opacity = 0;
-          parakeyAttention.style.transform = 'scale(1)';
-        }
-
-        // ----- Audio-input ripples emanating from the icon --------
-        // Three staggered concentric circles that scale up and fade
-        // out, like sonar pings. Active only while the key is held.
+        // Press animation — spring-overshoot depress on key-down,
+        // pulsing red held-glow while the key stays down, snap back
+        // on release. Done in JS so it stays deterministic frame to
+        // frame.
+        let kcDepress = 0;
+        let kcShadow = '0 4px 0 rgba(0,0,0,0.10), 0 1px 0 rgba(255,255,255,0.6) inset';
         if (isRecording) {
-          for (let i = 0; i < waveSpans.length; i++) {
-            const period = 1.2;
-            const offset = i * (period / waveSpans.length);
-            const localT = ((t - TL.keyDown + offset) % period) / period; // 0..1
-            const scale = 1 + localT * 6;
-            const opacity = (1 - localT) * 0.65;
-            waveSpans[i].style.transform = 'scale(' + scale + ')';
-            waveSpans[i].style.opacity = opacity;
+          const pressT = t - TL.keyDown;
+          if (pressT < 0.18) {
+            // Overshoot from 0 → ~6px → settle at 4px over 180 ms.
+            kcDepress = easeOutBack(pressT / 0.18, 2.0) * 4;
+          } else {
+            kcDepress = 4;
           }
+          // Slow ~1.4 Hz pulse on the red held-glow so the cap reads
+          // as "still held" rather than "static pressed".
+          const pulse = 0.5 + 0.5 * Math.sin((t - TL.keyDown) * 8.8);
+          const glow = 0.28 + 0.18 * pulse;
+          kcShadow =
+            '0 ' + (4 - kcDepress) + 'px 0 rgba(0,0,0,0.06), '
+          + '0 0 0 2px rgba(224, 51, 74, 0.30), '
+          + '0 0 26px rgba(224, 51, 74, ' + glow.toFixed(3) + ')';
+        } else if (t < TL.keyDown) {
+          // Idle — defaults already in CSS.
         } else {
-          for (let i = 0; i < waveSpans.length; i++) {
-            waveSpans[i].style.opacity = 0;
+          // Released — snap back over ~120 ms.
+          const releaseT = t - TL.recordingEnd;
+          if (releaseT < 0.12) {
+            const p = 1 - easeOutQuad(releaseT / 0.12);
+            kcDepress = 4 * p;
           }
         }
+        keycap.style.transform = 'translateY(' + kcDepress + 'px)';
+        keycap.style.boxShadow = kcShadow;
 
         // ----- Narration ------------------------------------------
         if (t < TL.keyDown) {
