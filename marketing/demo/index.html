@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Parakey demo</title>
+    <style>
+      :root {
+        --text: #18201d;
+        --text-dim: #6a766f;
+        --line: #d9d4c7;
+        --accent: #0d7f5f;
+        --accent-bright: #10b981;
+      }
+      html, body { margin: 0; padding: 0; }
+      body {
+        width: 1920px;
+        height: 1080px;
+        font-family: -apple-system, system-ui, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+        color: var(--text);
+        overflow: hidden;
+        position: relative;
+        /* Soft dawn-cream desktop wallpaper. No orbs, no blobs — just a
+           quiet vertical gradient that reads as a real Mac desktop. */
+        background:
+          linear-gradient(180deg, #ece3d2 0%, #d9cebb 55%, #c2b59c 100%);
+      }
+
+      /* ---------- Menu bar ---------- */
+      .menubar {
+        position: absolute; inset: 0 0 auto 0;
+        height: 44px;
+        display: flex; align-items: center;
+        padding: 0 22px;
+        font-size: 17px;
+        font-weight: 500;
+        color: #18201d;
+        background: rgba(255, 255, 255, 0.55);
+        backdrop-filter: blur(22px) saturate(170%);
+        -webkit-backdrop-filter: blur(22px) saturate(170%);
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+      }
+      .menubar .group { display: flex; align-items: center; gap: 22px; }
+      .menubar .app   { font-weight: 700; letter-spacing: -0.005em; }
+      .menubar .spacer { flex: 1; }
+      .menubar .right { gap: 18px; }
+      .menubar .icon {
+        display: inline-flex; align-items: center; justify-content: center;
+        color: #18201d; opacity: 0.85;
+      }
+      .menubar .icon svg { display: block; }
+      .menubar .clock {
+        font-variant-numeric: tabular-nums;
+        font-weight: 500;
+        letter-spacing: -0.005em;
+      }
+
+      /* Parakey menubar icon: idle = dark template; active = subtle
+         green-tinted background, no chrome flash. */
+      .parakey-mb {
+        width: 30px; height: 30px;
+        border-radius: 7px;
+        display: grid; place-items: center;
+        color: #18201d;
+      }
+      .parakey-mb.active {
+        background: rgba(16, 185, 129, 0.16);
+        color: #0d7f5f;
+      }
+      .parakey-mb svg { width: 18px; height: 18px; }
+
+      /* ---------- Editor window ---------- */
+      .window {
+        position: absolute;
+        left: 50%; top: 132px;
+        transform: translateX(-50%);
+        width: 1340px; height: 760px;
+        background: #ffffff;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.5) inset,
+          0 0 0 1px rgba(0, 0, 0, 0.07),
+          0 2px 6px rgba(0, 0, 0, 0.06),
+          0 32px 80px rgba(0, 0, 0, 0.22);
+      }
+      .titlebar {
+        height: 48px;
+        background: linear-gradient(180deg, #f6f5ef 0%, #ecebe3 100%);
+        border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+        display: flex; align-items: center;
+        padding: 0 18px;
+        position: relative;
+      }
+      .traffic { display: flex; gap: 8px; }
+      .traffic span {
+        width: 13px; height: 13px;
+        border-radius: 50%;
+        box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+      }
+      .traffic .r { background: #ff5f57; }
+      .traffic .y { background: #febc2e; }
+      .traffic .g { background: #28c840; }
+      .window-title {
+        position: absolute; left: 50%; transform: translateX(-50%);
+        font-size: 14px;
+        color: #565550;
+        font-weight: 500;
+      }
+      .doc {
+        height: calc(100% - 48px);
+        padding: 96px 110px;
+        box-sizing: border-box;
+        position: relative;
+      }
+      .doc-line {
+        font-size: 52px;
+        line-height: 1.42;
+        color: #18201d;
+        letter-spacing: -0.012em;
+        font-weight: 400;
+        white-space: pre-wrap;
+        word-break: normal;
+        overflow-wrap: break-word;
+      }
+      .doc-line .text {
+        display: inline;
+      }
+      /* Vertical cursor bar; height is tuned to match the line metrics.
+         Sits inline at end of text so it follows wrapping naturally. */
+      .cursor {
+        display: inline-block;
+        width: 3px;
+        height: 58px;
+        background: #18201d;
+        vertical-align: -14px;
+        margin-left: 2px;
+        border-radius: 1px;
+      }
+
+      /* ---------- Menu-bar popover (the Parakey HUD) ---------- */
+      .popover {
+        position: absolute;
+        top: 50px;
+        /* Anchored under the Parakey icon. The icon sits ~140px from the
+           right edge; popover is 460px wide with its pointer at right side. */
+        right: 90px;
+        width: 460px;
+        will-change: opacity, transform;
+      }
+      .popover .pointer {
+        position: absolute;
+        top: -7px;
+        right: 56px;
+        width: 14px; height: 14px;
+        background: #ffffff;
+        transform: rotate(45deg);
+        box-shadow: -1px -1px 0 0 rgba(0, 0, 0, 0.06);
+        border-top-left-radius: 2px;
+      }
+      .popover .panel {
+        position: relative;
+        background: #ffffff;
+        border-radius: 14px;
+        padding: 22px 26px 24px;
+        box-shadow:
+          0 0 0 1px rgba(0, 0, 0, 0.06),
+          0 18px 50px rgba(0, 0, 0, 0.22);
+      }
+      .popover .status {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-size: 30px;
+        font-weight: 600;
+        color: #18201d;
+        letter-spacing: -0.01em;
+      }
+      .popover .dot {
+        width: 14px; height: 14px;
+        border-radius: 50%;
+        background: var(--accent-bright);
+        box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.22);
+      }
+      .popover .hint {
+        margin-top: 4px;
+        margin-left: 28px;
+        font-size: 18px;
+        color: var(--text-dim);
+        font-weight: 500;
+        letter-spacing: 0;
+      }
+      .popover .hint .glyph {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        color: var(--text);
+        margin-right: 6px;
+      }
+      .waveform {
+        margin-top: 22px;
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 2px;
+      }
+      .waveform span {
+        flex: 0 0 8px;
+        width: 8px;
+        background: linear-gradient(180deg, #12a87c 0%, #0d7f5f 100%);
+        border-radius: 4px;
+        height: 18%;
+      }
+
+      /* ---------- End caption ---------- */
+      .caption {
+        position: absolute;
+        left: 0; right: 0;
+        bottom: 72px;
+        text-align: center;
+        font-size: 44px;
+        color: #18201d;
+        font-weight: 500;
+        letter-spacing: -0.012em;
+      }
+      .caption .dim { color: #5d6a64; font-weight: 400; }
+    </style>
+  </head>
+  <body>
+    <div class="menubar">
+      <div class="group">
+        <span class="app">TextEdit</span>
+        <span>File</span>
+        <span>Edit</span>
+        <span>Format</span>
+        <span>View</span>
+        <span>Window</span>
+        <span>Help</span>
+      </div>
+      <span class="spacer"></span>
+      <div class="group right">
+        <span class="icon" aria-hidden="true" title="Battery">
+          <svg width="28" height="14" viewBox="0 0 28 14" fill="none">
+            <rect x="0.7" y="0.7" width="22.6" height="12.6" rx="2.6" stroke="currentColor" stroke-width="1.1"/>
+            <rect x="2.4" y="2.4" width="15.5" height="9.2" rx="1.2" fill="currentColor"/>
+            <rect x="24" y="4.6" width="1.6" height="4.8" rx="0.7" fill="currentColor"/>
+          </svg>
+        </span>
+        <span class="icon" aria-hidden="true" title="Wi-Fi">
+          <svg width="22" height="18" viewBox="0 0 22 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+            <path d="M2 6 Q11 -2 20 6"/>
+            <path d="M5 9.5 Q11 4 17 9.5"/>
+            <path d="M8 13 Q11 10.5 14 13"/>
+            <circle cx="11" cy="16" r="1.2" fill="currentColor" stroke="none"/>
+          </svg>
+        </span>
+        <span class="icon" aria-hidden="true" title="Control Center">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+            <line x1="4" y1="6" x2="20" y2="6"/>
+            <circle cx="14" cy="6" r="2.4" fill="currentColor"/>
+            <line x1="4" y1="12" x2="20" y2="12"/>
+            <circle cx="9" cy="12" r="2.4" fill="currentColor"/>
+            <line x1="4" y1="18" x2="20" y2="18"/>
+            <circle cx="16" cy="18" r="2.4" fill="currentColor"/>
+          </svg>
+        </span>
+        <span class="parakey-mb" id="parakeyMb" aria-hidden="true">
+          <svg viewBox="0 0 100 100" fill="currentColor">
+            <rect x="35" y="10" width="30" height="55" rx="15"/>
+            <rect x="48.5" y="65" width="3" height="15"/>
+            <rect x="22" y="80" width="56" height="6" rx="3"/>
+          </svg>
+        </span>
+        <span class="clock" id="clock">9:41</span>
+      </div>
+    </div>
+
+    <div class="window">
+      <div class="titlebar">
+        <div class="traffic">
+          <span class="r"></span>
+          <span class="y"></span>
+          <span class="g"></span>
+        </div>
+        <div class="window-title">Untitled.txt</div>
+      </div>
+      <div class="doc">
+        <p class="doc-line"><span class="text" id="docText"></span><span class="cursor" id="cursor"></span></p>
+      </div>
+    </div>
+
+    <div class="popover" id="popover" style="opacity:0; transform: translateY(-12px);">
+      <span class="pointer"></span>
+      <div class="panel">
+        <div class="status">
+          <span class="dot"></span>
+          <span id="statusText">Listening</span>
+        </div>
+        <div class="hint">
+          <span class="glyph">&#8997;</span>Right Option held
+        </div>
+        <div class="waveform" id="waveform">
+          <span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="caption" id="caption" style="opacity:0;">
+      Local on-device dictation. <span class="dim">No cloud transcription.</span>
+    </div>
+
+    <script>
+      const FULL_TEXT = "Parakey is a local push-to-talk dictation app for Apple Silicon Macs.";
+
+      // Phase boundaries in seconds. Total duration = 14s.
+      const TL = {
+        popoverIn:      1.2,   // popover begins sliding in
+        popoverFullyIn: 1.6,
+        recordingEnd:   6.6,   // user releases the key
+        transcribing:   6.6,   // status flips to "Transcribing"
+        textAppear:     7.0,   // pasted text begins reveal
+        textRevealEnd:  7.22,  // text fully visible
+        popoverOut:     7.5,
+        popoverGone:    7.95,
+        captionIn:     10.4,
+        captionFullyIn:11.05,
+        end:           14.0,
+      };
+
+      const docText = document.getElementById('docText');
+      const docLine = document.querySelector('.doc-line');
+      const cursor = document.getElementById('cursor');
+      const popover = document.getElementById('popover');
+      const statusText = document.getElementById('statusText');
+      const parakeyMb = document.getElementById('parakeyMb');
+      const caption = document.getElementById('caption');
+      const bars = document.querySelectorAll('#waveform span');
+
+      // Pre-bake transform origin once so the snap-in scale is anchored
+      // at the top-left of the document text (i.e. doesn't drift).
+      docLine.style.transformOrigin = '0% 0%';
+
+      function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+      function easeOutCubic(p) { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
+      function easeOutQuad(p)  { return 1 - Math.pow(1 - clamp(p, 0, 1), 2); }
+      function easeInOut(p)    { p = clamp(p, 0, 1); return p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2; }
+
+      function setWaveform(t, intensity, quiet) {
+        // Mixed sinusoids per bar produce a non-repeating "alive" look
+        // without any random component (so frames are deterministic).
+        // `quiet` mode (transcribing phase) collapses everything to a
+        // gentle uniform breathing pulse so the meter clearly reads as
+        // "no longer listening".
+        for (let i = 0; i < bars.length; i++) {
+          let finalH;
+          if (quiet > 0) {
+            // Soft synchronised pulse across all bars while transcribing.
+            const pulse = 0.5 + 0.5 * Math.sin(t * 4.2);
+            const quietH = 0.18 + pulse * 0.06;
+            // Crossfade from the active meter into the quiet pulse.
+            const phase = i * 0.62;
+            const v =
+                0.50
+              + 0.30 * Math.sin(t * 6.4 + phase)
+              + 0.22 * Math.sin(t * 3.1 + i * 0.9)
+              + 0.10 * Math.sin(t * 11.7 + phase * 0.7);
+            const h = clamp(v, 0.06, 0.96) * intensity;
+            const liveH = 0.14 + 0.82 * h;
+            finalH = liveH * (1 - quiet) + quietH * quiet;
+          } else {
+            const phase = i * 0.62;
+            const v =
+                0.50
+              + 0.30 * Math.sin(t * 6.4 + phase)
+              + 0.22 * Math.sin(t * 3.1 + i * 0.9)
+              + 0.10 * Math.sin(t * 11.7 + phase * 0.7);
+            const h = clamp(v, 0.06, 0.96) * intensity;
+            finalH = 0.14 + 0.82 * h;
+          }
+          bars[i].style.height = (clamp(finalH, 0.08, 1) * 100) + '%';
+        }
+      }
+
+      function renderAt(t) {
+        // Cursor blink: ~530ms period. Frozen ON while text is being
+        // pasted so the eye doesn't catch a flash mid-paste.
+        let blinkVisible;
+        if (t >= TL.textAppear && t < TL.textRevealEnd + 0.4) {
+          blinkVisible = 1;
+        } else {
+          blinkVisible = ((t * 1.88) % 1) < 0.55 ? 1 : 0;
+        }
+        cursor.style.opacity = blinkVisible;
+
+        // Menubar Parakey icon state — active during the whole popover
+        // visibility window.
+        if (t >= TL.popoverIn && t < TL.popoverGone) {
+          parakeyMb.classList.add('active');
+        } else {
+          parakeyMb.classList.remove('active');
+        }
+
+        // Popover open/close interpolation.
+        let popoverP;
+        if      (t < TL.popoverIn)      popoverP = 0;
+        else if (t < TL.popoverFullyIn) popoverP = easeOutCubic((t - TL.popoverIn) / (TL.popoverFullyIn - TL.popoverIn));
+        else if (t < TL.popoverOut)     popoverP = 1;
+        else if (t < TL.popoverGone)    popoverP = 1 - easeOutQuad((t - TL.popoverOut) / (TL.popoverGone - TL.popoverOut));
+        else                            popoverP = 0;
+        popover.style.opacity = popoverP;
+        popover.style.transform = 'translateY(' + ((1 - popoverP) * -12) + 'px)';
+
+        // Popover status text swap.
+        if (t >= TL.transcribing && t < TL.popoverOut) {
+          statusText.textContent = 'Transcribing';
+        } else {
+          statusText.textContent = 'Listening';
+        }
+
+        // Waveform intensity envelope: rises into recording, falls during
+        // transcription, dies with the popover. `quiet` rises from 0 to
+        // 1 as we enter the transcribing phase so the bars settle into a
+        // synchronised breathing pulse.
+        let intensity, quiet;
+        if (t < TL.popoverIn) {
+          intensity = 0; quiet = 0;
+        } else if (t < TL.popoverFullyIn) {
+          intensity = (t - TL.popoverIn) / (TL.popoverFullyIn - TL.popoverIn);
+          quiet = 0;
+        } else if (t < TL.recordingEnd) {
+          intensity = 1; quiet = 0;
+        } else if (t < TL.popoverOut) {
+          // 0.4s ease from active meter → quiet pulse.
+          const p = clamp((t - TL.recordingEnd) / 0.35, 0, 1);
+          intensity = 1 - 0.7 * p;
+          quiet = easeInOut(p);
+        } else {
+          intensity = 0; quiet = 0;
+        }
+        setWaveform(t, intensity, quiet);
+
+        // Pasted document text. Snap-in with a brief scale + opacity
+        // settle (~220ms) so it reads like a real paste, not a typewriter.
+        // Scale is applied to the parent paragraph so the inline cursor
+        // continues to flow correctly next to the wrapped text.
+        if (t >= TL.textAppear) {
+          docText.textContent = FULL_TEXT;
+          const p = clamp((t - TL.textAppear) / (TL.textRevealEnd - TL.textAppear), 0, 1);
+          const eased = easeOutQuad(p);
+          docText.style.opacity = eased;
+          docLine.style.transform = 'scale(' + (0.985 + 0.015 * eased) + ')';
+        } else {
+          docText.textContent = '';
+          docText.style.opacity = 0;
+          docLine.style.transform = 'scale(1)';
+        }
+
+        // End caption fade.
+        let cP;
+        if      (t < TL.captionIn)       cP = 0;
+        else if (t < TL.captionFullyIn)  cP = easeInOut((t - TL.captionIn) / (TL.captionFullyIn - TL.captionIn));
+        else                             cP = 1;
+        caption.style.opacity = cP;
+      }
+
+      // Initial state at t=0.
+      renderAt(0);
+
+      // Expose deterministic API for the headless renderer.
+      window.renderAt = renderAt;
+      window.demoReady = true;
+    </script>
+  </body>
+</html>

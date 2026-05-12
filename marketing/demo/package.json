@@ -1,0 +1,13 @@
+{
+  "name": "parakey-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic Mac interaction demo for Parakey. Renders deterministic frames via headless Chrome, encodes to MP4/WebM/GIF with ffmpeg.",
+  "scripts": {
+    "render": "node render.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^23.0.0"
+  }
+}
