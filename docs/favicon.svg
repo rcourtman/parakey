@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Squircle background -->
+  <rect width="1024" height="1024" rx="232" ry="232" fill="#10B981"/>
+
+  <!-- Microphone capsule -->
+  <rect x="372" y="220" width="280" height="440" rx="140" fill="#FFFFFF"/>
+
+  <!-- Stem -->
+  <rect x="492" y="660" width="40" height="100" fill="#FFFFFF"/>
+
+  <!-- Base -->
+  <rect x="312" y="760" width="400" height="44" rx="22" fill="#FFFFFF"/>
+</svg>
