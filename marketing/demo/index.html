@@ -221,8 +221,8 @@
         color: var(--accent);
         font-weight: 700;
       }
-      .hud-label.done .check {
-        display: inline-grid;
+      .hud-label .check {
+        display: none;
         place-items: center;
         width: 26px; height: 26px;
         border-radius: 50%;
@@ -232,6 +232,10 @@
         font-weight: 800;
         margin-right: 4px;
         transform: translateY(2px);
+        will-change: transform, opacity;
+      }
+      .hud-label.done .check {
+        display: inline-grid;
       }
 
       /* ---------- End caption (main + lightweight subtitle) ---------- */
@@ -240,6 +244,10 @@
         left: 0; right: 0;
         bottom: 60px;
         text-align: center;
+      }
+      .caption .main,
+      .caption .sub {
+        will-change: opacity, transform;
       }
       .caption .main {
         font-size: 42px;
@@ -326,9 +334,9 @@
       </div>
     </div>
 
-    <div class="caption" id="caption" style="opacity:0;">
-      <div class="main">Local on-device dictation. <span class="dim">No cloud transcription.</span></div>
-      <div class="sub"><span class="accent">2.2 MB</span> download &middot; <span class="accent">~80 MB</span> RAM idle &middot; <span class="accent">~94 ms</span> end-to-end</div>
+    <div class="caption" id="caption">
+      <div class="main" id="captionMain" style="opacity:0; transform: translateY(14px);">Local on-device dictation. <span class="dim">No cloud transcription.</span></div>
+      <div class="sub" id="captionSub" style="opacity:0; transform: translateY(14px);"><span class="accent">2.2 MB</span> download &middot; <span class="accent">~80 MB</span> RAM idle &middot; <span class="accent">~94 ms</span> end-to-end</div>
     </div>
 
     <script>
@@ -337,35 +345,56 @@
       // 14-second deterministic timeline. The 94 ms gap matches the
       // published p50.
       const TL = {
-        hudIn:          0.5,   // chip slides up + fades in (sets the stage)
-        keyDown:        1.0,   // key depresses, "Listening" begins
-        recordingEnd:   6.0,   // KEY UP — waveform freezes
-        textAppear:     6.094, // PASTE — 94 ms after release
-        textRevealEnd:  6.264, // 170 ms snap-in fade
-        badgeHold:      8.0,   // "94 ms" badge stays visible until this t
-        hudOut:         8.0,   // chip starts fading
-        hudGone:        8.6,
-        captionIn:      9.7,
-        captionFullyIn: 10.4,
+        hudIn:          0.40,  // chip spring-entrance begins
+        hudInEnd:       0.85,  // chip fully settled
+        keyDown:        1.05,  // key depresses, "Listening" begins
+        recordingEnd:   6.05,  // KEY UP — waveform freezes
+        textAppear:     6.144, // PASTE — 94 ms after release
+        textRevealEnd:  6.314, // 170 ms snap-in fade
+        badgePop:       6.144, // ✓ badge spring-in (same moment as paste)
+        badgePopEnd:    6.49,
+        hudOut:         8.10,  // chip exit begins
+        hudGone:        8.42,
+        captionMainIn:  9.50,
+        captionMainEnd: 9.83,
+        captionSubIn:   9.66,
+        captionSubEnd:  10.02,
         end:           14.0,
       };
 
-      const docText = document.getElementById('docText');
-      const docLine = document.querySelector('.doc-line');
-      const cursor  = document.getElementById('cursor');
-      const hud     = document.getElementById('hud');
-      const hudKey  = document.getElementById('hudKey');
-      const hudLabel = document.getElementById('hudLabel');
-      const hudTimer = document.getElementById('hudTimer');
-      const caption = document.getElementById('caption');
-      const bars    = document.querySelectorAll('#hudWave span');
+      const docText     = document.getElementById('docText');
+      const docLine     = document.querySelector('.doc-line');
+      const cursor      = document.getElementById('cursor');
+      const hud         = document.getElementById('hud');
+      const hudKey      = document.getElementById('hudKey');
+      const hudLabel    = document.getElementById('hudLabel');
+      const hudTimer    = document.getElementById('hudTimer');
+      const captionMain = document.getElementById('captionMain');
+      const captionSub  = document.getElementById('captionSub');
+      const bars        = document.querySelectorAll('#hudWave span');
 
       docLine.style.transformOrigin = '0% 0%';
+
+      // Pre-create the ✓ badge once so it can be animated independently
+      // each frame instead of being created/removed (which would defeat
+      // the deterministic per-frame render).
+      const hudCheck = document.createElement('span');
+      hudCheck.className = 'check';
+      hudCheck.textContent = '✓';
+      hudLabel.insertBefore(hudCheck, hudLabel.firstChild);
 
       function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
       function easeOutQuad(p)   { return 1 - Math.pow(1 - clamp(p, 0, 1), 2); }
       function easeOutCubic(p)  { return 1 - Math.pow(1 - clamp(p, 0, 1), 3); }
       function easeInOut(p)     { p = clamp(p, 0, 1); return p < 0.5 ? 2*p*p : 1 - Math.pow(-2*p+2, 2)/2; }
+      // Spring-overshoot ease — settles past 1.0 then back. Good for
+      // entrances that should feel "alive" without bouncing forever.
+      function easeOutBack(p, k) {
+        p = clamp(p, 0, 1);
+        const c1 = k == null ? 1.7 : k;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2);
+      }
 
       function setWaveform(t, intensity, freeze) {
         // Deterministic per-bar sine mixture. `freeze` collapses the
@@ -402,15 +431,34 @@
         }
         cursor.style.opacity = blinkOn;
 
-        // ----- HUD visibility (single fade in/out for the whole chip).
-        let hudP;
-        if      (t < TL.hudIn)        hudP = 0;
-        else if (t < TL.hudIn + 0.3)  hudP = easeOutCubic((t - TL.hudIn) / 0.3);
-        else if (t < TL.hudOut)       hudP = 1;
-        else if (t < TL.hudGone)      hudP = 1 - easeOutQuad((t - TL.hudOut) / (TL.hudGone - TL.hudOut));
-        else                          hudP = 0;
-        hud.style.opacity = hudP;
-        hud.style.transform = 'translate(-50%, ' + ((1 - hudP) * 8) + 'px)';
+        // ----- HUD visibility — spring entrance + slide-down exit.
+        // Entrance: opacity fades while scale + translateY overshoot in
+        // (a back-ease, so the chip settles past 1.0 then to 1.0).
+        // Exit: faster, scales down slightly and slides away.
+        let hudOpacity = 0, hudScale = 0.94, hudTy = 22;
+        if (t < TL.hudIn) {
+          hudOpacity = 0; hudScale = 0.94; hudTy = 22;
+        } else if (t < TL.hudInEnd) {
+          const p = (t - TL.hudIn) / (TL.hudInEnd - TL.hudIn);
+          const back = easeOutBack(p, 1.6);
+          const fade = easeOutCubic(p);
+          hudOpacity = fade;
+          hudScale = 0.94 + back * 0.06;
+          hudTy = (1 - back) * 22;
+        } else if (t < TL.hudOut) {
+          hudOpacity = 1; hudScale = 1; hudTy = 0;
+        } else if (t < TL.hudGone) {
+          const p = (t - TL.hudOut) / (TL.hudGone - TL.hudOut);
+          const eased = easeOutQuad(p);
+          hudOpacity = 1 - eased;
+          hudScale = 1 - eased * 0.04;
+          hudTy = eased * 16;
+        } else {
+          hudOpacity = 0; hudScale = 0.96; hudTy = 16;
+        }
+        hud.style.opacity = hudOpacity;
+        hud.style.transform =
+          'translate(-50%, ' + hudTy + 'px) scale(' + hudScale + ')';
 
         // ----- Keycap state (pressed only while the hotkey is held).
         if (t >= TL.keyDown && t < TL.recordingEnd) {
@@ -423,16 +471,15 @@
         let intensity, freeze;
         if (t < TL.keyDown) {
           intensity = 0; freeze = 1;
-        } else if (t < TL.keyDown + 0.25) {
-          intensity = (t - TL.keyDown) / 0.25;
-          freeze = 1 - (t - TL.keyDown) / 0.25;
+        } else if (t < TL.keyDown + 0.22) {
+          // Ramp up over ~220ms so the meter doesn't snap to full from
+          // a flat baseline — feels like the mic spinning up.
+          const ramp = (t - TL.keyDown) / 0.22;
+          intensity = ramp; freeze = 1 - ramp;
         } else if (t < TL.recordingEnd) {
           intensity = 1; freeze = 0;
-        } else if (t < TL.textAppear) {
-          // 94 ms between key-up and paste — bars freeze the instant
-          // the key releases.
-          intensity = 0; freeze = 1;
         } else {
+          // Key released — bars freeze the instant the key lifts.
           intensity = 0; freeze = 1;
         }
         setWaveform(t, intensity, freeze);
@@ -441,32 +488,37 @@
         //   t < keyDown:        "Hold Right Option"
         //   keyDown..recording: "Listening" + live elapsed counter
         //   recording..paste:   "Listening" frozen at audio length
-        //   paste..hudOut:      "✓ pasted in 94 ms"
+        //   paste..hudOut:      "✓ pasted in 94 ms"  (badge springs in)
         const labelState = hudLabel.querySelector('.state');
-        const labelCheck = hudLabel.querySelector('.check');
         if (t < TL.keyDown) {
           hudLabel.classList.remove('done');
-          if (labelCheck) labelCheck.remove();
           labelState.textContent = 'Hold Right Option';
           hudTimer.textContent = '';
         } else if (t < TL.textAppear) {
           hudLabel.classList.remove('done');
-          if (labelCheck) labelCheck.remove();
           labelState.textContent = 'Listening';
           const elapsed = Math.min(t, TL.recordingEnd) - TL.keyDown;
           hudTimer.textContent = elapsed.toFixed(1) + 's';
         } else {
-          if (!hudLabel.classList.contains('done')) {
-            hudLabel.classList.add('done');
-            if (!hudLabel.querySelector('.check')) {
-              const c = document.createElement('span');
-              c.className = 'check';
-              c.textContent = '✓';
-              hudLabel.insertBefore(c, labelState);
-            }
-          }
+          hudLabel.classList.add('done');
           labelState.textContent = 'pasted in 94 ms';
           hudTimer.textContent = '';
+        }
+
+        // ----- ✓ badge pop on paste. Starts at scale 0, springs past
+        // 1 with a back-ease, settles at 1. Opacity fades in over the
+        // first half of the animation so we don't see a tiny dot.
+        if (t < TL.badgePop) {
+          hudCheck.style.opacity = 0;
+          hudCheck.style.transform = 'translateY(2px) scale(0)';
+        } else if (t < TL.badgePopEnd) {
+          const p = (t - TL.badgePop) / (TL.badgePopEnd - TL.badgePop);
+          const back = easeOutBack(p, 2.4);
+          hudCheck.style.opacity = clamp(p * 2, 0, 1);
+          hudCheck.style.transform = 'translateY(2px) scale(' + back + ')';
+        } else {
+          hudCheck.style.opacity = 1;
+          hudCheck.style.transform = 'translateY(2px) scale(1)';
         }
 
         // ----- Pasted text snap-in.
@@ -482,12 +534,18 @@
           docLine.style.transform = 'scale(1)';
         }
 
-        // ----- Caption fade.
-        let cP;
-        if      (t < TL.captionIn)       cP = 0;
-        else if (t < TL.captionFullyIn)  cP = easeInOut((t - TL.captionIn) / (TL.captionFullyIn - TL.captionIn));
-        else                             cP = 1;
-        caption.style.opacity = cP;
+        // ----- Caption — main line and subtitle slide up + fade,
+        // staggered so the eye reads them as two beats, not one.
+        function captionReveal(el, start, end) {
+          let p;
+          if      (t < start) p = 0;
+          else if (t < end)   p = easeOutCubic((t - start) / (end - start));
+          else                p = 1;
+          el.style.opacity = p;
+          el.style.transform = 'translateY(' + ((1 - p) * 14) + 'px)';
+        }
+        captionReveal(captionMain, TL.captionMainIn, TL.captionMainEnd);
+        captionReveal(captionSub,  TL.captionSubIn,  TL.captionSubEnd);
       }
 
       renderAt(0);
