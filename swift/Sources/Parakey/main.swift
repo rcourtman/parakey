@@ -3591,6 +3591,8 @@ private enum ParakeySelfTest {
             return runSuite("readiness", testReadiness)
         case "paste":
             return runSuite("paste", testPasteSuffixFormatting)
+        case "corrections":
+            return runSuite("corrections", testTranscriptCorrections)
         case "all":
             return runSuite("all", testAll)
         default:
@@ -3618,6 +3620,7 @@ private enum ParakeySelfTest {
         try testHotkey()
         try testReadiness()
         try testPasteSuffixFormatting()
+        try testTranscriptCorrections()
         try testAudioInputDeviceFiltering()
         try testSpeechModelStartupStatus()
         try testAudioRouteChangeDecision()
@@ -3690,6 +3693,58 @@ private enum ParakeySelfTest {
             pastedText(from: "hello world ", suffix: .appendSpace),
             equals: "hello world  ",
             "suffix formatting should not trim or rewrite corrected text"
+        )
+    }
+
+    private static func testTranscriptCorrections() throws {
+        let normalized = normalizedTranscriptCorrections([
+            TranscriptCorrection(source: "  Yeti   Nano  ", replacement: "  Blue mic  "),
+            TranscriptCorrection(source: "yeti nano", replacement: "USB mic"),
+            TranscriptCorrection(source: "", replacement: "ignored"),
+            TranscriptCorrection(source: "empty replacement", replacement: "   ")
+        ])
+        try expect(
+            normalized,
+            equals: [TranscriptCorrection(source: "yeti nano", replacement: "USB mic")],
+            "normalization should trim, drop incomplete entries, collapse duplicate sources, and keep the latest replacement"
+        )
+
+        let applied = TranscriptCorrector.apply(
+            to: "parakeet tdt and parakeetish and PARakeet",
+            corrections: [
+                TranscriptCorrection(source: "parakeet", replacement: "Parakey"),
+                TranscriptCorrection(source: "parakeet tdt", replacement: "Parakeet TDT")
+            ]
+        )
+        try expect(
+            applied.text,
+            equals: "Parakeet TDT and parakeetish and Parakey",
+            "corrections should prefer longer phrases and respect word boundaries"
+        )
+        try expect(
+            applied.appliedCount,
+            equals: 2,
+            "correction count should track applied non-overlapping replacements"
+        )
+
+        let transferred = try TranscriptCorrectionsTransfer.decode(
+            TranscriptCorrectionsTransfer.encode([
+                TranscriptCorrection(source: "  Right Option  ", replacement: "R-Option")
+            ])
+        )
+        try expect(
+            transferred,
+            equals: [TranscriptCorrection(source: "Right Option", replacement: "R-Option")],
+            "document transfer should round-trip normalized corrections"
+        )
+
+        let legacyData = try JSONEncoder().encode([
+            TranscriptCorrection(source: "  old phrase  ", replacement: "new phrase")
+        ])
+        try expect(
+            try TranscriptCorrectionsTransfer.decode(legacyData),
+            equals: [TranscriptCorrection(source: "old phrase", replacement: "new phrase")],
+            "legacy bare-array correction files should remain importable"
         )
     }
 
