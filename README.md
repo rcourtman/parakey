@@ -311,8 +311,8 @@ Menu structure:
 - **Recent transcripts** — the most recent one inline (click to copy
   it back to the clipboard); a **Recent** submenu appears once
   you've dictated more than once and holds the previous four. The
-  whole transcript history is in-memory only and clears when you
-  quit Parakey.
+  whole transcript history is in-memory only, can be cleared from
+  the menu, and clears when you quit Parakey.
 - **Settings** ▶
   - **Hotkey** — Right Option (default), Right Control, Right
     Command, F5, F6, F13, F18, F19
@@ -486,7 +486,8 @@ single `tail -f` follows both.
 Transcript content is **never** written to disk — only timing and
 length metadata. There's no opt-in debug flag for logging
 transcripts; the only way to see what the model heard is to read the
-in-memory history from the menu while the app is still running.
+in-memory history from the menu while the app is still running. You
+can clear that in-memory history from the menu at any time.
 
 ## Troubleshooting
 

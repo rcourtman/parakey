@@ -1974,6 +1974,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         log("history copied to clipboard (\(s.count) chars)")
     }
 
+    @objc private func clearHistoryClicked(_ sender: NSMenuItem) {
+        guard !history.isEmpty else { return }
+        let count = history.count
+        history.removeAll()
+        log("history cleared (\(count) entries)")
+        rebuildMenu()
+    }
+
     @objc private func quitClicked(_ sender: NSMenuItem) {
         NSApp.terminate(self)
     }
@@ -2066,6 +2074,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 parent.submenu = sub
                 menu.addItem(parent)
             }
+
+            let clear = NSMenuItem(title: "Clear Recent Transcripts",
+                                   action: #selector(clearHistoryClicked(_:)),
+                                   keyEquivalent: "")
+            clear.target = self
+            menu.addItem(clear)
 
             menu.addItem(.separator())
         }
