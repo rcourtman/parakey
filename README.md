@@ -321,8 +321,10 @@ Menu structure:
   - **Paste Behavior** — append a space (default), no suffix, or
     append a newline after the pasted transcript
   - **Microphone** — System default (default) or any specific input
-    device. Switching takes effect immediately. If the saved device
-    is later unplugged, Parakey falls back to system default.
+    device. Switching takes effect immediately; if macOS reports an
+    audio route change while idle, Parakey refreshes input without a
+    relaunch. If the saved device is later unplugged, Parakey falls
+    back to system default.
   - **Text Corrections** — add, edit, remove, import, export, share,
     or sync replacements for words and phrases the speech model
     consistently mishears

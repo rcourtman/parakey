@@ -531,6 +531,25 @@ private func readinessTransition(
         : .blockForPermissions(missingPermissions)
 }
 
+private enum AudioRouteChangeAction: Equatable {
+    case ignore
+    case rebuildMenuOnly
+    case deferRefresh
+    case restartNow
+}
+
+private func audioRouteChangeAction(isTerminating: Bool,
+                                    isRestartingAudioInput: Bool,
+                                    isCoreRuntimeReady: Bool,
+                                    isRecording: Bool,
+                                    isBusy: Bool,
+                                    hasStartupTask: Bool) -> AudioRouteChangeAction {
+    guard !isTerminating, !isRestartingAudioInput else { return .ignore }
+    guard isCoreRuntimeReady else { return .rebuildMenuOnly }
+    guard !isRecording, !isBusy, !hasStartupTask else { return .deferRefresh }
+    return .restartNow
+}
+
 @MainActor
 final class Permissions {
     static func isGranted(_ p: Permission) -> Bool {
@@ -860,6 +879,9 @@ final class AudioCapture: @unchecked Sendable {
     private var samples: [Float] = []
     private var _isRunning = false
     private var recordingGeneration: UInt64 = 0
+    private var configurationObserver: NSObjectProtocol?
+
+    var onConfigurationChange: (@Sendable () -> Void)?
 
     var isRunning: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -897,10 +919,13 @@ final class AudioCapture: @unchecked Sendable {
             converter = nil
             throw error
         }
+        installConfigurationObserver()
         log("AudioCapture: engine started")
     }
 
     func stopEngine() {
+        removeConfigurationObserver()
+
         lock.lock()
         _isRunning = false
         recordingGeneration &+= 1
@@ -910,6 +935,24 @@ final class AudioCapture: @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         converter = nil
+    }
+
+    private func installConfigurationObserver() {
+        removeConfigurationObserver()
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.onConfigurationChange?()
+        }
+    }
+
+    private func removeConfigurationObserver() {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
     }
 
     func beginRecording() {
@@ -1369,6 +1412,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var didMuteThisRecording: Bool = false
     private var maxDurationWorkItem: DispatchWorkItem?
     private var muteWorkItem: DispatchWorkItem?
+    private var isRestartingAudioInput = false
+    private var pendingAudioRouteRefresh = false
 
     /// Last N transcripts, newest first. Shown in the History submenu.
     private var history: [String] = []
@@ -1503,6 +1548,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         startCorrectionSyncIfConfigured()
         rebuildMenu()
 
+        audio.onConfigurationChange = { [weak self] in
+            Task { @MainActor in
+                self?.handleAudioConfigurationChange()
+            }
+        }
+
         // Configure hotkey listener up front so it picks up the user's
         // saved choice the moment the tap goes live.
         hotkey.setHotkey(hotkeyChoice(forKeycode: settings.hotkeyKeycode))
@@ -1518,6 +1569,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         stopPermissionReadinessMonitor()
         correctionSyncTimer?.invalidate()
         correctionSyncTimer = nil
+        audio.onConfigurationChange = nil
         cancelRecordingForTermination()
     }
 
@@ -1899,6 +1951,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             isBusy = false
             setMenuBarState(.idle)
             rebuildMenu()
+            runDeferredAudioRouteRefreshIfNeeded()
         }
     }
 
@@ -1917,6 +1970,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         setMenuBarState(.idle)
         rebuildMenu()
         log("recording canceled (\(reason))")
+        runDeferredAudioRouteRefreshIfNeeded()
     }
 
     // Quit cancels any in-flight recording instead of releasing it:
@@ -2388,11 +2442,49 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func restartAudioForInputDeviceChange() {
+        restartAudioInput(reason: "input device change")
+    }
+
+    private func handleAudioConfigurationChange() {
+        switch audioRouteChangeAction(isTerminating: isTerminating,
+                                      isRestartingAudioInput: isRestartingAudioInput,
+                                      isCoreRuntimeReady: isCoreRuntimeReady,
+                                      isRecording: isRecording,
+                                      isBusy: isBusy,
+                                      hasStartupTask: startupTask != nil) {
+        case .ignore:
+            return
+        case .rebuildMenuOnly:
+            log("AudioCapture: audio configuration changed")
+            rebuildMenu()
+        case .deferRefresh:
+            log("AudioCapture: audio configuration changed")
+            pendingAudioRouteRefresh = true
+            log("AudioCapture: audio route refresh deferred")
+            rebuildMenu()
+        case .restartNow:
+            log("AudioCapture: audio configuration changed")
+            rebuildMenu()
+            restartAudioInput(reason: "audio configuration change")
+        }
+    }
+
+    private func runDeferredAudioRouteRefreshIfNeeded() {
+        guard pendingAudioRouteRefresh,
+              !isRecording, !isBusy, startupTask == nil, isCoreRuntimeReady, !isTerminating else { return }
+        pendingAudioRouteRefresh = false
+        restartAudioInput(reason: "deferred audio configuration change")
+    }
+
+    private func restartAudioInput(reason: String) {
+        guard !isRestartingAudioInput else { return }
         guard isCoreRuntimeReady else {
             rebuildMenu()
             return
         }
 
+        pendingAudioRouteRefresh = false
+        isRestartingAudioInput = true
         isReady = false
         isRecording = false
         isBusy = false
@@ -2402,18 +2494,19 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         audio.stopEngine()
 
         Task { @MainActor in
+            defer { isRestartingAudioInput = false }
             do {
                 didTouchAudioEngine = true
                 try audio.startEngine(inputDevicePreference: settings.inputDevice)
                 isCoreRuntimeReady = true
-                completeReadinessIfPossible(reason: "input device change")
+                completeReadinessIfPossible(reason: reason)
             } catch {
                 isCoreRuntimeReady = false
                 isReady = false
                 isRecording = false
                 isBusy = false
                 hotkey.stop()
-                recordStartupFailure(stage: .audioInput, error: error, reason: "input device change")
+                recordStartupFailure(stage: .audioInput, error: error, reason: reason)
             }
         }
     }
@@ -3330,6 +3423,7 @@ private enum ParakeySelfTest {
         try testPasteSuffixFormatting()
         try testAudioInputDeviceFiltering()
         try testSpeechModelStartupStatus()
+        try testAudioRouteChangeDecision()
     }
 
     private static func testHotkey() throws {
@@ -3456,6 +3550,49 @@ private enum ParakeySelfTest {
                                                 phase: .compiling(modelName: "Encoder.mlmodelc"))),
             equals: "Preparing speech model…",
             "compile phase should be visible without exposing model internals"
+        )
+    }
+
+    private static func testAudioRouteChangeDecision() throws {
+        try expect(
+            audioRouteChangeAction(isTerminating: true,
+                                   isRestartingAudioInput: false,
+                                   isCoreRuntimeReady: true,
+                                   isRecording: false,
+                                   isBusy: false,
+                                   hasStartupTask: false),
+            equals: .ignore,
+            "route changes during termination should be ignored"
+        )
+        try expect(
+            audioRouteChangeAction(isTerminating: false,
+                                   isRestartingAudioInput: false,
+                                   isCoreRuntimeReady: false,
+                                   isRecording: false,
+                                   isBusy: false,
+                                   hasStartupTask: false),
+            equals: .rebuildMenuOnly,
+            "route changes before runtime readiness should only refresh the menu"
+        )
+        try expect(
+            audioRouteChangeAction(isTerminating: false,
+                                   isRestartingAudioInput: false,
+                                   isCoreRuntimeReady: true,
+                                   isRecording: true,
+                                   isBusy: false,
+                                   hasStartupTask: false),
+            equals: .deferRefresh,
+            "route changes during recording should defer the restart"
+        )
+        try expect(
+            audioRouteChangeAction(isTerminating: false,
+                                   isRestartingAudioInput: false,
+                                   isCoreRuntimeReady: true,
+                                   isRecording: false,
+                                   isBusy: false,
+                                   hasStartupTask: false),
+            equals: .restartNow,
+            "idle ready route changes should restart audio immediately"
         )
     }
 
