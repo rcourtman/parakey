@@ -219,6 +219,72 @@ func normalizedTranscriptCorrections(_ corrections: [TranscriptCorrection]) -> [
     return result
 }
 
+struct TranscriptCorrectionSyncMergeResult: Equatable {
+    let corrections: [TranscriptCorrection]
+    let conflictingSources: [String]
+}
+
+func mergedTranscriptCorrectionsForSync(base: [TranscriptCorrection],
+                                        local: [TranscriptCorrection],
+                                        remote: [TranscriptCorrection]) -> TranscriptCorrectionSyncMergeResult {
+    let base = normalizedTranscriptCorrections(base)
+    let local = normalizedTranscriptCorrections(local)
+    let remote = normalizedTranscriptCorrections(remote)
+
+    func dictionaryBySource(_ corrections: [TranscriptCorrection]) -> [String: TranscriptCorrection] {
+        Dictionary(uniqueKeysWithValues: corrections.map {
+            (normalizedTranscriptCorrectionSource($0.source), $0)
+        })
+    }
+
+    let baseBySource = dictionaryBySource(base)
+    let localBySource = dictionaryBySource(local)
+    let remoteBySource = dictionaryBySource(remote)
+
+    var orderedSources: [String] = []
+    var seenSources: Set<String> = []
+    func appendSources(from corrections: [TranscriptCorrection]) {
+        for correction in corrections {
+            let key = normalizedTranscriptCorrectionSource(correction.source)
+            if seenSources.insert(key).inserted {
+                orderedSources.append(key)
+            }
+        }
+    }
+
+    appendSources(from: local)
+    appendSources(from: remote)
+    appendSources(from: base)
+
+    var merged: [TranscriptCorrection] = []
+    var conflicts: [String] = []
+
+    for source in orderedSources {
+        let baseline = baseBySource[source]
+        let localCorrection = localBySource[source]
+        let remoteCorrection = remoteBySource[source]
+
+        let chosen: TranscriptCorrection?
+        if localCorrection == remoteCorrection {
+            chosen = localCorrection
+        } else if localCorrection == baseline {
+            chosen = remoteCorrection
+        } else if remoteCorrection == baseline {
+            chosen = localCorrection
+        } else {
+            conflicts.append(localCorrection?.source ?? remoteCorrection?.source ?? baseline?.source ?? source)
+            continue
+        }
+
+        if let chosen {
+            merged.append(chosen)
+        }
+    }
+
+    return TranscriptCorrectionSyncMergeResult(corrections: merged,
+                                               conflictingSources: conflicts)
+}
+
 // MARK: - Audio input devices
 
 func audioObjectStringProperty(_ objectID: AudioObjectID,
@@ -1515,6 +1581,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private var correctionSyncTimer: Timer?
     private var correctionSyncFileFingerprint: CorrectionSyncFileFingerprint?
+    private var correctionSyncBaselineCorrections: [TranscriptCorrection] = []
     private var isApplyingCorrectionSyncFile = false
     private var correctionSharePicker: NSSharingServicePicker?
     private var correctionShareCleanupDelegate: CorrectionShareCleanupDelegate?
@@ -2955,6 +3022,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         correctionSyncTimer?.invalidate()
         correctionSyncTimer = nil
         correctionSyncFileFingerprint = nil
+        correctionSyncBaselineCorrections = []
         rebuildMenu()
     }
 
@@ -3031,6 +3099,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 }
             } else {
                 correctionSyncFileFingerprint = correctionSyncFingerprint(for: url)
+                correctionSyncBaselineCorrections = normalizedTranscriptCorrections(next)
             }
             startCorrectionSyncIfConfigured()
             log("correction sync linked file with \(imported.count) corrections")
@@ -3154,6 +3223,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         correctionSyncTimer = nil
         guard correctionSyncFileURL() != nil else {
             correctionSyncFileFingerprint = nil
+            correctionSyncBaselineCorrections = []
             return
         }
 
@@ -3189,6 +3259,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             updateTranscriptCorrections(corrections, writeToSync: false)
             isApplyingCorrectionSyncFile = false
             correctionSyncFileFingerprint = fingerprint
+            correctionSyncBaselineCorrections = normalizedTranscriptCorrections(corrections)
             log("correction sync read \(corrections.count) corrections")
             return true
         } catch {
@@ -3205,9 +3276,29 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private func writeCorrectionsToSyncFile(presentErrors: Bool) -> Bool {
         guard let url = correctionSyncFileURL() else { return true }
         do {
-            try TranscriptCorrectionsTransfer.write(settings.transcriptCorrections, to: url)
+            var correctionsToWrite = normalizedTranscriptCorrections(settings.transcriptCorrections)
+            if let knownFingerprint = correctionSyncFileFingerprint,
+               let currentFingerprint = correctionSyncFingerprint(for: url),
+               currentFingerprint != knownFingerprint {
+                let remoteCorrections = try TranscriptCorrectionsTransfer.read(from: url)
+                let merge = mergedTranscriptCorrectionsForSync(
+                    base: correctionSyncBaselineCorrections,
+                    local: correctionsToWrite,
+                    remote: remoteCorrections
+                )
+                if !merge.conflictingSources.isEmpty {
+                    stopCorrectionSyncAfterConflict(conflictingSources: merge.conflictingSources)
+                    log("correction sync stopped after \(merge.conflictingSources.count) conflicting corrections")
+                    return false
+                }
+                correctionsToWrite = merge.corrections
+                settings.transcriptCorrections = correctionsToWrite
+            }
+
+            try TranscriptCorrectionsTransfer.write(correctionsToWrite, to: url)
             correctionSyncFileFingerprint = correctionSyncFingerprint(for: url)
-            log("correction sync wrote \(settings.transcriptCorrections.count) corrections")
+            correctionSyncBaselineCorrections = correctionsToWrite
+            log("correction sync wrote \(correctionsToWrite.count) corrections")
             return true
         } catch {
             log("correction sync write failed: \(error)")
@@ -3224,6 +3315,30 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
         return CorrectionSyncFileFingerprint(modifiedAt: values.contentModificationDate,
                                              size: values.fileSize)
+    }
+
+    private func stopCorrectionSyncAfterConflict(conflictingSources: [String]) {
+        settings.transcriptCorrectionsSyncFile = ""
+        correctionSyncTimer?.invalidate()
+        correctionSyncTimer = nil
+        correctionSyncFileFingerprint = nil
+        correctionSyncBaselineCorrections = []
+        rebuildMenu()
+
+        let exampleCount = min(conflictingSources.count, 3)
+        let examples = conflictingSources.prefix(exampleCount).joined(separator: "\n")
+        let remaining = conflictingSources.count - exampleCount
+        let remainingText = remaining > 0 ? "\n…and \(remaining) more." : ""
+        showAppForModal()
+        showCorrectionTransferError(
+            title: "Text Correction Sync Conflict",
+            message: """
+            The sync file changed before this Mac wrote its latest text correction edits. Parakey kept the corrections on this Mac and stopped syncing so it would not overwrite the file.
+
+            Reconnect the sync file after importing or resolving the conflicting correction\(conflictingSources.count == 1 ? "" : "s"):
+            \(examples)\(remainingText)
+            """
+        )
     }
 
     private func showCorrectionTransferError(title: String, error: Error) {
@@ -3745,6 +3860,56 @@ private enum ParakeySelfTest {
             try TranscriptCorrectionsTransfer.decode(legacyData),
             equals: [TranscriptCorrection(source: "old phrase", replacement: "new phrase")],
             "legacy bare-array correction files should remain importable"
+        )
+
+        let remoteOnlyChange = mergedTranscriptCorrectionsForSync(
+            base: [TranscriptCorrection(source: "old phrase", replacement: "old")],
+            local: [TranscriptCorrection(source: "old phrase", replacement: "old")],
+            remote: [TranscriptCorrection(source: "old phrase", replacement: "remote")]
+        )
+        try expect(
+            remoteOnlyChange,
+            equals: TranscriptCorrectionSyncMergeResult(
+                corrections: [TranscriptCorrection(source: "old phrase", replacement: "remote")],
+                conflictingSources: []
+            ),
+            "sync merge should accept remote changes when local has not changed"
+        )
+
+        let nonConflictingMerge = mergedTranscriptCorrectionsForSync(
+            base: [
+                TranscriptCorrection(source: "shared", replacement: "old"),
+                TranscriptCorrection(source: "removed locally", replacement: "old")
+            ],
+            local: [TranscriptCorrection(source: "shared", replacement: "local")],
+            remote: [
+                TranscriptCorrection(source: "shared", replacement: "old"),
+                TranscriptCorrection(source: "removed locally", replacement: "old"),
+                TranscriptCorrection(source: "remote only", replacement: "remote")
+            ]
+        )
+        try expect(
+            nonConflictingMerge,
+            equals: TranscriptCorrectionSyncMergeResult(
+                corrections: [
+                    TranscriptCorrection(source: "shared", replacement: "local"),
+                    TranscriptCorrection(source: "remote only", replacement: "remote")
+                ],
+                conflictingSources: []
+            ),
+            "sync merge should combine non-conflicting local edits, local deletes, and remote additions"
+        )
+
+        let conflictingMerge = mergedTranscriptCorrectionsForSync(
+            base: [TranscriptCorrection(source: "same source", replacement: "old")],
+            local: [TranscriptCorrection(source: "same source", replacement: "local")],
+            remote: [TranscriptCorrection(source: "same source", replacement: "remote")]
+        )
+        try expect(
+            conflictingMerge,
+            equals: TranscriptCorrectionSyncMergeResult(corrections: [],
+                                                        conflictingSources: ["same source"]),
+            "sync merge should report same-source edits that changed differently on both sides"
         )
     }
 
