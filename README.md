@@ -335,6 +335,9 @@ Menu structure:
     start and completion feedback
   - **Show Parakey in Dock** — off by default (menu-bar only)
 - **About Parakey**
+- **Copy Diagnostics** — copies a transcript-free support summary
+  with app version, permission states, selected microphone status,
+  and settings metadata
 - **Quit** — clean shutdown
 
 A 2-minute hard cap auto-releases if the hotkey is held too long.
@@ -494,6 +497,11 @@ length metadata. There's no opt-in debug flag for logging
 transcripts; the only way to see what the model heard is to read the
 in-memory history from the menu while the app is still running. You
 can clear that in-memory history from the menu at any time.
+
+The **Copy Diagnostics** menu item is also transcript-free: it copies
+version, permission, microphone, startup, and settings metadata for
+support without including recent transcripts or text-correction
+contents.
 
 ## Troubleshooting
 

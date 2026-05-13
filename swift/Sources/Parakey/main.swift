@@ -1272,6 +1272,10 @@ func currentBundleVersion() -> String {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
 }
 
+func currentBundleBuild() -> String {
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+}
+
 func parseSemver(_ s: String) -> [Int] {
     // Strip leading whitespace + 'v', split on '.', take leading
     // digit run from each chunk. Tolerant by design; "" returns []
@@ -2091,6 +2095,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         cancelActiveRecording(reason: "menu")
     }
 
+    @objc private func copyDiagnosticsClicked(_ sender: NSMenuItem) {
+        let text = diagnosticsText()
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        log("diagnostics copied to clipboard")
+    }
+
     // MARK: - Menu
 
     private func rebuildMenu() {
@@ -2215,6 +2227,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         about.target = self
         menu.addItem(about)
 
+        let diagnostics = NSMenuItem(title: "Copy Diagnostics",
+                                     action: #selector(copyDiagnosticsClicked(_:)),
+                                     keyEquivalent: "")
+        diagnostics.target = self
+        menu.addItem(diagnostics)
+
         // Route through our own selector rather than `NSApp.terminate(_:)`
         // directly. macOS auto-decorates items whose action is the
         // system terminate: selector with a destructive-action glyph
@@ -2255,6 +2273,85 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             return "Starting hotkey listener…"
         }
         return "Parakey is not ready"
+    }
+
+    private func diagnosticsText() -> String {
+        let generated = ISO8601DateFormatter().string(from: Date())
+        let bundlePath = Bundle.main.bundlePath
+        let installKind: String
+        if bundlePath == "/Applications/Parakey.app" {
+            installKind = "Applications app"
+        } else if bundlePath == "/tmp/Parakey-dev.app" {
+            installKind = "signed dev app"
+        } else {
+            installKind = "other"
+        }
+
+        let devices = availableAudioInputDevices()
+        let savedInput = settings.inputDevice.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedInput = audioInputDevice(matching: savedInput, in: devices)
+        let inputLabel: String
+        if savedInput.isEmpty || isDefaultAggregateAudioInputPreference(savedInput) {
+            inputLabel = "System default"
+        } else if let selectedInput {
+            inputLabel = "\(selectedInput.name) (available)"
+        } else {
+            inputLabel = "Saved device unavailable"
+        }
+
+        let startupText: String
+        if let failure = startupFailure {
+            startupText = "\(failure.statusTitle): \(failure.detail)"
+        } else if startupTask != nil {
+            startupText = startupStatusTitle
+        } else {
+            startupText = isCoreRuntimeReady ? "Runtime ready" : "Runtime not ready"
+        }
+
+        let permissions = Permission.allCases
+            .map { "- \($0.rawValue): \(Permissions.isGranted($0) ? "granted" : "missing")" }
+            .joined(separator: "\n")
+        let availableInputs = devices.isEmpty
+            ? "None reported"
+            : devices.map(\.name).joined(separator: ", ")
+        let pendingUpdateText = pendingUpdate.map { "v\($0.version)" } ?? "none"
+
+        return """
+        Parakey diagnostics
+        Generated: \(generated)
+        App version: \(currentBundleVersion()) (\(currentBundleBuild()))
+        macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)
+        Bundle ID: \(Bundle.main.bundleIdentifier ?? "unknown")
+        Bundle path: \(bundlePath)
+        Install kind: \(installKind)
+
+        Status: \(menuStatusTitle())
+        Startup: \(startupText)
+        Core runtime ready: \(isCoreRuntimeReady)
+        Ready for dictation: \(isReady)
+        Recording active: \(isRecording)
+        Transcribing: \(isBusy)
+
+        Permissions:
+        \(permissions)
+
+        Settings:
+        - Hotkey: \(hotkey.hotkey.name)
+        - Trigger mode: \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)
+        - Paste behavior: \(PASTE_SUFFIX_DISPLAY[settings.pasteSuffix] ?? settings.pasteSuffix.rawValue)
+        - Mute while recording: \(settings.muteWhileRecording)
+        - Feedback sounds: \(settings.playFeedbackSounds)
+        - Show in Dock: \(settings.showInDock)
+        - Automatic update checks: \(settings.checkForUpdates)
+        - Pending update: \(pendingUpdateText)
+
+        Microphone:
+        - Selected: \(inputLabel)
+        - Available inputs: \(availableInputs)
+
+        Logs: ~/Library/Logs/Parakey.log
+        Privacy: transcript text and text-correction contents are not included.
+        """
     }
 
     @objc private func retryStartupClicked(_ sender: NSMenuItem) {
