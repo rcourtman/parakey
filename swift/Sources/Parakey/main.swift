@@ -101,6 +101,13 @@ let TRIGGER_DISPLAY: [TriggerMode: String] = [
     .toggle: "Press to toggle",
 ]
 
+enum PasteSuffix: String { case appendSpace = "space", none, appendNewline = "newline" }
+let PASTE_SUFFIX_DISPLAY: [PasteSuffix: String] = [
+    .appendSpace: "Append space",
+    .none: "No suffix",
+    .appendNewline: "Append newline",
+]
+
 struct AudioInputDevice: Equatable {
     let id: AudioDeviceID
     let uid: String
@@ -342,6 +349,7 @@ extension ISO8601DateFormatter {
 final class Settings: @unchecked Sendable {
     private static let keyHotkeyKeycode = "hotkey_keycode"
     private static let keyTriggerMode = "trigger_mode"
+    private static let keyPasteSuffix = "paste_suffix"
     private static let keyMuteWhileRecording = "mute_while_recording"
     private static let keyShowInDock = "show_in_dock"
     private static let keyInputDevice = "input_device"
@@ -379,6 +387,16 @@ final class Settings: @unchecked Sendable {
             return .hold
         }
         set { defaults.set(newValue.rawValue, forKey: Self.keyTriggerMode) }
+    }
+
+    var pasteSuffix: PasteSuffix {
+        get {
+            if let v = defaults.string(forKey: Self.keyPasteSuffix), let s = PasteSuffix(rawValue: v) {
+                return s
+            }
+            return .appendSpace
+        }
+        set { defaults.set(newValue.rawValue, forKey: Self.keyPasteSuffix) }
     }
 
     var muteWhileRecording: Bool {
@@ -1086,6 +1104,17 @@ enum TranscriptCorrector {
 // other clipboard observers, and most users find a clipboard that
 // silently reverts itself more surprising than one that ends up
 // holding whatever they last dictated.
+
+func pastedText(from correctedTranscript: String, suffix: PasteSuffix) -> String {
+    switch suffix {
+    case .appendSpace:
+        return correctedTranscript + " "
+    case .none:
+        return correctedTranscript
+    case .appendNewline:
+        return correctedTranscript + "\n"
+    }
+}
 
 @MainActor
 enum Paster {
@@ -1804,7 +1833,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                             enterPermissionBlockedState(missing: missing, reason: "paste")
                             return
                         }
-                        Paster.paste(corrected.text + " ")
+                        Paster.paste(pastedText(from: corrected.text, suffix: settings.pasteSuffix))
                         Sounds.playDone()
                         addToHistory(corrected.text)
                     }
@@ -2167,6 +2196,22 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
         tmParent.submenu = tmSub
         sub.addItem(tmParent)
+
+        // Paste behavior submenu.
+        let pasteParent = NSMenuItem(title: "Paste Behavior", action: nil, keyEquivalent: "")
+        let pasteSub = NSMenu()
+        pasteSub.autoenablesItems = false
+        for suffix in [PasteSuffix.appendSpace, .none, .appendNewline] {
+            let item = NSMenuItem(title: PASTE_SUFFIX_DISPLAY[suffix] ?? suffix.rawValue,
+                                  action: #selector(selectPasteSuffix(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.state = (suffix == settings.pasteSuffix) ? .on : .off
+            item.representedObject = suffix.rawValue
+            pasteSub.addItem(item)
+        }
+        pasteParent.submenu = pasteSub
+        sub.addItem(pasteParent)
 
         sub.addItem(buildInputDeviceItem())
 
@@ -2921,6 +2966,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func selectPasteSuffix(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let suffix = PasteSuffix(rawValue: raw) else { return }
+        settings.pasteSuffix = suffix
+        rebuildMenu()
+    }
+
     @objc private func toggleMute(_ sender: NSMenuItem) {
         settings.muteWhileRecording.toggle()
         sender.state = settings.muteWhileRecording ? .on : .off
@@ -3163,6 +3215,8 @@ private enum ParakeySelfTest {
             return runSuite("hotkey", testHotkey)
         case "readiness":
             return runSuite("readiness", testReadiness)
+        case "paste":
+            return runSuite("paste", testPasteSuffixFormatting)
         case "all":
             return runSuite("all", testAll)
         default:
@@ -3189,6 +3243,7 @@ private enum ParakeySelfTest {
     private static func testAll() throws {
         try testHotkey()
         try testReadiness()
+        try testPasteSuffixFormatting()
     }
 
     private static func testHotkey() throws {
@@ -3235,6 +3290,29 @@ private enum ParakeySelfTest {
                                 missingPermissions: []),
             equals: .rebuildMenuOnly,
             "ready app with all permissions should remain ready and rebuild only"
+        )
+    }
+
+    private static func testPasteSuffixFormatting() throws {
+        try expect(
+            pastedText(from: "hello world", suffix: .appendSpace),
+            equals: "hello world ",
+            "append-space suffix should preserve the existing default"
+        )
+        try expect(
+            pastedText(from: "hello world", suffix: .none),
+            equals: "hello world",
+            "no suffix should paste corrected transcript unchanged"
+        )
+        try expect(
+            pastedText(from: "hello world", suffix: .appendNewline),
+            equals: "hello world\n",
+            "append-newline suffix should add a single newline"
+        )
+        try expect(
+            pastedText(from: "hello world ", suffix: .appendSpace),
+            equals: "hello world  ",
+            "suffix formatting should not trim or rewrite corrected text"
         )
     }
 

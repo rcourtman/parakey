@@ -274,8 +274,9 @@ No restart needed.
 
 Hold **Right Option** (the default — change in Settings → Hotkey if
 you'd prefer something else), talk, release. The transcript is pasted
-at the cursor with a trailing space. A short tink confirms recording
-started; a pop confirms it landed.
+at the cursor. By default Parakey appends one space after each paste;
+change this from Settings → Paste Behavior. A short tink confirms
+recording started; a pop confirms it landed.
 
 While the hotkey is held, system audio output is muted (so background
 music doesn't bleed into the recording or distract you). It's restored
@@ -316,6 +317,8 @@ Menu structure:
   - **Hotkey** — Right Option (default), Right Control, Right
     Command, F5, F6, F13, F18, F19
   - **Trigger mode** — *Press and hold* or *Press to toggle*
+  - **Paste Behavior** — append a space (default), no suffix, or
+    append a newline after the pasted transcript
   - **Microphone** — System default (default) or any specific input
     device. Switching takes effect immediately. If the saved device
     is later unplugged, Parakey falls back to system default.
@@ -355,10 +358,10 @@ For latency / accuracy numbers and the test methodology, see
 ## Customise
 
 Most settings live in the menu's **Settings** submenu (described
-above). All — **Hotkey**, **Trigger mode**, **Mute system audio while
-recording**, **Microphone**, **Show Parakey in Dock**, **Text
-Corrections**, **Check for updates automatically** — persist across
-restarts via `NSUserDefaults`
+above). All — **Hotkey**, **Trigger mode**, **Paste Behavior**,
+**Mute system audio while recording**, **Microphone**, **Show Parakey
+in Dock**, **Text Corrections**, **Check for updates automatically** —
+persist across restarts via `NSUserDefaults`
 (`~/Library/Preferences/com.local.parakey.plist`).
 
 Power users can also poke them via `defaults` directly:
@@ -366,6 +369,7 @@ Power users can also poke them via `defaults` directly:
 ```sh
 defaults write com.local.parakey hotkey_keycode -int 105   # F13
 defaults write com.local.parakey trigger_mode toggle
+defaults write com.local.parakey paste_suffix none          # space, none, or newline
 defaults write com.local.parakey mute_while_recording -bool false
 defaults write com.local.parakey show_in_dock -bool true
 defaults write com.local.parakey input_device "AirPods Pro"  # exact device name or UID
