@@ -114,6 +114,8 @@ struct AudioInputDevice: Equatable {
     let name: String
 }
 
+private let CORE_AUDIO_DEFAULT_AGGREGATE_PREFIX = "CADefaultDeviceAggregate-"
+
 struct TranscriptCorrection: Codable, Equatable, Sendable {
     let source: String
     let replacement: String
@@ -252,6 +254,17 @@ func audioDeviceHasInputChannels(_ deviceID: AudioDeviceID) -> Bool {
     return buffers.contains { $0.mNumberChannels > 0 }
 }
 
+func isDefaultAggregateAudioInputPreference(_ preference: String) -> Bool {
+    let trimmed = preference.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.range(of: CORE_AUDIO_DEFAULT_AGGREGATE_PREFIX,
+                         options: [.anchored, .caseInsensitive]) != nil
+}
+
+func isDefaultAggregateAudioInputDevice(_ device: AudioInputDevice) -> Bool {
+    isDefaultAggregateAudioInputPreference(device.uid)
+        || isDefaultAggregateAudioInputPreference(device.name)
+}
+
 func availableAudioInputDevices() -> [AudioInputDevice] {
     var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
                                              mScope: kAudioObjectPropertyScopeGlobal,
@@ -272,7 +285,8 @@ func availableAudioInputDevices() -> [AudioInputDevice] {
               let name = audioObjectStringProperty(id, selector: kAudioObjectPropertyName) else {
             return nil
         }
-        return AudioInputDevice(id: id, uid: uid, name: name)
+        let device = AudioInputDevice(id: id, uid: uid, name: name)
+        return isDefaultAggregateAudioInputDevice(device) ? nil : device
     }
     .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 }
@@ -281,6 +295,7 @@ func audioInputDevice(matching preference: String,
                       in devices: [AudioInputDevice] = availableAudioInputDevices()) -> AudioInputDevice? {
     let trimmed = preference.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
+    guard !isDefaultAggregateAudioInputPreference(trimmed) else { return nil }
     return devices.first { $0.uid == trimmed }
         ?? devices.first { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
 }
@@ -952,6 +967,7 @@ final class AudioCapture: @unchecked Sendable {
     private func applyInputDevicePreference(_ preference: String, to input: AVAudioInputNode) {
         let trimmed = preference.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard !isDefaultAggregateAudioInputPreference(trimmed) else { return }
 
         guard let device = audioInputDevice(matching: trimmed) else {
             log("AudioCapture: saved input device unavailable, using system default")
@@ -2255,7 +2271,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         sub.autoenablesItems = false
 
         let devices = availableAudioInputDevices()
-        let savedPreference = settings.inputDevice.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawSavedPreference = settings.inputDevice.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedPreference = isDefaultAggregateAudioInputPreference(rawSavedPreference) ? "" : rawSavedPreference
         let selectedDevice = audioInputDevice(matching: savedPreference, in: devices)
         let canSwitch = !isRecording && !isBusy && !isTerminating
 
@@ -3244,6 +3261,7 @@ private enum ParakeySelfTest {
         try testHotkey()
         try testReadiness()
         try testPasteSuffixFormatting()
+        try testAudioInputDeviceFiltering()
     }
 
     private static func testHotkey() throws {
@@ -3313,6 +3331,36 @@ private enum ParakeySelfTest {
             pastedText(from: "hello world ", suffix: .appendSpace),
             equals: "hello world  ",
             "suffix formatting should not trim or rewrite corrected text"
+        )
+    }
+
+    private static func testAudioInputDeviceFiltering() throws {
+        let pseudo = AudioInputDevice(id: 1,
+                                      uid: "CADefaultDeviceAggregate-42159-0",
+                                      name: "CADefaultDeviceAggregate-42159-0")
+        let real = AudioInputDevice(id: 2,
+                                    uid: "real-yeti-nano",
+                                    name: "Yeti Nano")
+
+        try expect(
+            isDefaultAggregateAudioInputDevice(pseudo),
+            equals: true,
+            "CoreAudio default aggregate devices should be recognized"
+        )
+        try expect(
+            isDefaultAggregateAudioInputDevice(real),
+            equals: false,
+            "named microphones should remain selectable"
+        )
+        try expect(
+            audioInputDevice(matching: pseudo.uid, in: [pseudo, real])?.uid,
+            equals: nil,
+            "CoreAudio default aggregate preferences should fall back to system default"
+        )
+        try expect(
+            audioInputDevice(matching: "Yeti Nano", in: [real])?.uid,
+            equals: "real-yeti-nano",
+            "named microphone preferences should still resolve by display name"
         )
     }
 
