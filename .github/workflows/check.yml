@@ -1,11 +1,9 @@
 name: check
 
-# Lightweight repo-hygiene checks: shell + XML/plist syntax. Building the
-# Swift app needs macOS 26 (LSMinimumSystemVersion in swift/Info.plist) and
-# downloads the FluidAudio CoreML weights (~600 MB) on first build, so the
-# actual build/notarise path lives in ship-swift.sh on the maintainer's Mac.
-# Linux runners just cheap-check that the things humans hand-edit are still
-# parseable.
+# Lightweight macOS repo-hygiene checks: shell + plist/XML/JSON/YAML/HTML syntax.
+# Building the Swift app downloads the FluidAudio CoreML weights (~600 MB) on
+# first build, so the actual build/notarise path lives in ship-swift.sh on the
+# maintainer's Mac.
 
 on:
   push:
@@ -14,7 +12,7 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - name: Shell syntax
@@ -22,16 +20,37 @@ jobs:
           bash -n ship-swift.sh
           bash -n swift/dev-run.sh
           bash -n icon/make-icons.sh
+          bash -n experiments/swift-bench/generate-test-audio.sh
       - name: Plist + XML syntax
         run: |
-          python3 -c "import xml.etree.ElementTree as ET; \
-            ET.parse('swift/Info.plist'); \
-            ET.parse('entitlements.plist'); \
-            ET.parse('docs/sitemap.xml')"
+          plutil -lint swift/Info.plist entitlements.plist
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+
+          for path in [
+              "swift/Info.plist",
+              "entitlements.plist",
+              "docs/sitemap.xml",
+              "docs/favicon.svg",
+              *sorted(glob.glob("icon/*.svg")),
+          ]:
+              ET.parse(path)
+          PY
+      - name: YAML syntax
+        run: |
+          git ls-files -z -- '*.yml' '*.yaml' | ruby -e '
+          require "yaml"
+
+          STDIN.read.split("\0").reject(&:empty?).each do |path|
+            YAML.load_file(path)
+          end
+          '
       - name: Docs syntax
         run: |
           python3 -m json.tool docs/benchmarks/results.json >/dev/null
           python3 -m json.tool docs/privacy/network-calls.json >/dev/null
+          python3 -m json.tool marketing/demo/package.json >/dev/null
           python3 - <<'PY'
           from html.parser import HTMLParser
           from pathlib import Path
