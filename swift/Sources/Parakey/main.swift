@@ -27,6 +27,7 @@ import AppKit
 import AVFoundation
 import Foundation
 import CoreGraphics
+import Darwin
 import ApplicationServices
 import FluidAudio
 import IOKit
@@ -230,10 +231,14 @@ final class Logger: @unchecked Sendable {
         let line = "[\(stamp)] \(msg)\n"
         FileHandle.standardError.write(Data(line.utf8))
         q.async { [url] in
-            if let h = try? FileHandle(forWritingTo: url) {
+            do {
+                let h = try FileHandle(forWritingTo: url)
                 defer { try? h.close() }
-                try? h.seekToEnd()
-                try? h.write(contentsOf: Data(line.utf8))
+                _ = try h.seekToEnd()
+                try h.write(contentsOf: Data(line.utf8))
+            } catch {
+                let fallback = "Logger: file write failed: \(error.localizedDescription)\n"
+                FileHandle.standardError.write(Data(fallback.utf8))
             }
         }
     }
@@ -438,12 +443,97 @@ final class Permissions {
 // Right Option is a modifier so it doesn't fire keyDown — we watch
 // flagsChanged and diff the .option flag.
 
+private struct HotkeyEventSnapshot: Sendable {
+    let typeRawValue: UInt32
+    let keycode: CGKeyCode
+    let flagsRawValue: UInt64
+    let isAutoRepeat: Bool
+
+    var flags: CGEventFlags {
+        CGEventFlags(rawValue: flagsRawValue)
+    }
+}
+
+private enum HotkeyTransitionAction: Equatable, Sendable {
+    case press
+    case release
+}
+
+private struct HotkeyTransitionResult: Equatable, Sendable {
+    let suppress: Bool
+    let actions: [HotkeyTransitionAction]
+
+    static let pass = HotkeyTransitionResult(suppress: false, actions: [])
+    static let suppressOnly = HotkeyTransitionResult(suppress: true, actions: [])
+}
+
+private struct HotkeyTransitionState {
+    private var hotkeyModifierDown = false
+    private var toggleActive = false
+
+    mutating func resetAll() {
+        hotkeyModifierDown = false
+        toggleActive = false
+    }
+
+    mutating func resetToggleState() {
+        toggleActive = false
+    }
+
+    mutating func transition(
+        for event: HotkeyEventSnapshot,
+        hotkey: HotkeyChoice,
+        triggerMode: TriggerMode
+    ) -> HotkeyTransitionResult {
+        guard event.keycode == hotkey.keycode else { return .pass }
+
+        // Modifier masks are side-agnostic, so the physical keycode's
+        // own down state is the source of truth for right-side releases.
+        var isPress = false
+        var isRelease = false
+        if hotkey.isModifier {
+            guard event.typeRawValue == CGEventType.flagsChanged.rawValue,
+                  let mask = hotkey.modifierFlag else { return .suppressOnly }
+            if hotkeyModifierDown {
+                isRelease = true
+                hotkeyModifierDown = false
+            } else if event.flags.contains(mask) {
+                isPress = true
+                hotkeyModifierDown = true
+            }
+        } else {
+            if event.typeRawValue == CGEventType.keyDown.rawValue, !event.isAutoRepeat {
+                isPress = true
+            } else if event.typeRawValue == CGEventType.keyUp.rawValue {
+                isRelease = true
+            } else {
+                return .suppressOnly
+            }
+        }
+
+        switch triggerMode {
+        case .hold:
+            var actions: [HotkeyTransitionAction] = []
+            if isPress { actions.append(.press) }
+            if isRelease { actions.append(.release) }
+            return HotkeyTransitionResult(suppress: true, actions: actions)
+        case .toggle:
+            // Toggle mode: every press flips between "start recording"
+            // and "stop recording". Releases are no-ops.
+            guard isPress else { return .suppressOnly }
+            let action: HotkeyTransitionAction = toggleActive ? .release : .press
+            toggleActive.toggle()
+            return HotkeyTransitionResult(suppress: true, actions: [action])
+        }
+    }
+}
+
 @MainActor
 final class HotkeyListener {
+
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var lastFlags: CGEventFlags = []
-    private var toggleActive = false
+    private var transitionState = HotkeyTransitionState()
 
     /// User's current hotkey (set via Settings → Hotkey submenu).
     var hotkey: HotkeyChoice = hotkeyChoice(forKeycode: DEFAULT_HOTKEY_KEYCODE)
@@ -455,7 +545,13 @@ final class HotkeyListener {
     var onPress: (() -> Void)?
     var onRelease: (() -> Void)?
 
-    func start() {
+    @discardableResult
+    func start() -> Bool {
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+            return true
+        }
+
         let mask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
                               | (1 << CGEventType.keyUp.rawValue)
                               | (1 << CGEventType.flagsChanged.rawValue)
@@ -464,18 +560,26 @@ final class HotkeyListener {
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,
             eventsOfInterest: mask,
             callback: { _, type, event, userInfo in
                 guard let userInfo else { return Unmanaged.passUnretained(event) }
                 let listener = Unmanaged<HotkeyListener>.fromOpaque(userInfo).takeUnretainedValue()
-                DispatchQueue.main.async { listener.handle(type: type, event: event) }
-                return Unmanaged.passUnretained(event)
+                let snapshot = HotkeyEventSnapshot(
+                    typeRawValue: type.rawValue,
+                    keycode: CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode)),
+                    flagsRawValue: event.flags.rawValue,
+                    isAutoRepeat: type == .keyDown && event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                )
+                let shouldSuppress = MainActor.assumeIsolated {
+                    listener.handleTapCallback(snapshot)
+                }
+                return shouldSuppress ? nil : Unmanaged.passUnretained(event)
             },
             userInfo: opaqueSelf
         ) else {
             log("CGEvent.tapCreate failed — Input Monitoring permission missing?")
-            return
+            return false
         }
 
         self.tap = tap
@@ -483,58 +587,67 @@ final class HotkeyListener {
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         log("HotkeyListener: tap active (watching \(hotkey.name))")
+        return true
+    }
+
+    func stop() {
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+        tap = nil
+        runLoopSource = nil
+        transitionState.resetAll()
     }
 
     /// Replace the current hotkey choice. Safe to call at runtime —
     /// the tap stays bound, only the per-event filter changes.
     func setHotkey(_ choice: HotkeyChoice) {
         self.hotkey = choice
-        self.lastFlags = []
-        self.toggleActive = false
+        self.transitionState.resetAll()
         log("HotkeyListener: hotkey changed → \(choice.name)")
     }
 
     func setTriggerMode(_ mode: TriggerMode) {
         // Reset toggle state when switching modes so we don't get
         // stuck in mid-toggle from a previous session.
-        if mode != triggerMode { toggleActive = false }
+        if mode != triggerMode { transitionState.resetToggleState() }
         triggerMode = mode
         log("HotkeyListener: trigger mode → \(mode.rawValue)")
     }
 
-    private func handle(type: CGEventType, event: CGEvent) {
-        let keycode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        guard keycode == hotkey.keycode else { return }
-
-        // Modifier keys fire .flagsChanged with the same keycode field.
-        // Diff the relevant modifier bit against the previous flags
-        // snapshot to detect press / release transitions. Non-modifier
-        // keys fire ordinary .keyDown / .keyUp.
-        var isPress = false
-        var isRelease = false
-        if hotkey.isModifier {
-            guard type == .flagsChanged, let mask = hotkey.modifierFlag else { return }
-            let nowPressed = event.flags.contains(mask)
-            let wasPressed = lastFlags.contains(mask)
-            lastFlags = event.flags
-            isPress = nowPressed && !wasPressed
-            isRelease = !nowPressed && wasPressed
-        } else {
-            if type == .keyDown { isPress = true }
-            else if type == .keyUp { isRelease = true }
-            else { return }
+    private func handleTapCallback(_ event: HotkeyEventSnapshot) -> Bool {
+        if event.typeRawValue == CGEventType.tapDisabledByTimeout.rawValue
+            || event.typeRawValue == CGEventType.tapDisabledByUserInput.rawValue {
+            if let tap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+                log("HotkeyListener: event tap re-enabled after \(event.typeRawValue)")
+            }
+            return false
         }
 
-        switch triggerMode {
-        case .hold:
-            if isPress { onPress?() }
-            if isRelease { onRelease?() }
-        case .toggle:
-            // Toggle mode: every press flips between "start recording"
-            // and "stop recording". Releases are no-ops.
-            guard isPress else { return }
-            if toggleActive { onRelease?() } else { onPress?() }
-            toggleActive.toggle()
+        let result = transitionState.transition(for: event, hotkey: hotkey, triggerMode: triggerMode)
+        dispatchHotkeyActions(result.actions)
+        return result.suppress
+    }
+
+    private func dispatchHotkeyActions(_ actions: [HotkeyTransitionAction]) {
+        guard !actions.isEmpty else { return }
+
+        Task { @MainActor [weak self] in
+            self?.performHotkeyActions(actions)
+        }
+    }
+
+    private func performHotkeyActions(_ actions: [HotkeyTransitionAction]) {
+        for action in actions {
+            switch action {
+            case .press: onPress?()
+            case .release: onRelease?()
+            }
         }
     }
 
@@ -542,7 +655,7 @@ final class HotkeyListener {
     /// hotkey (auto-release at max duration, app quitting, etc.) so
     /// toggle mode doesn't end up offset by one.
     func resetToggleState() {
-        toggleActive = false
+        transitionState.resetToggleState()
     }
 }
 
@@ -564,6 +677,7 @@ final class AudioCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var samples: [Float] = []
     private var _isRunning = false
+    private var recordingGeneration: UInt64 = 0
 
     var isRunning: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -593,12 +707,19 @@ final class AudioCapture: @unchecked Sendable {
             self?.handleTap(buffer: buffer, target: targetFormat)
         }
 
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            converter = nil
+            throw error
+        }
         log("AudioCapture: engine started")
     }
 
     func beginRecording() {
         lock.lock(); defer { lock.unlock() }
+        recordingGeneration &+= 1
         samples.removeAll(keepingCapacity: true)
         _isRunning = true
     }
@@ -607,6 +728,7 @@ final class AudioCapture: @unchecked Sendable {
     func endRecording() -> [Float] {
         lock.lock(); defer { lock.unlock() }
         _isRunning = false
+        recordingGeneration &+= 1
         let captured = samples
         samples.removeAll(keepingCapacity: true)
         return captured
@@ -617,6 +739,7 @@ final class AudioCapture: @unchecked Sendable {
         // not recording so we don't pay conversion cost for nothing.
         lock.lock()
         let running = _isRunning
+        let generation = recordingGeneration
         lock.unlock()
         guard running, let converter else { return }
 
@@ -632,11 +755,10 @@ final class AudioCapture: @unchecked Sendable {
         // every press after that was 0.00s" bug we saw before this
         // fix. .noDataNow means "I'm out of input *for this call*,
         // but the stream continues" and leaves the converter usable.
-        var fed = false
+        let inputProvider = AudioConverterInputProvider(buffer: buffer)
         var error: NSError?
         let status = converter.convert(to: out, error: &error) { _, outStatus in
-            if fed { outStatus.pointee = .noDataNow; return nil }
-            fed = true; outStatus.pointee = .haveData; return buffer
+            inputProvider.provide(outStatus: outStatus)
         }
         if status == .error {
             log("AudioCapture: convert error: \(error?.localizedDescription ?? "?")")
@@ -646,11 +768,38 @@ final class AudioCapture: @unchecked Sendable {
         let arr = Array(UnsafeBufferPointer(start: ch, count: Int(out.frameLength)))
 
         // Re-check running under lock — endRecording() might have
-        // fired during conversion and we don't want straggler frames
-        // appearing in the next clip.
+        // fired during conversion, then a rapid next recording may
+        // already have started. The generation token keeps straggler
+        // frames out of the next clip.
         lock.lock()
-        if _isRunning { samples.append(contentsOf: arr) }
+        if _isRunning && recordingGeneration == generation {
+            samples.append(contentsOf: arr)
+        }
         lock.unlock()
+    }
+}
+
+private final class AudioConverterInputProvider: @unchecked Sendable {
+    private let buffer: AVAudioPCMBuffer
+    private let lock = NSLock()
+    private var didProvideBuffer = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func provide(outStatus: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if didProvideBuffer {
+            outStatus.pointee = .noDataNow
+            return nil
+        }
+
+        didProvideBuffer = true
+        outStatus.pointee = .haveData
+        return buffer
     }
 }
 
@@ -955,6 +1104,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var isRecording = false
     private var isBusy = false
     private var isReady = false
+    private var isCoreRuntimeReady = false
+    private var didStartUpdateCheckLoop = false
+    private var permissionReadinessTimer: Timer?
+    private var lastPermissionReadinessMissingKey: String?
     private var didMuteThisRecording: Bool = false
     private var maxDurationWorkItem: DispatchWorkItem?
     private var muteWorkItem: DispatchWorkItem?
@@ -996,6 +1149,60 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     // MARK: - Lifecycle
 
+    private func completeReadinessIfPossible(requireAllPermissions: Bool, reason: String) {
+        if isReady {
+            if missingPermissions().isEmpty {
+                permClickCount.removeAll()
+                stopPermissionReadinessMonitor()
+            }
+            rebuildMenu()
+            return
+        }
+
+        guard isCoreRuntimeReady else {
+            rebuildMenu()
+            return
+        }
+
+        if requireAllPermissions {
+            let missing = missingPermissions()
+            guard missing.isEmpty else {
+                logPermissionReadinessWait(missing)
+                startPermissionReadinessMonitor(reason: reason)
+                rebuildMenu()
+                return
+            }
+        }
+
+        hotkey.onPress = { [weak self] in self?.handlePress() }
+        hotkey.onRelease = { [weak self] in self?.handleRelease() }
+        guard hotkey.start() else {
+            isReady = false
+            isRecording = false
+            isBusy = false
+            hotkey.stop()
+            log("readiness failed (\(reason)): hotkey listener unavailable")
+            setMenuBarState(.error)
+            if !missingPermissions().isEmpty {
+                startPermissionReadinessMonitor(reason: reason)
+            }
+            rebuildMenu()
+            return
+        }
+
+        isReady = true
+        stopPermissionReadinessMonitor()
+        setMenuBarState(.idle)
+
+        // Belt-and-braces: clear any TCC entries stuck 'denied' from
+        // an upgrade. Granted permissions stay intact. See the TCC
+        // recovery section comment for why this is needed.
+        recoverStaleTCCAfterUpgrade()
+
+        rebuildMenu()
+        startUpdateCheckLoop()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
 
@@ -1017,26 +1224,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             do {
                 try await asr.load()
-                self.isReady = true
-                setMenuBarState(.idle)
-
-                hotkey.onPress   = { [weak self] in self?.handlePress() }
-                hotkey.onRelease = { [weak self] in self?.handleRelease() }
-                hotkey.start()
                 try audio.startEngine()
-
-                // Belt-and-braces: clear any TCC entries stuck
-                // 'denied' from an upgrade. Granted permissions
-                // stay intact. See the TCC recovery section comment
-                // for why this is needed.
-                recoverStaleTCCAfterUpgrade()
-
-                rebuildMenu()
-
-                // Periodic update poll. First check 30 s after boot
-                // so we never compete with model load; then every 6 h.
-                startUpdateCheckLoop()
+                self.isCoreRuntimeReady = true
+                completeReadinessIfPossible(requireAllPermissions: false, reason: "launch")
             } catch {
+                self.isCoreRuntimeReady = false
+                self.isReady = false
+                self.isRecording = false
+                self.isBusy = false
+                hotkey.stop()
                 log("init failed: \(error)")
                 setMenuBarState(.error)
             }
@@ -1044,8 +1240,64 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stopPermissionReadinessMonitor()
         correctionSyncTimer?.invalidate()
         correctionSyncTimer = nil
+    }
+
+    private func missingPermissions() -> [Permission] {
+        Permission.allCases.filter { !Permissions.isGranted($0) }
+    }
+
+    @discardableResult
+    private func logPermissionReadinessWait(_ missing: [Permission]) -> Bool {
+        let key = missing.map(\.rawValue).joined(separator: "|")
+        guard key != lastPermissionReadinessMissingKey else { return false }
+        lastPermissionReadinessMissingKey = key
+        log("readiness retry waiting for permissions: \(missing.map(\.rawValue).joined(separator: ", "))")
+        return true
+    }
+
+    private func startPermissionReadinessMonitor(reason: String) {
+        guard permissionReadinessTimer == nil else { return }
+        log("permission readiness monitor started (\(reason))")
+        permissionReadinessTimer = Timer.scheduledTimer(timeInterval: 2,
+                                                        target: self,
+                                                        selector: #selector(permissionReadinessTimerFired(_:)),
+                                                        userInfo: nil,
+                                                        repeats: true)
+        permissionReadinessTimer?.tolerance = 0.5
+    }
+
+    private func stopPermissionReadinessMonitor() {
+        guard permissionReadinessTimer != nil else { return }
+        permissionReadinessTimer?.invalidate()
+        permissionReadinessTimer = nil
+        lastPermissionReadinessMissingKey = nil
+        log("permission readiness monitor stopped")
+    }
+
+    @objc private func permissionReadinessTimerFired(_ timer: Timer) {
+        guard isCoreRuntimeReady else {
+            stopPermissionReadinessMonitor()
+            return
+        }
+
+        if isReady {
+            let missing = missingPermissions()
+            guard !missing.isEmpty else {
+                permClickCount.removeAll()
+                stopPermissionReadinessMonitor()
+                rebuildMenu()
+                return
+            }
+            if logPermissionReadinessWait(missing) {
+                rebuildMenu()
+            }
+            return
+        }
+
+        completeReadinessIfPossible(requireAllPermissions: true, reason: "permission monitor")
     }
 
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
@@ -1387,6 +1639,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     @objc private func grantPermissionClicked(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let p = Permission(rawValue: raw) else { return }
+        if Permissions.isGranted(p) {
+            permClickCount[p] = nil
+            log("perm click ignored: \(p.rawValue) already granted")
+            completeReadinessIfPossible(requireAllPermissions: true, reason: "permission already granted")
+            return
+        }
+
         let clicks = (permClickCount[p] ?? 0) + 1
         permClickCount[p] = clicks
         log("perm click #\(clicks): \(p.rawValue)")
@@ -1399,13 +1658,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             TCC.reset(p, bundleID: Bundle.main.bundleIdentifier ?? "com.local.parakey")
         }
         Permissions.request(p)
-
-        // Permissions don't update synchronously. Refresh after a
-        // short delay so the row disappears once granted (or its
-        // title changes to the retry hint).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.rebuildMenu()
-        }
+        startPermissionReadinessMonitor(reason: "permission grant")
+        rebuildMenu()
     }
 
     // MARK: - Settings submenu
@@ -2152,6 +2406,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     // MARK: - Update flow
 
     private func startUpdateCheckLoop() {
+        guard !didStartUpdateCheckLoop else { return }
+        didStartUpdateCheckLoop = true
         Task.detached { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(UPDATE_CHECK_FIRST_DELAY_SECONDS * 1_000_000_000))
             while !Task.isCancelled {
@@ -2322,6 +2578,160 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 }
 
 // MARK: - Entry point
+
+#if DEBUG
+private enum SelfTestFailure: Error, CustomStringConvertible {
+    case failed(String)
+
+    var description: String {
+        switch self {
+        case .failed(let message): return message
+        }
+    }
+}
+
+private enum ParakeySelfTest {
+    static func run(arguments: [String]) -> Int32? {
+        guard arguments.count >= 2, arguments[0] == "--self-test" else { return nil }
+        guard arguments.count == 2 else { return fail("usage") }
+
+        switch arguments[1] {
+        case "hotkey":
+            return runSuite("hotkey", testHotkey)
+        case "all":
+            return runSuite("all", testHotkey)
+        default:
+            return fail("unknown")
+        }
+    }
+
+    private static func runSuite(_ name: String, _ body: () throws -> Void) -> Int32 {
+        do {
+            try body()
+            print("PASS \(name)")
+            return EXIT_SUCCESS
+        } catch {
+            print("FAIL \(name): \(error)")
+            return EXIT_FAILURE
+        }
+    }
+
+    private static func fail(_ message: String) -> Int32 {
+        print("FAIL self-test: \(message)")
+        return EXIT_FAILURE
+    }
+
+    private static func testHotkey() throws {
+        try testHandledHotkeySuppression()
+        try testFKeyAutoRepeatSuppressesWithoutAction()
+        try testRightModifierReleaseWithLeftFlagStillSet()
+        try testTogglePressFlipsOnceAndReleaseIsNoOp()
+    }
+
+    private static func testHandledHotkeySuppression() throws {
+        var state = HotkeyTransitionState()
+        let f5 = hotkeyChoice(forKeycode: 96)
+
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .hold),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
+            "F-key keyDown should suppress and press"
+        )
+        try expect(
+            state.transition(for: event(.keyDown, keycode: 97), hotkey: f5, triggerMode: .hold),
+            equals: .pass,
+            "non-hotkey keyDown should pass through"
+        )
+        try expect(
+            state.transition(for: event(.keyUp, keycode: f5.keycode), hotkey: f5, triggerMode: .hold),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
+            "F-key keyUp should suppress and release"
+        )
+    }
+
+    private static func testFKeyAutoRepeatSuppressesWithoutAction() throws {
+        var state = HotkeyTransitionState()
+        let f5 = hotkeyChoice(forKeycode: 96)
+
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .hold),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
+            "initial F-key keyDown should press"
+        )
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode, isAutoRepeat: true), hotkey: f5, triggerMode: .hold),
+            equals: .suppressOnly,
+            "F-key autorepeat keyDown should suppress without action"
+        )
+    }
+
+    private static func testRightModifierReleaseWithLeftFlagStillSet() throws {
+        var state = HotkeyTransitionState()
+        let rightOption = hotkeyChoice(forKeycode: 61)
+        let alternate = CGEventFlags.maskAlternate.rawValue
+
+        try expect(
+            state.transition(for: event(.flagsChanged, keycode: rightOption.keycode, flags: alternate), hotkey: rightOption, triggerMode: .hold),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
+            "right modifier flagsChanged should press"
+        )
+        try expect(
+            state.transition(for: event(.flagsChanged, keycode: rightOption.keycode, flags: alternate), hotkey: rightOption, triggerMode: .hold),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
+            "right modifier release should be recognized while left-side flag remains set"
+        )
+    }
+
+    private static func testTogglePressFlipsOnceAndReleaseIsNoOp() throws {
+        var state = HotkeyTransitionState()
+        let f5 = hotkeyChoice(forKeycode: 96)
+
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
+            "first toggle press should start"
+        )
+        try expect(
+            state.transition(for: event(.keyUp, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle),
+            equals: .suppressOnly,
+            "toggle release should be a no-op"
+        )
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
+            "second toggle press should stop"
+        )
+    }
+
+    private static func event(
+        _ type: CGEventType,
+        keycode: CGKeyCode,
+        flags: UInt64 = 0,
+        isAutoRepeat: Bool = false
+    ) -> HotkeyEventSnapshot {
+        HotkeyEventSnapshot(
+            typeRawValue: type.rawValue,
+            keycode: keycode,
+            flagsRawValue: flags,
+            isAutoRepeat: isAutoRepeat
+        )
+    }
+
+    private static func expect(
+        _ actual: HotkeyTransitionResult,
+        equals expected: HotkeyTransitionResult,
+        _ message: String
+    ) throws {
+        guard actual == expected else {
+            throw SelfTestFailure.failed("\(message): got \(actual), expected \(expected)")
+        }
+    }
+}
+
+if let status = ParakeySelfTest.run(arguments: Array(CommandLine.arguments.dropFirst())) {
+    exit(status)
+}
+#endif
 
 let app = NSApplication.shared
 let delegate = ParakeyApp()
