@@ -59,10 +59,11 @@ ANE delivers both lower latency *and* lower power draw on battery.
   Saved text corrections stay local unless you choose to keep them
   in a sync file. Parakey only reads and writes the file you choose;
   iCloud Drive, Dropbox, Syncthing, or another folder provider can
-  move it between Macs. (Two narrow network exceptions: the first
-  launch downloads the speech model, and Parakey checks GitHub every
-  six hours for a newer release. Both are anonymous; the second is
-  toggleable in Settings.)
+  move it between Macs. (Two narrow automatic runtime network
+  exceptions: the first launch downloads the speech model, and
+  Parakey checks GitHub every six hours for a newer release. Both are
+  anonymous; the second is toggleable in Settings. Applying an update
+  is a separate user-triggered action.)
 
 - **Free** — MIT-licensed open source. No trials, no premium tier,
   no upsell.
@@ -217,8 +218,10 @@ build also pulls FluidAudio from SwiftPM and downloads the Parakeet
 TDT v3 CoreML weights (~600 MB, cached to `~/Library/Application
 Support/FluidAudio/`).
 
-To produce the notarised release build that ships on Homebrew:
-`./ship-swift.sh --dry-run` first (see *Building a release* below).
+Before producing the notarised release build that ships on Homebrew,
+run `./ship-swift.sh --dry-run` first to exercise the build, signing,
+entitlement check, and packaging path without notarising or stapling
+(see *Building a release* below).
 
 ## First launch
 
@@ -324,11 +327,10 @@ A 2-minute hard cap auto-releases if the hotkey is held too long.
    `NSPasteboard`, and `Cmd+V` is posted via `CGEvent`. System audio
    is unmuted via `NSAppleScript` and the "Pop" system sound plays.
 
-The event tap runs in `.listenOnly` mode, so the hotkey isn't
-suppressed — Right Option, Right Control, etc. still behave as
-modifier keys in whatever app is focused while you're holding them.
-Parakey just additionally observes the press/release pair and
-records during the interval.
+The event tap suppresses only the configured hotkey while Parakey is
+recording, so the press/release pair does not also trigger shortcuts
+or text input in the focused app. Non-hotkey events pass through
+normally.
 
 For latency / accuracy numbers and the test methodology, see
 [`experiments/swift-bench/`](experiments/swift-bench/).
@@ -387,11 +389,12 @@ relaunch Parakey — the 30-seconds-after-launch initial check fires
 on every cold start.
 
 What the update check sends: one anonymous HTTPS `GET` to
-`api.github.com/repos/rcourtman/parakey/releases/latest`. No
-identifier, no telemetry, no user-agent fingerprint beyond Swift's
-URLSession default. The release body (used by **What's new**) stays
-in memory and is never written to disk. Skipped-version choices are
-stored locally in `NSUserDefaults`.
+`api.github.com/repos/rcourtman/parakey/releases/latest`. Parakey sets
+no request body, no auth header, no app or user identifier, and no
+telemetry; the request uses Swift `URLSession` defaults plus the GitHub
+JSON `Accept` header. The release body (used by
+**What's new**) stays in memory and is never written to disk.
+Skipped-version choices are stored locally in `NSUserDefaults`.
 
 Source / non-brew installs: the update item still appears when a
 newer release exists, but **Update now…** opens the GitHub releases
@@ -409,7 +412,7 @@ PNGs and `.icns`; the CoreML weights are downloaded by FluidAudio on
 first launch rather than embedded, so the ship-zip stays under 3 MB.
 
 ```sh
-./ship-swift.sh --dry-run   # build + sign + notarise check, skip git/tag/release/cask
+./ship-swift.sh --dry-run   # build + sign + entitlement check + package, skip notarise/staple/git/tag/release/cask
 ./ship-swift.sh             # actually ship (bumps patch: 0.2.x → 0.2.x+1)
 ./ship-swift.sh --minor     # 0.2.x → 0.3.0
 ./ship-swift.sh --major     # 0.x.x → 1.0.0
@@ -420,12 +423,20 @@ If a release-notes file exists at `swift/release-notes/v<new_version>.md`,
 ship-swift.sh uses it for the GitHub release body; otherwise the body
 is auto-generated from `git log <prev-tag>..<new-tag>`.
 
-Outputs:
+Full release packaging produces:
 
-- `swift/dist/Parakey.app` — signed, notarised, ready for Homebrew Cask
+- a signed, notarised, stapled `Parakey.app` bundle, wrapped for
+  distribution
 - `swift/dist/Parakey.zip` — the ditto-zipped bundle that GitHub
   Releases serves (≈2.2 MB; the version is in the GitHub release tag,
-  not the filename)
+  not the filename). The temporary unzipped app bundle is removed after
+  packaging so Launch Services does not prefer it over
+  `/Applications/Parakey.app`.
+
+With `--dry-run`, the build/sign/package validation path still leaves
+`swift/dist/Parakey.zip`, but the app is not submitted to notarytool,
+is not stapled, and the temporary `swift/dist/Parakey.app` bundle is
+removed before exit.
 
 ### Notarisation (one-time setup)
 
@@ -441,8 +452,8 @@ xcrun notarytool store-credentials parakey-notary \
 
 Generate the app-specific password at
 [appleid.apple.com](https://appleid.apple.com) → *Sign-In and Security
-→ App-Specific Passwords*. After this, every `./ship-swift.sh` run will
-notarise + staple automatically.
+→ App-Specific Passwords*. After this, every full `./ship-swift.sh`
+release run will notarise + staple automatically.
 
 ## Logging
 
@@ -470,7 +481,8 @@ in-memory history from the menu while the app is still running.
 
 The in-menu permission rows surface most permission issues directly —
 if you see ⚠ rows, click them. If you've toggled permissions in
-Settings outside the app, the rows update within ~100 ms.
+Settings outside the app, the rows update within a few seconds after
+macOS reflects the change.
 
 If you've granted permissions but the macOS TCC database is stale,
 clicking a ⚠ row twice in a row triggers `tccutil reset` on that

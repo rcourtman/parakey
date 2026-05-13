@@ -45,7 +45,7 @@ type plus a handful of small support classes). The hot path is:
 cd swift
 ./dev-run.sh
 
-# Release build + sign + notarise + zip, no git/tag/release/cask
+# Release dry-run: build + sign + entitlement check + zip; skips notarise/staple and git/tag/release/cask
 ./ship-swift.sh --dry-run
 
 # Tail logs (same file for dev + Cask install — bundle ids match)
@@ -55,9 +55,9 @@ tail -f ~/Library/Logs/Parakey.log
 There is no Linux-runnable unit test suite. The app is a thin
 glue layer over AVFoundation, AppKit, Carbon, CoreGraphics, and
 FluidAudio — there is nothing meaningful left to mock. CI
-(`.github/workflows/check.yml`) does shell + plist syntax linting
-only; the full build/notarise path lives in `ship-swift.sh` on the
-maintainer's Mac.
+(`.github/workflows/check.yml`) runs repo-hygiene syntax checks for
+shell, plist, XML/SVG, YAML, JSON, and HTML on `macos-26`; the full
+build/notarise path lives in `ship-swift.sh` on the maintainer's Mac.
 
 If you need to validate ASR latency or correctness, use
 `experiments/swift-bench/` against the WAVs in `test-audio/`.
@@ -198,7 +198,8 @@ it" instinct is:
 - Counting feature usage (which hotkey, which trigger mode, etc.) and
   pinging anywhere with it.
 - Augmenting the existing GitHub update check with version info,
-  platform info, or anything beyond the bare GET it does today.
+  platform info, or anything beyond its anonymous, unauthenticated
+  GitHub JSON request.
 
 If a future feature genuinely needs to ask the user something
 specific, do it in a release note / on social — voluntary,
@@ -229,14 +230,18 @@ documented here:
 2. **Update check** —
    `api.github.com/repos/rcourtman/parakey/releases/latest`, every
    `UPDATE_CHECK_INTERVAL_SECONDS` (6 h), first call 30 s after
-   reaching "ready". Anonymous `GET`, no auth header, no identifier
-   beyond Swift's default URLSession `User-Agent`. User can disable
-   via Settings → Check for updates automatically.
+   reaching "ready". Anonymous `GET`; Parakey sets no body, no auth
+   header, no app or user identifier, and no telemetry. The request
+   uses Swift `URLSession` defaults plus the GitHub JSON `Accept`
+   header. User can disable via Settings → Check for updates
+   automatically.
 3. **Update apply** — When the user clicks the in-menu update item
    on a brew install: shells out to `brew upgrade --cask parakey`,
    which then fetches
    `github.com/rcourtman/parakey/releases/download/...`. User-
-   triggered, not background.
+   triggered, not background. On source / non-brew installs, the same
+   user-triggered update item opens the GitHub releases page instead
+   of modifying the local checkout.
 
 That is the entire list. If you're about to add a fourth, stop and
 read the "Invariant: no telemetry" section above.
@@ -313,7 +318,7 @@ When the user does ask for a release, the mechanics are:
 ./ship-swift.sh --minor         # 0.2.x → 0.3.0
 ./ship-swift.sh --major         # 0.x.x → 1.0.0
 ./ship-swift.sh --version 0.2.5 # explicit
-./ship-swift.sh --dry-run       # build + sign + notarise, skip git/tag/release/cask
+./ship-swift.sh --dry-run       # build + sign + entitlement check + package, skip notarise/staple/git/tag/release/cask
 ```
 
 `ship-swift.sh` does in order:
@@ -344,6 +349,12 @@ When the user does ask for a release, the mechanics are:
     file before running `ship-swift.sh` to control the release body.
 12. Rewrite `version` + `sha256` in the sibling Homebrew tap's
     `Casks/parakey.rb`, commit, push
+
+With `--dry-run`, the script still builds, signs, checks embedded
+entitlements, packages `swift/dist/Parakey.zip`, removes the temporary
+`swift/dist/Parakey.app` bundle before exit, and reverts the temporary
+Info.plist bump, but it skips notarytool submission, stapling,
+git/tag/release work, and the Homebrew Cask update.
 
 The tap lives at `../homebrew-parakey` by default; override with
 `PARAKEY_HOMEBREW_TAP=/path/to/tap` if your layout differs.
