@@ -327,6 +327,8 @@ Menu structure:
     consistently mishears
   - **Mute system audio while recording** — on by default; turn off
     if you'd rather music keep playing while you dictate
+  - **Play feedback sounds** — on by default; turn off for silent
+    start and completion feedback
   - **Show Parakey in Dock** — off by default (menu-bar only)
 - **About Parakey**
 - **Quit** — clean shutdown

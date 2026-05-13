@@ -366,6 +366,7 @@ final class Settings: @unchecked Sendable {
     private static let keyTriggerMode = "trigger_mode"
     private static let keyPasteSuffix = "paste_suffix"
     private static let keyMuteWhileRecording = "mute_while_recording"
+    private static let keyPlayFeedbackSounds = "play_feedback_sounds"
     private static let keyShowInDock = "show_in_dock"
     private static let keyInputDevice = "input_device"
     private static let keyCheckForUpdates = "check_for_updates"
@@ -420,6 +421,14 @@ final class Settings: @unchecked Sendable {
             return defaults.bool(forKey: Self.keyMuteWhileRecording)
         }
         set { defaults.set(newValue, forKey: Self.keyMuteWhileRecording) }
+    }
+
+    var playFeedbackSounds: Bool {
+        get {
+            if defaults.object(forKey: Self.keyPlayFeedbackSounds) == nil { return true }
+            return defaults.bool(forKey: Self.keyPlayFeedbackSounds)
+        }
+        set { defaults.set(newValue, forKey: Self.keyPlayFeedbackSounds) }
     }
 
     var showInDock: Bool {
@@ -1789,7 +1798,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         isRecording = true
         audio.beginRecording()
         setMenuBarState(.recording)
-        Sounds.playStart()
+        if settings.playFeedbackSounds {
+            Sounds.playStart()
+        }
         log("press: recording")
 
         // Mute system audio shortly after the start sound finishes,
@@ -1850,7 +1861,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                             return
                         }
                         Paster.paste(pastedText(from: corrected.text, suffix: settings.pasteSuffix))
-                        Sounds.playDone()
+                        if settings.playFeedbackSounds {
+                            Sounds.playDone()
+                        }
                         addToHistory(corrected.text)
                     }
                 }
@@ -1920,7 +1933,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             }
         }
         muteWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + MUTE_AFTER_START_SOUND, execute: work)
+        let delay = settings.playFeedbackSounds ? MUTE_AFTER_START_SOUND : 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func cancelMute() {
@@ -2254,6 +2268,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         mute.target = self
         mute.state = settings.muteWhileRecording ? .on : .off
         sub.addItem(mute)
+
+        // Feedback sound toggle.
+        let sounds = NSMenuItem(title: "Play feedback sounds",
+                                action: #selector(toggleFeedbackSounds(_:)),
+                                keyEquivalent: "")
+        sounds.target = self
+        sounds.state = settings.playFeedbackSounds ? .on : .off
+        sub.addItem(sounds)
 
         // Dock toggle.
         let dock = NSMenuItem(title: "Show Parakey in Dock",
@@ -3007,6 +3029,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     @objc private func toggleMute(_ sender: NSMenuItem) {
         settings.muteWhileRecording.toggle()
         sender.state = settings.muteWhileRecording ? .on : .off
+    }
+
+    @objc private func toggleFeedbackSounds(_ sender: NSMenuItem) {
+        settings.playFeedbackSounds.toggle()
+        sender.state = settings.playFeedbackSounds ? .on : .off
     }
 
     @objc private func toggleDock(_ sender: NSMenuItem) {
