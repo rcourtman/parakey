@@ -1391,6 +1391,41 @@ enum UpdateCheck {
 // call back into `ParakeyApp` for anything that touches the menu.
 
 @MainActor
+final class CorrectionShareCleanupDelegate: NSObject, @preconcurrency NSSharingServicePickerDelegate, NSSharingServiceDelegate {
+    private let cleanup: (String) -> Void
+
+    init(cleanup: @escaping (String) -> Void) {
+        self.cleanup = cleanup
+    }
+
+    private func runCleanup(reason: String) {
+        cleanup(reason)
+    }
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker,
+                              delegateFor sharingService: NSSharingService) -> NSSharingServiceDelegate? {
+        self
+    }
+
+    func sharingServicePicker(_ sharingServicePicker: NSSharingServicePicker,
+                              didChoose service: NSSharingService?) {
+        if service == nil {
+            runCleanup(reason: "dismissed")
+        }
+    }
+
+    func sharingService(_ sharingService: NSSharingService, didShareItems items: [Any]) {
+        runCleanup(reason: "shared")
+    }
+
+    func sharingService(_ sharingService: NSSharingService,
+                        didFailToShareItems items: [Any],
+                        error: Error) {
+        runCleanup(reason: "share failed")
+    }
+}
+
+@MainActor
 final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var templateImage: NSImage?
@@ -1482,6 +1517,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var correctionSyncFileFingerprint: CorrectionSyncFileFingerprint?
     private var isApplyingCorrectionSyncFile = false
     private var correctionSharePicker: NSSharingServicePicker?
+    private var correctionShareCleanupDelegate: CorrectionShareCleanupDelegate?
     private var pendingSharedCorrectionsURL: URL?
 
     // MARK: - Lifecycle
@@ -1573,8 +1609,36 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         stopPermissionReadinessMonitor()
         correctionSyncTimer?.invalidate()
         correctionSyncTimer = nil
+        cleanupPendingSharedCorrections(reason: "terminate")
         audio.onConfigurationChange = nil
         cancelRecordingForTermination()
+    }
+
+    private func cleanupPendingSharedCorrections(reason: String) {
+        correctionSharePicker = nil
+        correctionShareCleanupDelegate = nil
+
+        guard let url = pendingSharedCorrectionsURL else { return }
+        pendingSharedCorrectionsURL = nil
+
+        let folder = url.deletingLastPathComponent().standardizedFileURL
+        let tempRoot = FileManager.default.temporaryDirectory.standardizedFileURL.path
+        let normalizedTempRoot = tempRoot.hasSuffix("/") ? tempRoot : "\(tempRoot)/"
+
+        guard url.lastPathComponent == CORRECTIONS_FILE_NAME,
+              folder.lastPathComponent.hasPrefix("Parakey-"),
+              folder.path.hasPrefix(normalizedTempRoot)
+        else {
+            log("correction share cleanup skipped (\(reason)): unexpected temp file")
+            return
+        }
+
+        do {
+            try FileManager.default.removeItem(at: folder)
+            log("correction share cleanup completed (\(reason))")
+        } catch {
+            log("correction share cleanup failed (\(reason))")
+        }
     }
 
     private func startStartup(reason: String) {
@@ -2823,6 +2887,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     @objc private func shareCorrectionsClicked(_ sender: NSMenuItem) {
         showAppForModal()
         do {
+            cleanupPendingSharedCorrections(reason: "new share")
+
             let folder = FileManager.default.temporaryDirectory
                 .appendingPathComponent("Parakey-\(UUID().uuidString)", isDirectory: true)
             let url = folder.appendingPathComponent(CORRECTIONS_FILE_NAME)
@@ -2830,9 +2896,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             pendingSharedCorrectionsURL = url
 
             let picker = NSSharingServicePicker(items: [url])
+            let cleanupDelegate = CorrectionShareCleanupDelegate { [weak self] reason in
+                self?.cleanupPendingSharedCorrections(reason: reason)
+            }
+            picker.delegate = cleanupDelegate
             correctionSharePicker = picker
+            correctionShareCleanupDelegate = cleanupDelegate
             if let button = statusItem.button {
                 picker.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            } else {
+                cleanupPendingSharedCorrections(reason: "missing status button")
             }
             log("correction share prepared \(settings.transcriptCorrections.count) corrections")
         } catch {
