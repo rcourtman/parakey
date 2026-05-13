@@ -42,6 +42,7 @@ let ESCAPE_KEYCODE: CGKeyCode = 53
 let MIN_CLIP_SECONDS: Double = 0.25
 let MAX_RECORDING_SECONDS: TimeInterval = 120   // auto-release if held longer
 let MUTE_AFTER_START_SOUND: TimeInterval = 0.18 // let the start tink finish before muting
+let RECORDING_LEVEL_SUPPRESS_AFTER_START_SOUND: TimeInterval = 0.75 // keep the HUD calm through the start sound tail
 let HISTORY_SIZE = 5
 
 let UPDATE_CHECK_FIRST_DELAY_SECONDS: TimeInterval = 30
@@ -53,13 +54,12 @@ let SETTINGS_SUITE = "com.local.parakey"
 let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
 let CORRECTIONS_FILE_EXTENSION = "parakey-corrections"
 let CORRECTIONS_FILE_NAME = "Parakey Corrections.\(CORRECTIONS_FILE_EXTENSION)"
+let RECORDING_ICON_FRAME_COUNT = 10
 
-/// Visible state of the menu-bar item. The image stays the same
-/// across all of these; only the tint colour changes — system
-/// default for idle (auto-handles light/dark theme), system red
-/// while recording, system yellow for transient errors, dimmed for
-/// the brief loading window. This is how native macOS apps signal
-/// state in the menu bar — emojis-as-state was the placeholder.
+/// Visible state of the menu-bar item. Idle/loading/busy use the
+/// template image so macOS handles light/dark menu bars. Recording
+/// uses pre-rendered red frames driven by live input level; errors
+/// use a pre-tinted yellow frame.
 enum MenuBarState {
     case loading
     case idle
@@ -217,6 +217,48 @@ func normalizedTranscriptCorrections(_ corrections: [TranscriptCorrection]) -> [
     }
 
     return result
+}
+
+func normalizedAudioLevel(from samples: [Float]) -> Float {
+    var sumSquares: Double = 0
+    var count = 0
+
+    for sample in samples where sample.isFinite {
+        let clamped = max(-1, min(1, sample))
+        sumSquares += Double(clamped * clamped)
+        count += 1
+    }
+
+    return normalizedAudioLevel(sumSquares: sumSquares, sampleCount: count)
+}
+
+func normalizedAudioLevel(sumSquares: Double, sampleCount: Int) -> Float {
+    guard sampleCount > 0, sumSquares > 0 else { return 0 }
+    let rms = sqrt(sumSquares / Double(sampleCount))
+    guard rms.isFinite, rms > 0 else { return 0 }
+
+    // This is a voice-visibility meter, not a calibrated VU meter.
+    // Keep low room tone calm, then aggressively lift speech-range RMS
+    // so normal close-mic speech visibly opens the HUD without shouting.
+    let decibels = 20 * log10(rms)
+    let gated = (decibels + 52) / 20
+    guard gated > 0.06 else { return 0 }
+    let lifted = pow(max(0, min(1, gated)), 0.42)
+    return Float(max(0, min(1, lifted)))
+}
+
+func recordingIconFrameIndex(for level: Float, frameCount: Int) -> Int {
+    guard frameCount > 1, level.isFinite else { return 0 }
+    let clamped = max(0, min(1, level))
+    return min(frameCount - 1, Int((clamped * Float(frameCount - 1)).rounded()))
+}
+
+func visibleRecordingLevel(rawLevel: Float, now: Date, suppressUntil: Date?) -> Float {
+    guard rawLevel.isFinite else { return 0 }
+    if let suppressUntil, now < suppressUntil {
+        return 0
+    }
+    return max(0, min(1, rawLevel))
 }
 
 struct TranscriptCorrectionSyncMergeResult: Equatable {
@@ -944,6 +986,8 @@ final class AudioCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var samples: [Float] = []
     private var _isRunning = false
+    private var latestLevel: Float = 0
+    private var latestLevelSequence: UInt64 = 0
     private var recordingGeneration: UInt64 = 0
     private var configurationObserver: NSObjectProtocol?
 
@@ -994,6 +1038,8 @@ final class AudioCapture: @unchecked Sendable {
 
         lock.lock()
         _isRunning = false
+        latestLevel = 0
+        latestLevelSequence &+= 1
         recordingGeneration &+= 1
         samples.removeAll(keepingCapacity: true)
         lock.unlock()
@@ -1025,6 +1071,8 @@ final class AudioCapture: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         recordingGeneration &+= 1
         samples.removeAll(keepingCapacity: true)
+        latestLevel = 0
+        latestLevelSequence &+= 1
         _isRunning = true
     }
 
@@ -1032,10 +1080,17 @@ final class AudioCapture: @unchecked Sendable {
     func endRecording() -> [Float] {
         lock.lock(); defer { lock.unlock() }
         _isRunning = false
+        latestLevel = 0
+        latestLevelSequence &+= 1
         recordingGeneration &+= 1
         let captured = samples
         samples.removeAll(keepingCapacity: true)
         return captured
+    }
+
+    func latestRecordingLevelSnapshot() -> (level: Float, sequence: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        return _isRunning ? (latestLevel, latestLevelSequence) : (0, latestLevelSequence)
     }
 
     private func handleTap(buffer: AVAudioPCMBuffer, target: AVAudioFormat) {
@@ -1069,7 +1124,20 @@ final class AudioCapture: @unchecked Sendable {
             return
         }
         guard let ch = out.floatChannelData?[0] else { return }
-        let arr = Array(UnsafeBufferPointer(start: ch, count: Int(out.frameLength)))
+        let frameCount = Int(out.frameLength)
+        var arr: [Float] = []
+        arr.reserveCapacity(frameCount)
+        var sumSquares: Double = 0
+        var finiteSampleCount = 0
+        for sample in UnsafeBufferPointer(start: ch, count: frameCount) {
+            arr.append(sample)
+            guard sample.isFinite else { continue }
+            let clamped = max(-1, min(1, sample))
+            sumSquares += Double(clamped * clamped)
+            finiteSampleCount += 1
+        }
+        let level = normalizedAudioLevel(sumSquares: sumSquares,
+                                         sampleCount: finiteSampleCount)
 
         // Re-check running under lock — endRecording() might have
         // fired during conversion, then a rapid next recording may
@@ -1078,6 +1146,8 @@ final class AudioCapture: @unchecked Sendable {
         lock.lock()
         if _isRunning && recordingGeneration == generation {
             samples.append(contentsOf: arr)
+            latestLevel = level
+            latestLevelSequence &+= 1
         }
         lock.unlock()
     }
@@ -1491,11 +1561,90 @@ final class CorrectionShareCleanupDelegate: NSObject, @preconcurrency NSSharingS
     }
 }
 
+private final class RecordingHUDView: NSView {
+    var level: Float = 0 {
+        didSet { needsDisplay = true }
+    }
+
+    var phase: CGFloat = 0 {
+        didSet { needsDisplay = true }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let capsuleBounds = bounds.insetBy(dx: 1, dy: 1)
+        let capsule = NSBezierPath(roundedRect: capsuleBounds,
+                                   xRadius: capsuleBounds.height / 2,
+                                   yRadius: capsuleBounds.height / 2)
+        NSColor(calibratedWhite: 0.05, alpha: 0.82).setFill()
+        capsule.fill()
+
+        let sheenRect = NSRect(x: capsuleBounds.minX + 1,
+                               y: capsuleBounds.minY + 1,
+                               width: capsuleBounds.width - 2,
+                               height: capsuleBounds.height * 0.46)
+        let sheen = NSBezierPath(roundedRect: sheenRect,
+                                 xRadius: sheenRect.height / 2,
+                                 yRadius: sheenRect.height / 2)
+        NSColor.white.withAlphaComponent(0.08).setFill()
+        sheen.fill()
+
+        NSColor.white.withAlphaComponent(0.18).setStroke()
+        capsule.lineWidth = 1
+        capsule.stroke()
+
+        let clamped = CGFloat(max(0, min(1, level)))
+
+        let recordDotRect = NSRect(x: 17, y: bounds.midY - 6, width: 12, height: 12)
+        NSColor.systemRed.withAlphaComponent(0.18 + (0.22 * clamped)).setFill()
+        NSBezierPath(ovalIn: recordDotRect.insetBy(dx: -5, dy: -5)).fill()
+        NSColor.systemRed.withAlphaComponent(0.92).setFill()
+        NSBezierPath(ovalIn: recordDotRect).fill()
+
+        let barCount = 29
+        let barWidth: CGFloat = 3
+        let barGap: CGFloat = 3
+        let minHeight: CGFloat = 3
+        let maxHeight: CGFloat = 28
+        let startX: CGFloat = 46
+        let centerY = bounds.midY
+        let centerIndex = CGFloat(barCount - 1) / 2
+
+        for index in 0..<barCount {
+            let i = CGFloat(index)
+            let distance = abs(i - centerIndex) / centerIndex
+            let envelope = pow(max(0, 1 - distance), 0.55)
+            let ripple = (sin((i * 0.74) + phase) + 1) / 2
+            let fineRipple = (sin((i * 1.73) - (phase * 0.7)) + 1) / 2
+            let motion = (ripple * 0.68) + (fineRipple * 0.32)
+            let quietShape = 0.06 + (0.1 * envelope)
+            let activeShape = 0.16 + (envelope * (0.5 + (0.5 * motion)))
+            let activity = max(quietShape, min(1, quietShape + (clamped * activeShape)))
+            let height = minHeight + ((maxHeight - minHeight) * activity)
+            let x = startX + CGFloat(index) * (barWidth + barGap)
+            let rect = NSRect(x: x,
+                              y: centerY - (height / 2),
+                              width: barWidth,
+                              height: height)
+            let path = NSBezierPath(roundedRect: rect,
+                                    xRadius: barWidth / 2,
+                                    yRadius: barWidth / 2)
+            let hue = NSColor.systemRed.blended(withFraction: 0.16, of: .white) ?? .systemRed
+            hue.withAlphaComponent(0.28 + (0.72 * activity)).setFill()
+            path.fill()
+        }
+    }
+}
+
 @MainActor
 final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var templateImage: NSImage?
     private var recordingImage: NSImage?
+    private var recordingLevelImages: [NSImage] = []
     private var errorImage: NSImage?
     private let audio = AudioCapture()
     private let hotkey = HotkeyListener()
@@ -1519,6 +1668,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var muteWorkItem: DispatchWorkItem?
     private var isRestartingAudioInput = false
     private var pendingAudioRouteRefresh = false
+    private var recordingLevelTimer: Timer?
+    private var recordingVisualLevel: Float = 0
+    private var recordingLevelFrameIndex = 0
+    private var lastRecordingLevelSequence: UInt64 = 0
+    private var staleRecordingLevelTicks = 0
+    private var recordingHUDPanel: NSPanel?
+    private var recordingHUDView: RecordingHUDView?
+    private var recordingHUDPhase: CGFloat = 0
+    private var recordingLevelSuppressUntil: Date?
 
     /// Last N transcripts, newest first. Shown in the History submenu.
     private var history: [String] = []
@@ -1762,6 +1920,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if isRecording || audio.isRunning {
             _ = audio.endRecording()
         }
+        stopRecordingLevelMeter()
         unmuteIfWeMuted()
 
         isReady = false
@@ -1798,6 +1957,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         isReady = false
         isRecording = false
         isBusy = false
+        stopRecordingLevelMeter()
 
         hotkey.onPress = nil
         hotkey.onRelease = nil
@@ -1831,6 +1991,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if isRecording || audio.isRunning {
             _ = audio.endRecording()
         }
+        stopRecordingLevelMeter()
         unmuteIfWeMuted()
 
         isReady = false
@@ -1924,14 +2085,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu bar appearance
     //
-    // Same silhouette across all states; only the colour shifts. The
-    // template image is used for idle/loading/busy (so it auto-adapts
-    // to light/dark menu bar). For recording/error we swap to a
-    // pre-tinted, non-template copy: NSStatusItem.button silently
-    // drops contentTintColor on template images in some macOS
+    // Same silhouette across all states; only colour and recording
+    // intensity shift. The template image is used for idle/loading/busy
+    // so it auto-adapts to light/dark menu bar. For recording/error we
+    // swap to pre-rendered, non-template images: NSStatusItem.button
+    // silently drops contentTintColor on template images in some macOS
     // configurations, so baking the colour into the image is the only
-    // reliable way to guarantee the recording state actually reads as
-    // red.
+    // reliable way to guarantee the recording state actually reads.
 
     private func configureStatusItemImage() {
         guard let button = statusItem.button else { return }
@@ -1945,7 +2105,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         image?.isTemplate = true
         image?.size = NSSize(width: 18, height: 18)
         templateImage = image
-        recordingImage = image.map { tintedCopy(of: $0, with: .systemRed) }
+        recordingLevelImages = image.map { source in
+            (0..<RECORDING_ICON_FRAME_COUNT).map { index in
+                let level = Float(index) / Float(max(1, RECORDING_ICON_FRAME_COUNT - 1))
+                return recordingLevelCopy(of: source, level: level)
+            }
+        } ?? []
+        recordingImage = recordingLevelImages.last ?? image.map { tintedCopy(of: $0, with: .systemRed) }
         errorImage = image.map { tintedCopy(of: $0, with: .systemYellow) }
         button.image = image
         button.imagePosition = .imageOnly
@@ -1958,17 +2124,52 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private func tintedCopy(of source: NSImage, with color: NSColor) -> NSImage {
         let size = source.size
+        let rect = NSRect(origin: .zero, size: size)
         let tinted = NSImage(size: size)
         tinted.lockFocus()
-        color.set()
-        NSRect(origin: .zero, size: size).fill()
-        source.draw(in: NSRect(origin: .zero, size: size),
-                    from: .zero,
-                    operation: .destinationIn,
-                    fraction: 1.0)
+        drawTintedIcon(source, in: rect, color: color)
         tinted.unlockFocus()
         tinted.isTemplate = false
         return tinted
+    }
+
+    private func recordingLevelCopy(of source: NSImage, level: Float) -> NSImage {
+        let clamped = CGFloat(max(0, min(1, level)))
+        let size = source.size
+        let iconRect = NSRect(origin: .zero, size: size)
+        let fillHeight = max(1, size.height * clamped)
+        let fillRect = NSRect(x: 0,
+                              y: 0,
+                              width: size.width,
+                              height: fillHeight)
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+        drawTintedIcon(source, in: iconRect, color: NSColor.systemRed.withAlphaComponent(0.3))
+        if clamped > 0 {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: fillRect).addClip()
+            drawTintedIcon(source, in: iconRect, color: .systemRed)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+
+    private func drawTintedIcon(_ source: NSImage, in rect: NSRect, color: NSColor) {
+        source.draw(in: rect,
+                    from: NSRect(origin: .zero, size: source.size),
+                    operation: .sourceOver,
+                    fraction: 1.0)
+        color.set()
+        rect.fill(using: .sourceAtop)
+    }
+
+    private func currentRecordingImage() -> NSImage? {
+        guard !recordingLevelImages.isEmpty else { return recordingImage ?? templateImage }
+        let index = max(0, min(recordingLevelFrameIndex, recordingLevelImages.count - 1))
+        return recordingLevelImages[index]
     }
 
     private func setMenuBarState(_ state: MenuBarState) {
@@ -1985,7 +2186,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             button.image = templateImage
             button.contentTintColor = nil
         case .recording:
-            button.image = recordingImage ?? templateImage
+            button.image = currentRecordingImage()
             button.contentTintColor = nil
         case .busy:
             // Transcribe is typically <200 ms, briefer than a perceptible
@@ -1999,6 +2200,131 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func startRecordingLevelMeter() {
+        stopRecordingLevelMeter(resetImage: false)
+        recordingVisualLevel = 0
+        recordingLevelFrameIndex = 0
+        lastRecordingLevelSequence = 0
+        staleRecordingLevelTicks = 0
+        recordingHUDPhase = 0
+        recordingLevelSuppressUntil = settings.playFeedbackSounds
+            ? Date().addingTimeInterval(RECORDING_LEVEL_SUPPRESS_AFTER_START_SOUND)
+            : nil
+        setMenuBarState(.recording)
+        showRecordingHUD(level: 0)
+        let timer = Timer(timeInterval: 1.0 / 24.0,
+                          target: self,
+                          selector: #selector(recordingLevelTimerFired(_:)),
+                          userInfo: nil,
+                          repeats: true)
+        timer.tolerance = 1.0 / 48.0
+        RunLoop.main.add(timer, forMode: .common)
+        recordingLevelTimer = timer
+    }
+
+    private func stopRecordingLevelMeter(resetImage: Bool = true) {
+        recordingLevelTimer?.invalidate()
+        recordingLevelTimer = nil
+        recordingVisualLevel = 0
+        recordingLevelFrameIndex = 0
+        lastRecordingLevelSequence = 0
+        staleRecordingLevelTicks = 0
+        recordingHUDPhase = 0
+        recordingLevelSuppressUntil = nil
+        hideRecordingHUD()
+        if resetImage, isRecording {
+            setMenuBarState(.recording)
+        }
+    }
+
+    @objc private func recordingLevelTimerFired(_ timer: Timer) {
+        guard isRecording, let button = statusItem.button else {
+            stopRecordingLevelMeter()
+            return
+        }
+        let snapshot = audio.latestRecordingLevelSnapshot()
+        if snapshot.sequence == lastRecordingLevelSequence {
+            staleRecordingLevelTicks += 1
+        } else {
+            lastRecordingLevelSequence = snapshot.sequence
+            staleRecordingLevelTicks = 0
+        }
+        let unsuppressedLevel = staleRecordingLevelTicks > 8 ? 0 : snapshot.level
+        let rawLevel = visibleRecordingLevel(rawLevel: unsuppressedLevel,
+                                             now: Date(),
+                                             suppressUntil: recordingLevelSuppressUntil)
+        let attack: Float = rawLevel > recordingVisualLevel ? 0.65 : 0.28
+        recordingVisualLevel += (rawLevel - recordingVisualLevel) * attack
+        recordingHUDPhase += 0.34 + (CGFloat(recordingVisualLevel) * 0.42)
+        updateRecordingHUD(level: recordingVisualLevel)
+        let nextIndex = recordingIconFrameIndex(for: recordingVisualLevel,
+                                                frameCount: recordingLevelImages.count)
+        guard nextIndex != recordingLevelFrameIndex else { return }
+        recordingLevelFrameIndex = nextIndex
+        button.image = currentRecordingImage()
+    }
+
+    private func showRecordingHUD(level: Float) {
+        let panel = recordingHUDPanel ?? makeRecordingHUDPanel()
+        recordingHUDPanel = panel
+        if let view = recordingHUDView {
+            view.level = level
+            view.phase = recordingHUDPhase
+        }
+        positionRecordingHUD(panel)
+        panel.orderFrontRegardless()
+    }
+
+    private func updateRecordingHUD(level: Float) {
+        recordingHUDView?.level = level
+        recordingHUDView?.phase = recordingHUDPhase
+    }
+
+    private func hideRecordingHUD() {
+        recordingHUDPanel?.orderOut(nil)
+        recordingHUDView?.level = 0
+        recordingHUDView?.phase = 0
+    }
+
+    private func makeRecordingHUDPanel() -> NSPanel {
+        let size = NSSize(width: 232, height: 54)
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
+                            styleMask: [.borderless, .nonactivatingPanel],
+                            backing: .buffered,
+                            defer: false)
+        let view = RecordingHUDView(frame: NSRect(origin: .zero, size: size))
+        panel.contentView = view
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        recordingHUDView = view
+        return panel
+    }
+
+    private func positionRecordingHUD(_ panel: NSPanel) {
+        let screen = screenForRecordingHUD()
+        let visible = screen.visibleFrame
+        let frame = panel.frame
+        let origin = NSPoint(x: visible.midX - (frame.width / 2),
+                             y: visible.minY + 84)
+        panel.setFrameOrigin(origin)
+    }
+
+    private func screenForRecordingHUD() -> NSScreen {
+        let mouse = NSEvent.mouseLocation
+        if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) {
+            return screen
+        }
+        if let screen = NSScreen.main ?? NSScreen.screens.first {
+            return screen
+        }
+        preconditionFailure("NSScreen.screens unexpectedly empty")
+    }
+
     // MARK: - Recording loop
 
     private func handlePress() {
@@ -2010,7 +2336,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
         isRecording = true
         audio.beginRecording()
-        setMenuBarState(.recording)
+        startRecordingLevelMeter()
         if settings.playFeedbackSounds {
             Sounds.playStart()
         }
@@ -2033,6 +2359,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
 
         isRecording = false
+        stopRecordingLevelMeter()
         cancelMute()
         cancelMaxDurationAutoRelease()
         unmuteIfWeMuted()
@@ -2100,6 +2427,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         cancelMaxDurationAutoRelease()
         _ = audio.endRecording()
         isRecording = false
+        stopRecordingLevelMeter()
         hotkey.resetToggleState()
         unmuteIfWeMuted()
         setMenuBarState(.idle)
@@ -2125,6 +2453,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if hadActiveRecording {
             _ = audio.endRecording()
         }
+        stopRecordingLevelMeter()
         audio.stopEngine()
         isRecording = false
         isBusy = false
@@ -3708,6 +4037,8 @@ private enum ParakeySelfTest {
             return runSuite("paste", testPasteSuffixFormatting)
         case "corrections":
             return runSuite("corrections", testTranscriptCorrections)
+        case "audio-level":
+            return runSuite("audio-level", testAudioLevelMetering)
         case "all":
             return runSuite("all", testAll)
         default:
@@ -3736,6 +4067,7 @@ private enum ParakeySelfTest {
         try testReadiness()
         try testPasteSuffixFormatting()
         try testTranscriptCorrections()
+        try testAudioLevelMetering()
         try testAudioInputDeviceFiltering()
         try testSpeechModelStartupStatus()
         try testAudioRouteChangeDecision()
@@ -3809,6 +4141,79 @@ private enum ParakeySelfTest {
             equals: "hello world  ",
             "suffix formatting should not trim or rewrite corrected text"
         )
+    }
+
+    private static func testAudioLevelMetering() throws {
+        try expect(
+            normalizedAudioLevel(from: Array(repeating: 0, count: 128)),
+            equals: 0,
+            "silence should map to zero recording level"
+        )
+
+        let lowVoice = normalizedAudioLevel(from: Array(repeating: 0.004, count: 128))
+        let quiet = normalizedAudioLevel(from: Array(repeating: 0.01, count: 128))
+        let normal = normalizedAudioLevel(from: Array(repeating: 0.12, count: 128))
+        let loud = normalizedAudioLevel(from: Array(repeating: 4.0, count: 128))
+
+        guard lowVoice > 0 else {
+            throw SelfTestFailure.failed("low close-mic voice should rise above the visual gate")
+        }
+        guard quiet > 0 else {
+            throw SelfTestFailure.failed("quiet speech-like input should rise above zero")
+        }
+        guard normal > quiet else {
+            throw SelfTestFailure.failed("higher RMS should produce a higher visual level")
+        }
+        guard recordingIconFrameIndex(for: quiet, frameCount: RECORDING_ICON_FRAME_COUNT) >= 4 else {
+            throw SelfTestFailure.failed("quiet close-mic speech should reach a visibly active frame")
+        }
+        guard recordingIconFrameIndex(for: lowVoice, frameCount: RECORDING_ICON_FRAME_COUNT) >= 2 else {
+            throw SelfTestFailure.failed("low close-mic voice should still move the meter")
+        }
+        guard recordingIconFrameIndex(for: normal, frameCount: RECORDING_ICON_FRAME_COUNT)
+            >= RECORDING_ICON_FRAME_COUNT - 2 else {
+            throw SelfTestFailure.failed("normal close-mic speech should reach a high visibility frame")
+        }
+        try expect(
+            loud,
+            equals: 1,
+            "out-of-range samples should clamp to maximum visual level"
+        )
+
+        try expect(
+            normalizedAudioLevel(from: [.nan, .infinity, -.infinity]),
+            equals: 0,
+            "non-finite samples should not produce a visible level"
+        )
+        let now = Date()
+        try expect(
+            visibleRecordingLevel(rawLevel: 0.8,
+                                  now: now,
+                                  suppressUntil: now.addingTimeInterval(1)),
+            equals: 0,
+            "visual level should ignore the local start sound while suppression is active"
+        )
+        try expect(
+            visibleRecordingLevel(rawLevel: 0.8,
+                                  now: now,
+                                  suppressUntil: now.addingTimeInterval(-1)),
+            equals: 0.8,
+            "visual level should resume after start-sound suppression expires"
+        )
+        try expect(
+            recordingIconFrameIndex(for: -1, frameCount: RECORDING_ICON_FRAME_COUNT),
+            equals: 0,
+            "negative levels should clamp to the first frame"
+        )
+        try expect(
+            recordingIconFrameIndex(for: 2, frameCount: RECORDING_ICON_FRAME_COUNT),
+            equals: RECORDING_ICON_FRAME_COUNT - 1,
+            "levels above one should clamp to the final frame"
+        )
+        guard recordingIconFrameIndex(for: normal, frameCount: RECORDING_ICON_FRAME_COUNT)
+            > recordingIconFrameIndex(for: quiet, frameCount: RECORDING_ICON_FRAME_COUNT) else {
+            throw SelfTestFailure.failed("frame buckets should preserve louder-than ordering")
+        }
     }
 
     private static func testTranscriptCorrections() throws {
