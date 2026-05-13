@@ -94,6 +94,11 @@ let TRIGGER_DISPLAY: [TriggerMode: String] = [
     .toggle: "Press to toggle",
 ]
 
+struct TranscriptCorrection: Codable, Equatable, Sendable {
+    let source: String
+    let replacement: String
+}
+
 // MARK: - Logger
 //
 // All output goes to stderr (line-buffered, so we don't lose lines
@@ -160,6 +165,7 @@ final class Settings: @unchecked Sendable {
     private static let keyCheckForUpdates = "check_for_updates"
     private static let keyLastSeenVersion = "last_seen_version"
     private static let keySkippedVersions = "skipped_versions"
+    private static let keyTranscriptCorrections = "transcript_corrections"
 
     private let defaults: UserDefaults
 
@@ -225,6 +231,30 @@ final class Settings: @unchecked Sendable {
     var skippedVersions: [String] {
         get { (defaults.array(forKey: Self.keySkippedVersions) as? [String]) ?? [] }
         set { defaults.set(newValue, forKey: Self.keySkippedVersions) }
+    }
+
+    var transcriptCorrections: [TranscriptCorrection] {
+        get {
+            guard let data = defaults.data(forKey: Self.keyTranscriptCorrections) else { return [] }
+            do {
+                return try JSONDecoder().decode([TranscriptCorrection].self, from: data)
+            } catch {
+                log("settings: transcript correction decode failed: \(error)")
+                return []
+            }
+        }
+        set {
+            guard !newValue.isEmpty else {
+                defaults.removeObject(forKey: Self.keyTranscriptCorrections)
+                return
+            }
+            do {
+                let data = try JSONEncoder().encode(newValue)
+                defaults.set(data, forKey: Self.keyTranscriptCorrections)
+            } catch {
+                log("settings: transcript correction encode failed: \(error)")
+            }
+        }
     }
 }
 
@@ -538,6 +568,66 @@ actor TranscriptionWorker {
     }
 }
 
+// MARK: - Transcript corrections
+//
+// Deterministic local rewrite pass for words or phrases the model
+// consistently mishears. Corrections are applied to the transcript
+// text before paste/history, never to audio, and replacement text is
+// used exactly as the user typed it.
+
+enum TranscriptCorrector {
+    private struct Match {
+        let range: NSRange
+        let replacement: String
+    }
+
+    static func apply(to text: String, corrections: [TranscriptCorrection]) -> (text: String, appliedCount: Int) {
+        let active = corrections
+            .map { TranscriptCorrection(
+                source: $0.source.trimmingCharacters(in: .whitespacesAndNewlines),
+                replacement: $0.replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+            ) }
+            .filter { !$0.source.isEmpty && !$0.replacement.isEmpty }
+            .sorted { lhs, rhs in
+                if lhs.source.count != rhs.source.count { return lhs.source.count > rhs.source.count }
+                return lhs.source.localizedCaseInsensitiveCompare(rhs.source) == .orderedAscending
+            }
+
+        guard !text.isEmpty, !active.isEmpty else { return (text, 0) }
+
+        let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        var matches: [Match] = []
+
+        for correction in active {
+            guard let pattern = pattern(for: correction.source),
+                  let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            else { continue }
+
+            regex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+                guard let range = match?.range, range.location != NSNotFound else { return }
+                guard !matches.contains(where: { NSIntersectionRange($0.range, range).length > 0 }) else { return }
+                matches.append(Match(range: range, replacement: correction.replacement))
+            }
+        }
+
+        guard !matches.isEmpty else { return (text, 0) }
+
+        let rewritten = NSMutableString(string: text)
+        for match in matches.sorted(by: { $0.range.location > $1.range.location }) {
+            rewritten.replaceCharacters(in: match.range, with: match.replacement)
+        }
+        return (rewritten as String, matches.count)
+    }
+
+    private static func pattern(for source: String) -> String? {
+        let parts = source
+            .split(whereSeparator: { $0.isWhitespace })
+            .map { NSRegularExpression.escapedPattern(for: String($0)) }
+        guard !parts.isEmpty else { return nil }
+        return #"(?<![\p{L}\p{N}_])"# + parts.joined(separator: #"\s+"#) + #"(?![\p{L}\p{N}_])"#
+    }
+}
+
 // MARK: - Paste at cursor
 //
 // Write to general pasteboard, post Cmd+V. We deliberately don't
@@ -738,6 +828,9 @@ enum UpdateCheck {
 @MainActor
 final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
+    private var templateImage: NSImage?
+    private var recordingImage: NSImage?
+    private var errorImage: NSImage?
     private let audio = AudioCapture()
     private let hotkey = HotkeyListener()
     private let asr = TranscriptionWorker()
@@ -812,12 +905,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu bar appearance
     //
-    // One template image (parakey-menubar.png), tinted to indicate
-    // state. Same image across all states means the icon stays
-    // visually-anchored in the menu bar — only colour shifts. This
-    // is how Apple-native menu bar utilities work (Tailscale, Bartender,
-    // 1Password): the icon identifies the app, state is conveyed via
-    // colour and the menu's first row text.
+    // Same silhouette across all states; only the colour shifts. The
+    // template image is used for idle/loading/busy (so it auto-adapts
+    // to light/dark menu bar). For recording/error we swap to a
+    // pre-tinted, non-template copy: NSStatusItem.button silently
+    // drops contentTintColor on template images in some macOS
+    // configurations, so baking the colour into the image is the only
+    // reliable way to guarantee the recording state actually reads as
+    // red.
 
     private func configureStatusItemImage() {
         guard let button = statusItem.button else { return }
@@ -830,6 +925,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         let image = NSImage(named: "parakey-menubar")
         image?.isTemplate = true
         image?.size = NSSize(width: 18, height: 18)
+        templateImage = image
+        recordingImage = image.map { tintedCopy(of: $0, with: .systemRed) }
+        errorImage = image.map { tintedCopy(of: $0, with: .systemYellow) }
         button.image = image
         button.imagePosition = .imageOnly
         if image == nil {
@@ -839,6 +937,21 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         button.toolTip = "Parakey"
     }
 
+    private func tintedCopy(of source: NSImage, with color: NSColor) -> NSImage {
+        let size = source.size
+        let tinted = NSImage(size: size)
+        tinted.lockFocus()
+        color.set()
+        NSRect(origin: .zero, size: size).fill()
+        source.draw(in: NSRect(origin: .zero, size: size),
+                    from: .zero,
+                    operation: .destinationIn,
+                    fraction: 1.0)
+        tinted.unlockFocus()
+        tinted.isTemplate = false
+        return tinted
+    }
+
     private func setMenuBarState(_ state: MenuBarState) {
         guard let button = statusItem.button else { return }
         switch state {
@@ -846,19 +959,24 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             // Subtle dim while the model compiles. nil contentTintColor
             // = system default (black/white per theme); .tertiary gives
             // a "this is here but not yet active" feel.
+            button.image = templateImage
             button.contentTintColor = .tertiaryLabelColor
         case .idle:
             // Default tint — macOS auto-handles light/dark menu bar.
+            button.image = templateImage
             button.contentTintColor = nil
         case .recording:
-            button.contentTintColor = .systemRed
+            button.image = recordingImage ?? templateImage
+            button.contentTintColor = nil
         case .busy:
             // Transcribe is typically <200 ms, briefer than a perceptible
             // colour change. Leave at default; the menu's first row says
             // "Transcribing" if the user pops it open.
+            button.image = templateImage
             button.contentTintColor = nil
         case .error:
-            button.contentTintColor = .systemYellow
+            button.image = errorImage ?? templateImage
+            button.contentTintColor = nil
         }
     }
 
@@ -903,11 +1021,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 let text = try await asr.transcribe(samples: samples)
                 let dt = Date().timeIntervalSince(t0)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                log("\(String(format: "%.2f", dur)) s audio → \(String(format: "%.2f", dt)) s → \(trimmed.count) chars")
-                if !trimmed.isEmpty {
-                    Paster.paste(trimmed + " ")
+                let corrected = TranscriptCorrector.apply(to: trimmed, corrections: settings.transcriptCorrections)
+                if corrected.appliedCount > 0 {
+                    log("transcript corrections applied: \(corrected.appliedCount)")
+                }
+                log("\(String(format: "%.2f", dur)) s audio → \(String(format: "%.2f", dt)) s → \(corrected.text.count) chars")
+                if !corrected.text.isEmpty {
+                    Paster.paste(corrected.text + " ")
                     Sounds.playDone()
-                    addToHistory(trimmed)
+                    addToHistory(corrected.text)
                 }
             } catch {
                 log("transcribe failed: \(error)")
@@ -1169,6 +1291,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         tmParent.submenu = tmSub
         sub.addItem(tmParent)
 
+        sub.addItem(buildCorrectionsItem())
+
         // Mute toggle.
         let mute = NSMenuItem(title: "Mute system audio while recording",
                               action: #selector(toggleMute(_:)),
@@ -1199,6 +1323,196 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         parent.submenu = sub
         return parent
+    }
+
+    private func buildCorrectionsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Text Corrections", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        let add = NSMenuItem(title: "Add Correction…",
+                             action: #selector(addCorrectionClicked(_:)),
+                             keyEquivalent: "")
+        add.target = self
+        sub.addItem(add)
+
+        let corrections = settings.transcriptCorrections
+        guard !corrections.isEmpty else {
+            let empty = NSMenuItem(title: "No corrections", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            sub.addItem(empty)
+            parent.submenu = sub
+            return parent
+        }
+
+        sub.addItem(.separator())
+
+        for (index, correction) in corrections.enumerated() {
+            let item = NSMenuItem(title: correctionMenuTitle(correction),
+                                  action: nil,
+                                  keyEquivalent: "")
+            let itemSub = NSMenu()
+            itemSub.autoenablesItems = false
+
+            let edit = NSMenuItem(title: "Edit…",
+                                  action: #selector(editCorrectionClicked(_:)),
+                                  keyEquivalent: "")
+            edit.target = self
+            edit.representedObject = index
+            itemSub.addItem(edit)
+
+            let delete = NSMenuItem(title: "Delete",
+                                    action: #selector(deleteCorrectionClicked(_:)),
+                                    keyEquivalent: "")
+            delete.target = self
+            delete.representedObject = index
+            itemSub.addItem(delete)
+
+            item.submenu = itemSub
+            sub.addItem(item)
+        }
+
+        sub.addItem(.separator())
+
+        let removeAll = NSMenuItem(title: "Remove All Corrections…",
+                                   action: #selector(removeAllCorrectionsClicked(_:)),
+                                   keyEquivalent: "")
+        removeAll.target = self
+        sub.addItem(removeAll)
+
+        parent.submenu = sub
+        return parent
+    }
+
+    private func correctionMenuTitle(_ correction: TranscriptCorrection) -> String {
+        "\(clippedCorrectionText(correction.source)) → \(clippedCorrectionText(correction.replacement))"
+    }
+
+    private func clippedCorrectionText(_ text: String) -> String {
+        let flat = text.replacingOccurrences(of: "\n", with: " ")
+        return flat.count > 32 ? String(flat.prefix(32)) + "…" : flat
+    }
+
+    @objc private func addCorrectionClicked(_ sender: NSMenuItem) {
+        guard let correction = showCorrectionEditor(existing: nil) else { return }
+        saveCorrection(correction)
+    }
+
+    @objc private func editCorrectionClicked(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else { return }
+        let corrections = settings.transcriptCorrections
+        guard corrections.indices.contains(index) else { return }
+        guard let correction = showCorrectionEditor(existing: corrections[index]) else { return }
+        saveCorrection(correction, replacing: index)
+    }
+
+    @objc private func deleteCorrectionClicked(_ sender: NSMenuItem) {
+        guard let index = sender.representedObject as? Int else { return }
+        var corrections = settings.transcriptCorrections
+        guard corrections.indices.contains(index) else { return }
+        corrections.remove(at: index)
+        settings.transcriptCorrections = corrections
+        rebuildMenu()
+    }
+
+    @objc private func removeAllCorrectionsClicked(_ sender: NSMenuItem) {
+        guard !settings.transcriptCorrections.isEmpty else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Remove All Text Corrections?"
+        alert.informativeText = "This removes every saved text correction from this Mac."
+        alert.addButton(withTitle: "Remove All")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        settings.transcriptCorrections = []
+        rebuildMenu()
+    }
+
+    private func showCorrectionEditor(existing: TranscriptCorrection?) -> TranscriptCorrection? {
+        let alert = NSAlert()
+        alert.messageText = existing == nil ? "Add Text Correction" : "Edit Text Correction"
+        alert.informativeText = "Add the incorrect text Parakey typed, then the text it should paste instead."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let viewWidth: CGFloat = 360
+        let labelWidth: CGFloat = 70
+        let fieldWidth: CGFloat = viewWidth - labelWidth - 10
+        let rowHeight: CGFloat = 24
+        let viewHeight: CGFloat = 58
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight))
+
+        let sourceLabel = NSTextField(labelWithString: "Typed")
+        sourceLabel.alignment = .right
+        sourceLabel.frame = NSRect(x: 0, y: 34, width: labelWidth, height: rowHeight)
+
+        let sourceField = NSTextField(frame: NSRect(x: labelWidth + 10, y: 34, width: fieldWidth, height: rowHeight))
+        sourceField.stringValue = existing?.source ?? ""
+        sourceField.placeholderString = "clawed"
+
+        let replacementLabel = NSTextField(labelWithString: "Paste")
+        replacementLabel.alignment = .right
+        replacementLabel.frame = NSRect(x: 0, y: 0, width: labelWidth, height: rowHeight)
+
+        let replacementField = NSTextField(frame: NSRect(x: labelWidth + 10, y: 0, width: fieldWidth, height: rowHeight))
+        replacementField.stringValue = existing?.replacement ?? ""
+        replacementField.placeholderString = "Claude"
+
+        accessory.addSubview(sourceLabel)
+        accessory.addSubview(sourceField)
+        accessory.addSubview(replacementLabel)
+        accessory.addSubview(replacementField)
+        alert.accessoryView = accessory
+        alert.window.initialFirstResponder = sourceField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        let source = sourceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replacement = replacementField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty, !replacement.isEmpty else {
+            showCorrectionValidationError()
+            return nil
+        }
+
+        return TranscriptCorrection(source: source, replacement: replacement)
+    }
+
+    private func showCorrectionValidationError() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Correction Not Saved"
+        alert.informativeText = "Both fields need text."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func saveCorrection(_ correction: TranscriptCorrection, replacing index: Int? = nil) {
+        var corrections = settings.transcriptCorrections
+        let key = normalizedCorrectionSource(correction.source)
+
+        if let index, corrections.indices.contains(index) {
+            corrections[index] = correction
+            var keepIndex = index
+            for i in corrections.indices.reversed() {
+                guard i != keepIndex, normalizedCorrectionSource(corrections[i].source) == key else { continue }
+                corrections.remove(at: i)
+                if i < keepIndex { keepIndex -= 1 }
+            }
+        } else if let duplicate = corrections.firstIndex(where: { normalizedCorrectionSource($0.source) == key }) {
+            corrections[duplicate] = correction
+        } else {
+            corrections.append(correction)
+        }
+
+        settings.transcriptCorrections = corrections
+        rebuildMenu()
+    }
+
+    private func normalizedCorrectionSource(_ source: String) -> String {
+        source
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .lowercased()
     }
 
     @objc private func selectHotkey(_ sender: NSMenuItem) {

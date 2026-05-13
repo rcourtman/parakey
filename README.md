@@ -56,10 +56,10 @@ ANE delivers both lower latency *and* lower power draw on battery.
 - **Private** — audio is captured in memory, transcribed locally,
   and discarded. Nothing leaves your Mac during dictation. No
   telemetry, no accounts, transcripts are never written to disk.
-  (Two narrow exceptions: the first launch downloads the speech
-  model, and Parakey checks GitHub every six hours for a newer
-  release. Both are anonymous; the second is toggleable in
-  Settings.)
+  Saved text corrections stay local too. (Two narrow exceptions:
+  the first launch downloads the speech model, and Parakey checks
+  GitHub every six hours for a newer release. Both are anonymous;
+  the second is toggleable in Settings.)
 
 - **Free** — MIT-licensed open source. No trials, no premium tier,
   no upsell.
@@ -68,7 +68,8 @@ ANE delivers both lower latency *and* lower power draw on battery.
   preferences window — every setting lives in the menu's Settings
   submenu.
 
-- **Focused** — push-to-talk dictation. No AI rewriting, no cloud
+- **Focused** — push-to-talk dictation with a small local corrections
+  dictionary for recurring mishearings. No AI rewriting, no cloud
   sync, no extras.
 
 ## Built on Apple's neural-ML stack
@@ -262,6 +263,12 @@ the parakeet glyph in the bar's normal label colour when idle, dimmed
 while loading, **red** while recording, **yellow** if something went
 wrong.
 
+Recurring transcription mistakes can be fixed from **Settings → Text
+Corrections**. Add the incorrect text Parakey typed under **Typed**
+and the text it should paste under **Paste** — for example,
+`clawed` → `Claude`. Corrections apply to whole words or phrases
+after transcription and before paste/history.
+
 Menu structure:
 
 - **Status row** — what Parakey is doing right now (idle / recording /
@@ -281,6 +288,8 @@ Menu structure:
   - **Microphone** — System default (default) or any specific input
     device. Switching takes effect immediately. If the saved device
     is later unplugged, Parakey falls back to system default.
+  - **Text Corrections** — add, edit, or remove local replacements
+    for words and phrases the speech model consistently mishears
   - **Mute system audio while recording** — on by default; turn off
     if you'd rather music keep playing while you dictate
   - **Show Parakey in Dock** — off by default (menu-bar only)
@@ -299,9 +308,9 @@ A 2-minute hard cap auto-releases if the hotkey is held too long.
    that owns FluidAudio's `AsrManager`. The Parakeet TDT v3 CoreML
    models run on the Apple Neural Engine; the encoder is the bound
    work, the TDT decoder is autoregressive but tiny.
-4. The transcript is placed on `NSPasteboard` and `Cmd+V` is posted
-   via `CGEvent`. System audio is unmuted via `NSAppleScript` and the
-   "Pop" system sound plays.
+4. Local text corrections are applied, the transcript is placed on
+   `NSPasteboard`, and `Cmd+V` is posted via `CGEvent`. System audio
+   is unmuted via `NSAppleScript` and the "Pop" system sound plays.
 
 The event tap runs in `.listenOnly` mode, so the hotkey isn't
 suppressed — Right Option, Right Control, etc. still behave as
@@ -316,9 +325,9 @@ For latency / accuracy numbers and the test methodology, see
 
 Most settings live in the menu's **Settings** submenu (described
 above). All — **Hotkey**, **Trigger mode**, **Mute system audio while
-recording**, **Show Parakey in Dock**, **Check for updates
-automatically** — persist across restarts via `NSUserDefaults`
-(`~/Library/Preferences/com.local.parakey.plist`).
+recording**, **Show Parakey in Dock**, **Text Corrections**,
+**Check for updates automatically** — persist across restarts via
+`NSUserDefaults` (`~/Library/Preferences/com.local.parakey.plist`).
 
 Power users can also poke them via `defaults` directly:
 
