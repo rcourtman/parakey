@@ -932,6 +932,11 @@ actor TranscriptionWorker {
     private(set) var ready = false
 
     func load() async throws {
+        if ready, asr != nil {
+            log("ASR: already ready")
+            return
+        }
+
         log("ASR: downloading + loading Parakeet TDT v3 CoreML weights…")
         let t0 = Date()
         let models = try await AsrModels.downloadAndLoad(version: .v3)
@@ -1222,6 +1227,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var isCoreRuntimeReady = false
     private var isTerminating = false
     private var didStartUpdateCheckLoop = false
+    private var startupTask: Task<Void, Never>?
+    private var startupStatusTitle = "Loading speech model…"
+    private var startupFailure: StartupFailure?
+    private var didTouchAudioEngine = false
     private var permissionReadinessTimer: Timer?
     private var lastPermissionReadinessMissingKey: String?
     private var didMuteThisRecording: Bool = false
@@ -1250,6 +1259,36 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private enum CorrectionImportChoice {
         case merge
         case replace
+    }
+
+    private enum StartupFailureStage {
+        case speechModel
+        case audioInput
+        case hotkeyListener
+
+        var statusTitle: String {
+            switch self {
+            case .speechModel: return "Speech model failed to load"
+            case .audioInput: return "Audio input failed to start"
+            case .hotkeyListener: return "Hotkey listener failed to start"
+            }
+        }
+
+        var retryTitle: String {
+            switch self {
+            case .speechModel: return "Retry Loading Speech Model"
+            case .audioInput: return "Retry Audio Startup"
+            case .hotkeyListener: return "Retry Hotkey Startup"
+            }
+        }
+    }
+
+    private struct StartupFailure {
+        let stage: StartupFailureStage
+        let detail: String
+
+        var statusTitle: String { stage.statusTitle }
+        var retryTitle: String { stage.retryTitle }
     }
 
     private struct CorrectionSyncFileFingerprint: Equatable {
@@ -1299,7 +1338,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             hotkey.stop()
             log("readiness failed (\(reason)): hotkey listener unavailable")
             setMenuBarState(.error)
-            if !missingPermissions().isEmpty {
+            if missingPermissions().isEmpty {
+                startupFailure = StartupFailure(stage: .hotkeyListener,
+                                                detail: "The keyboard event tap could not be started.")
+            } else {
                 startPermissionReadinessMonitor(reason: reason)
             }
             rebuildMenu()
@@ -1307,6 +1349,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
 
         isReady = true
+        startupStatusTitle = "Ready"
+        startupFailure = nil
         stopPermissionReadinessMonitor()
         setMenuBarState(.idle)
 
@@ -1333,34 +1377,112 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         hotkey.setHotkey(hotkeyChoice(forKeycode: settings.hotkeyKeycode))
         hotkey.setTriggerMode(settings.triggerMode)
 
-        // Load ASR FIRST, then audio + hotkey. Reversing this order
-        // makes the first-launch CoreML compile of the ANE Encoder
-        // hang. The bench under experiments/swift-bench/ never opens
-        // an audio session so it doesn't see this.
-        Task { @MainActor in
-            do {
-                try await asr.load()
-                try audio.startEngine(inputDevicePreference: settings.inputDevice)
-                self.isCoreRuntimeReady = true
-                completeReadinessIfPossible(requireAllPermissions: false, reason: "launch")
-            } catch {
-                self.isCoreRuntimeReady = false
-                self.isReady = false
-                self.isRecording = false
-                self.isBusy = false
-                hotkey.stop()
-                log("init failed: \(error)")
-                setMenuBarState(.error)
-            }
-        }
+        startStartup(reason: "launch")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        startupTask?.cancel()
+        startupTask = nil
         stopPermissionReadinessMonitor()
         correctionSyncTimer?.invalidate()
         correctionSyncTimer = nil
         cancelRecordingForTermination()
+    }
+
+    private func startStartup(reason: String) {
+        guard startupTask == nil else {
+            log("startup ignored (\(reason)): already in progress")
+            rebuildMenu()
+            return
+        }
+
+        prepareForStartupAttempt()
+
+        // Load ASR FIRST, then audio + hotkey. Reversing this order
+        // makes the first-launch CoreML compile of the ANE Encoder
+        // hang. The bench under experiments/swift-bench/ never opens
+        // an audio session so it doesn't see this.
+        startupTask = Task { @MainActor in
+            var stage = StartupFailureStage.speechModel
+            defer {
+                startupTask = nil
+                rebuildMenu()
+            }
+
+            do {
+                try await asr.load()
+                guard !Task.isCancelled, !isTerminating else { return }
+
+                stage = .audioInput
+                startupStatusTitle = "Starting audio input…"
+                rebuildMenu()
+
+                didTouchAudioEngine = true
+                try audio.startEngine(inputDevicePreference: settings.inputDevice)
+                guard !Task.isCancelled, !isTerminating else { return }
+
+                isCoreRuntimeReady = true
+                startupFailure = nil
+                startupStatusTitle = "Finishing setup…"
+                completeReadinessIfPossible(requireAllPermissions: false, reason: reason)
+            } catch {
+                guard !Task.isCancelled, !isTerminating else { return }
+                recordStartupFailure(stage: stage, error: error, reason: reason)
+            }
+        }
+    }
+
+    private func prepareForStartupAttempt() {
+        cancelMute()
+        cancelMaxDurationAutoRelease()
+
+        if isRecording || audio.isRunning {
+            _ = audio.endRecording()
+        }
+        unmuteIfWeMuted()
+
+        isReady = false
+        isCoreRuntimeReady = false
+        isRecording = false
+        isBusy = false
+        startupFailure = nil
+        startupStatusTitle = "Loading speech model…"
+
+        hotkey.onPress = nil
+        hotkey.onRelease = nil
+        hotkey.resetToggleState()
+        hotkey.stop()
+        if didTouchAudioEngine {
+            audio.stopEngine()
+        }
+
+        setMenuBarState(.loading)
+        rebuildMenu()
+    }
+
+    private func recordStartupFailure(stage: StartupFailureStage, error: Error, reason: String) {
+        isCoreRuntimeReady = false
+        isReady = false
+        isRecording = false
+        isBusy = false
+
+        hotkey.onPress = nil
+        hotkey.onRelease = nil
+        hotkey.resetToggleState()
+        hotkey.stop()
+        if didTouchAudioEngine {
+            audio.stopEngine()
+        }
+
+        let detail = error.localizedDescription
+        startupFailure = StartupFailure(stage: stage, detail: detail)
+        log("startup failed (\(reason), \(stage)): \(error)")
+        setMenuBarState(.error)
+        if !missingPermissions().isEmpty {
+            startPermissionReadinessMonitor(reason: reason)
+        }
+        rebuildMenu()
     }
 
     private func missingPermissions() -> [Permission] {
@@ -1397,7 +1519,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     @objc private func permissionReadinessTimerFired(_ timer: Timer) {
         guard isCoreRuntimeReady else {
-            stopPermissionReadinessMonitor()
+            let missing = missingPermissions()
+            guard !missing.isEmpty else {
+                permClickCount.removeAll()
+                stopPermissionReadinessMonitor()
+                rebuildMenu()
+                return
+            }
+            if logPermissionReadinessWait(missing) {
+                rebuildMenu()
+            }
             return
         }
 
@@ -1674,19 +1805,26 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
 
         // Status row.
-        let statusTitle: String
-        if !isReady {
-            statusTitle = "Loading speech model…"
-        } else {
-            let hk = hotkey.hotkey.name
-            let verb = settings.triggerMode == .hold ? "Hold" : "Press"
-            statusTitle = "\(verb) \(hk) to dictate"
-        }
+        let statusTitle = menuStatusTitle()
         let status = NSMenuItem(title: statusTitle, action: nil, keyEquivalent: "")
         status.isEnabled = false
+        if let failure = startupFailure {
+            status.toolTip = failure.detail
+        }
         menu.addItem(status)
 
         menu.addItem(.separator())
+
+        if let failure = startupFailure {
+            let retry = NSMenuItem(title: failure.retryTitle,
+                                   action: #selector(retryStartupClicked(_:)),
+                                   keyEquivalent: "")
+            retry.target = self
+            retry.toolTip = failure.detail
+            retry.isEnabled = startupTask == nil
+            menu.addItem(retry)
+            menu.addItem(.separator())
+        }
 
         // Update submenu (lazy — only present when an update exists).
         if let release = pendingUpdate, !settings.skippedVersions.contains(release.version) {
@@ -1759,6 +1897,31 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         quit.target = self
         menu.addItem(quit)
         return menu
+    }
+
+    private func menuStatusTitle() -> String {
+        if isReady {
+            let hk = hotkey.hotkey.name
+            let verb = settings.triggerMode == .hold ? "Hold" : "Press"
+            return "\(verb) \(hk) to dictate"
+        }
+        if let failure = startupFailure {
+            return failure.statusTitle
+        }
+        if startupTask != nil {
+            return startupStatusTitle
+        }
+        if !missingPermissions().isEmpty {
+            return "Grant permissions to finish setup"
+        }
+        if isCoreRuntimeReady {
+            return "Starting hotkey listener…"
+        }
+        return "Parakey is not ready"
+    }
+
+    @objc private func retryStartupClicked(_ sender: NSMenuItem) {
+        startStartup(reason: "manual retry")
     }
 
     // MARK: - Permission row + click-twice-to-reset
@@ -1958,6 +2121,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         Task { @MainActor in
             do {
+                didTouchAudioEngine = true
                 try audio.startEngine(inputDevicePreference: settings.inputDevice)
                 isCoreRuntimeReady = true
                 completeReadinessIfPossible(requireAllPermissions: true, reason: "input device change")
@@ -1967,9 +2131,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 isRecording = false
                 isBusy = false
                 hotkey.stop()
-                log("input device restart failed: \(error)")
-                setMenuBarState(.error)
-                rebuildMenu()
+                recordStartupFailure(stage: .audioInput, error: error, reason: "input device change")
             }
         }
     }
