@@ -148,16 +148,20 @@ Steps:
      open /Applications/Parakey.app
 5. Tell me the menu bar Parakey icon will appear shortly. First launch
    downloads a ~600 MB speech model from Hugging Face — this takes
-   1–5 minutes on a typical connection, one-time only. Don't try the
-   dictation key yet.
+   1–5 minutes on a typical connection, one-time only. The model is
+   cached locally after that. Don't try the dictation key yet.
 6. Once the icon appears, tell me to click it. Three rows will be
    visible: "⚠ Grant Microphone permission…", "⚠ Grant Accessibility
    permission…", "⚠ Grant Input Monitoring permission…". Tell me to
-   click each one — Parakey will trigger the macOS prompt and/or
-   open the right Settings pane. I should click Allow on the macOS
-   dialog, or toggle Parakey on in Settings, for each of the three.
+   click each one. Microphone lets Parakey hear speech; Accessibility
+   lets it paste the transcript at the cursor; Input Monitoring lets
+   it catch the push-to-talk key. Parakey will trigger the macOS prompt
+   and/or open the right Settings pane. I should click Allow on the
+   macOS dialog, or toggle Parakey on in Settings, for each of the
+   three.
 7. Rows turn ✓ as I grant each, and disappear from the menu once
-   all three are granted.
+   all three are granted. Parakey will not start recording until setup
+   is complete.
 
 Then the menu bar's status row will tell me which key to hold to
 dictate. I can change it from Settings → Hotkey if I'd prefer
@@ -180,9 +184,10 @@ open /Applications/Parakey.app
 ```
 
 That's it — the cask is signed and notarised, no Gatekeeper warnings.
-First launch downloads the speech model (~600 MB, one-time). Click
-the Parakey menu bar icon to grant the three macOS privacy permissions
-when it asks.
+First launch downloads the speech model (~600 MB, one-time, cached
+locally). Click the Parakey menu bar icon to grant the three macOS
+privacy permissions when it asks; Parakey stays in setup mode until
+all three are granted.
 
 To upgrade: just click **"Update to vX.Y.Z…"** when it appears at
 the top of Parakey's menu — the app polls GitHub for new releases
@@ -231,14 +236,26 @@ The first time Parakey runs, it downloads the Parakeet TDT v3 model
 download — subsequent launches load the cached CoreML weights and
 are ready in well under a second. During the download the menu bar
 icon shows a "loading…" indicator; there's no progress bar (yet), so
-allow 1–5 minutes on a typical connection before pressing your
-dictation key.
+allow 1–5 minutes on a typical connection.
+
+After the model is loaded, Parakey still waits for the three macOS
+privacy permissions below before it will record. Dictation only starts
+once setup is complete.
 
 ## Permissions
 
-Parakey needs three macOS privacy permissions: **Microphone**,
-**Accessibility**, and **Input Monitoring**. Until they're all
-granted, the menu bar dropdown shows three rows like
+Parakey needs three macOS privacy permissions and stays non-ready until
+all three are granted:
+
+- **Microphone** — captures your voice while the push-to-talk key is
+  held.
+- **Accessibility** — pastes the finished transcript into the focused
+  app by posting `Cmd+V`.
+- **Input Monitoring** — catches and suppresses the configured hotkey
+  so it behaves like Parakey's push-to-talk trigger instead of leaking
+  through to the focused app.
+
+Until they're all granted, the menu bar dropdown shows rows like
 **⚠ Grant Microphone permission…** just below the status row.
 
 For each missing permission:
@@ -471,10 +488,9 @@ in-memory history from the menu while the app is still running.
 
 | Symptom | Likely cause |
 |---|---|
-| Hotkey does nothing, no tink | Input Monitoring not granted (check the menu — the row will reappear as ⚠) |
-| Tink but no paste | Accessibility not granted |
-| Mic captures silence (transcripts come back as 0 chars) | Microphone not granted |
-| Menu bar shows "loading…" for several minutes on first launch | First-run model download from Hugging Face (~600 MB). One-time. |
+| Hotkey does nothing, no tink | Setup is not complete yet. Open the menu and clear any ⚠ permission rows; Parakey will not record until Microphone, Accessibility, and Input Monitoring are all granted. |
+| Menu says "Grant permissions to finish setup" | Click each ⚠ row. Microphone is for audio capture, Accessibility is for paste-at-cursor, and Input Monitoring is for the push-to-talk key. |
+| Menu bar shows "loading…" for several minutes on first launch | First-run model download from Hugging Face (~600 MB). One-time, then cached locally. |
 | Music doesn't pause, only quietens | Parakey mutes system *output*, it doesn't pause Spotify/Music. Resumes on release. |
 | The Parakey.app you downloaded won't open | Confirm Apple Silicon + macOS 26+. If it's an older release from before notarisation was set up, you may hit a Gatekeeper warning — right-click → Open → Open. |
 | Clicked **Update now…** and the GitHub releases page opened instead of the app upgrading | Means brew either isn't installed at the expected path (`/opt/homebrew/bin/brew` or `/usr/local/bin/brew`) *or* this install wasn't placed by `brew install --cask`. The release page is the safe fallback — install/upgrade manually from there. |

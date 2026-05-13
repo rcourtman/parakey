@@ -2837,6 +2837,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             Mode:    \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)
             Model:   FluidAudio · Parakeet TDT v3 (CoreML / ANE)
 
+            Local-only dictation. No cloud transcription, no telemetry.
+            Network: model download, optional update check and install.
+            Permissions: microphone audio, paste-at-cursor, push-to-talk hotkey.
+
             Maintained by Richard Courtman.
             github.com/rcourtman/parakey · MIT licensed
             """
