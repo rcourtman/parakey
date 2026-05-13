@@ -339,9 +339,10 @@ For latency / accuracy numbers and the test methodology, see
 
 Most settings live in the menu's **Settings** submenu (described
 above). All — **Hotkey**, **Trigger mode**, **Mute system audio while
-recording**, **Show Parakey in Dock**, **Text Corrections**,
-**Check for updates automatically** — persist across restarts via
-`NSUserDefaults` (`~/Library/Preferences/com.local.parakey.plist`).
+recording**, **Microphone**, **Show Parakey in Dock**, **Text
+Corrections**, **Check for updates automatically** — persist across
+restarts via `NSUserDefaults`
+(`~/Library/Preferences/com.local.parakey.plist`).
 
 Power users can also poke them via `defaults` directly:
 
@@ -350,7 +351,7 @@ defaults write com.local.parakey hotkey_keycode -int 105   # F13
 defaults write com.local.parakey trigger_mode toggle
 defaults write com.local.parakey mute_while_recording -bool false
 defaults write com.local.parakey show_in_dock -bool true
-defaults write com.local.parakey input_device "AirPods Pro"  # exact device name
+defaults write com.local.parakey input_device "AirPods Pro"  # exact device name or UID
 defaults write com.local.parakey check_for_updates -bool false
 # Then quit + relaunch Parakey to pick up settings that affect startup
 # (most apply live; restart is only needed for the Dock toggle).

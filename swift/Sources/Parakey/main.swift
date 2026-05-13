@@ -25,6 +25,7 @@
 
 import AppKit
 import AVFoundation
+import AudioToolbox
 import Foundation
 import CoreGraphics
 import Darwin
@@ -98,6 +99,12 @@ let TRIGGER_DISPLAY: [TriggerMode: String] = [
     .hold: "Press and hold",
     .toggle: "Press to toggle",
 ]
+
+struct AudioInputDevice: Equatable {
+    let id: AudioDeviceID
+    let uid: String
+    let name: String
+}
 
 struct TranscriptCorrection: Codable, Equatable, Sendable {
     let source: String
@@ -200,6 +207,74 @@ func normalizedTranscriptCorrections(_ corrections: [TranscriptCorrection]) -> [
     }
 
     return result
+}
+
+// MARK: - Audio input devices
+
+func audioObjectStringProperty(_ objectID: AudioObjectID,
+                               selector: AudioObjectPropertySelector) -> String? {
+    var address = AudioObjectPropertyAddress(mSelector: selector,
+                                             mScope: kAudioObjectPropertyScopeGlobal,
+                                             mElement: kAudioObjectPropertyElementMain)
+    var rawValue: UnsafeRawPointer?
+    var size = UInt32(MemoryLayout<UnsafeRawPointer?>.size)
+    let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &rawValue)
+    guard status == noErr, let rawValue else { return nil }
+    let string = Unmanaged<CFString>.fromOpaque(rawValue).takeUnretainedValue() as String
+    return string.isEmpty ? nil : string
+}
+
+func audioDeviceHasInputChannels(_ deviceID: AudioDeviceID) -> Bool {
+    var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                             mScope: kAudioDevicePropertyScopeInput,
+                                             mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr,
+          size > 0 else { return false }
+
+    let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size),
+                                               alignment: MemoryLayout<AudioBufferList>.alignment)
+    defer { raw.deallocate() }
+    let bufferList = raw.assumingMemoryBound(to: AudioBufferList.self)
+    guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, bufferList) == noErr else {
+        return false
+    }
+
+    let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+    return buffers.contains { $0.mNumberChannels > 0 }
+}
+
+func availableAudioInputDevices() -> [AudioInputDevice] {
+    var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                             mScope: kAudioObjectPropertyScopeGlobal,
+                                             mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),
+                                         &address, 0, nil, &size) == noErr,
+          size >= UInt32(MemoryLayout<AudioDeviceID>.size) else { return [] }
+
+    let count = Int(size) / MemoryLayout<AudioDeviceID>.size
+    var ids = Array(repeating: AudioDeviceID(0), count: count)
+    guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                     &address, 0, nil, &size, &ids) == noErr else { return [] }
+
+    return ids.compactMap { id in
+        guard audioDeviceHasInputChannels(id),
+              let uid = audioObjectStringProperty(id, selector: kAudioDevicePropertyDeviceUID),
+              let name = audioObjectStringProperty(id, selector: kAudioObjectPropertyName) else {
+            return nil
+        }
+        return AudioInputDevice(id: id, uid: uid, name: name)
+    }
+    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+}
+
+func audioInputDevice(matching preference: String,
+                      in devices: [AudioInputDevice] = availableAudioInputDevices()) -> AudioInputDevice? {
+    let trimmed = preference.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return devices.first { $0.uid == trimmed }
+        ?? devices.first { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
 }
 
 // MARK: - Logger
@@ -684,8 +759,9 @@ final class AudioCapture: @unchecked Sendable {
         return _isRunning
     }
 
-    func startEngine() throws {
+    func startEngine(inputDevicePreference: String = "") throws {
         let input = engine.inputNode
+        applyInputDevicePreference(inputDevicePreference, to: input)
         let inputFormat = input.outputFormat(forBus: 0)
 
         guard let targetFormat = AVAudioFormat(
@@ -715,6 +791,18 @@ final class AudioCapture: @unchecked Sendable {
             throw error
         }
         log("AudioCapture: engine started")
+    }
+
+    func stopEngine() {
+        lock.lock()
+        _isRunning = false
+        recordingGeneration &+= 1
+        samples.removeAll(keepingCapacity: true)
+        lock.unlock()
+
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        converter = nil
     }
 
     func beginRecording() {
@@ -776,6 +864,33 @@ final class AudioCapture: @unchecked Sendable {
             samples.append(contentsOf: arr)
         }
         lock.unlock()
+    }
+
+    private func applyInputDevicePreference(_ preference: String, to input: AVAudioInputNode) {
+        let trimmed = preference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        guard let device = audioInputDevice(matching: trimmed) else {
+            log("AudioCapture: saved input device unavailable, using system default")
+            return
+        }
+        guard let unit = input.audioUnit else {
+            log("AudioCapture: input audio unit unavailable, using system default")
+            return
+        }
+
+        var deviceID = device.id
+        let status = AudioUnitSetProperty(unit,
+                                          kAudioOutputUnitProperty_CurrentDevice,
+                                          kAudioUnitScope_Global,
+                                          0,
+                                          &deviceID,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size))
+        guard status == noErr else {
+            log("AudioCapture: input device switch failed (\(status)), using system default")
+            return
+        }
+        log("AudioCapture: selected input \(device.name)")
     }
 }
 
@@ -1225,7 +1340,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             do {
                 try await asr.load()
-                try audio.startEngine()
+                try audio.startEngine(inputDevicePreference: settings.inputDevice)
                 self.isCoreRuntimeReady = true
                 completeReadinessIfPossible(requireAllPermissions: false, reason: "launch")
             } catch {
@@ -1467,6 +1582,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if hadActiveRecording {
             _ = audio.endRecording()
         }
+        audio.stopEngine()
         isRecording = false
         isBusy = false
         hotkey.resetToggleState()
@@ -1731,6 +1847,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         tmParent.submenu = tmSub
         sub.addItem(tmParent)
 
+        sub.addItem(buildInputDeviceItem())
+
         sub.addItem(buildCorrectionsItem())
 
         // Mute toggle.
@@ -1763,6 +1881,97 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         parent.submenu = sub
         return parent
+    }
+
+    private func buildInputDeviceItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        let devices = availableAudioInputDevices()
+        let savedPreference = settings.inputDevice.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedDevice = audioInputDevice(matching: savedPreference, in: devices)
+        let canSwitch = !isRecording && !isBusy && !isTerminating
+
+        let system = NSMenuItem(title: "System default",
+                                action: #selector(selectInputDevice(_:)),
+                                keyEquivalent: "")
+        system.target = self
+        system.representedObject = ""
+        system.state = (savedPreference.isEmpty || selectedDevice == nil) ? .on : .off
+        system.isEnabled = canSwitch
+        sub.addItem(system)
+
+        if !savedPreference.isEmpty && selectedDevice == nil {
+            let unavailable = NSMenuItem(title: "Unavailable: \(savedPreference)",
+                                         action: nil,
+                                         keyEquivalent: "")
+            unavailable.isEnabled = false
+            sub.addItem(unavailable)
+        }
+
+        if !devices.isEmpty {
+            sub.addItem(.separator())
+        }
+
+        for device in devices {
+            let item = NSMenuItem(title: device.name,
+                                  action: #selector(selectInputDevice(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = device.uid
+            item.toolTip = device.uid
+            item.state = (selectedDevice?.uid == device.uid) ? .on : .off
+            item.isEnabled = canSwitch
+            sub.addItem(item)
+        }
+
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func selectInputDevice(_ sender: NSMenuItem) {
+        guard !isRecording, !isBusy, !isTerminating,
+              let preference = sender.representedObject as? String else { return }
+
+        settings.inputDevice = preference
+        let label = preference.isEmpty
+            ? "system default"
+            : (audioInputDevice(matching: preference)?.name ?? preference)
+        log("input device selected: \(label)")
+        restartAudioForInputDeviceChange()
+    }
+
+    private func restartAudioForInputDeviceChange() {
+        guard isCoreRuntimeReady else {
+            rebuildMenu()
+            return
+        }
+
+        isReady = false
+        isRecording = false
+        isBusy = false
+        hotkey.stop()
+        setMenuBarState(.loading)
+        rebuildMenu()
+        audio.stopEngine()
+
+        Task { @MainActor in
+            do {
+                try audio.startEngine(inputDevicePreference: settings.inputDevice)
+                isCoreRuntimeReady = true
+                completeReadinessIfPossible(requireAllPermissions: true, reason: "input device change")
+            } catch {
+                isCoreRuntimeReady = false
+                isReady = false
+                isRecording = false
+                isBusy = false
+                hotkey.stop()
+                log("input device restart failed: \(error)")
+                setMenuBarState(.error)
+                rebuildMenu()
+            }
+        }
     }
 
     private func buildCorrectionsItem() -> NSMenuItem {
