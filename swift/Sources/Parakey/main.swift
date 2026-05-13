@@ -456,10 +456,36 @@ final class Settings: @unchecked Sendable {
 
 // MARK: - Permissions
 
-enum Permission: String, CaseIterable {
+enum Permission: String, CaseIterable, Equatable {
     case microphone = "Microphone"
     case accessibility = "Accessibility"
     case inputMonitoring = "Input Monitoring"
+}
+
+private enum ReadinessTransition: Equatable {
+    case rebuildMenuOnly
+    case blockForPermissions([Permission])
+    case startHotkeyListener
+}
+
+private func readinessTransition(
+    isReady: Bool,
+    isCoreRuntimeReady: Bool,
+    missingPermissions: [Permission]
+) -> ReadinessTransition {
+    if isReady {
+        return missingPermissions.isEmpty
+            ? .rebuildMenuOnly
+            : .blockForPermissions(missingPermissions)
+    }
+
+    guard isCoreRuntimeReady else {
+        return .rebuildMenuOnly
+    }
+
+    return missingPermissions.isEmpty
+        ? .startHotkeyListener
+        : .blockForPermissions(missingPermissions)
 }
 
 @MainActor
@@ -1305,27 +1331,22 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
 
     private func completeReadinessIfPossible(reason: String) {
-        if isReady {
-            let missing = missingPermissions()
-            guard missing.isEmpty else {
-                enterPermissionBlockedState(missing: missing, reason: reason)
-                return
+        let missing = (isReady || isCoreRuntimeReady) ? missingPermissions() : []
+        switch readinessTransition(isReady: isReady,
+                                   isCoreRuntimeReady: isCoreRuntimeReady,
+                                   missingPermissions: missing) {
+        case .rebuildMenuOnly:
+            if isReady {
+                permClickCount.removeAll()
+                stopPermissionReadinessMonitor()
             }
-            permClickCount.removeAll()
-            stopPermissionReadinessMonitor()
             rebuildMenu()
             return
-        }
-
-        guard isCoreRuntimeReady else {
-            rebuildMenu()
-            return
-        }
-
-        let missing = missingPermissions()
-        guard missing.isEmpty else {
+        case .blockForPermissions(let missing):
             enterPermissionBlockedState(missing: missing, reason: reason)
             return
+        case .startHotkeyListener:
+            break
         }
 
         hotkey.onPress = { [weak self] in self?.handlePress() }
@@ -3049,8 +3070,10 @@ private enum ParakeySelfTest {
         switch arguments[1] {
         case "hotkey":
             return runSuite("hotkey", testHotkey)
+        case "readiness":
+            return runSuite("readiness", testReadiness)
         case "all":
-            return runSuite("all", testHotkey)
+            return runSuite("all", testAll)
         default:
             return fail("unknown")
         }
@@ -3072,11 +3095,54 @@ private enum ParakeySelfTest {
         return EXIT_FAILURE
     }
 
+    private static func testAll() throws {
+        try testHotkey()
+        try testReadiness()
+    }
+
     private static func testHotkey() throws {
         try testHandledHotkeySuppression()
         try testFKeyAutoRepeatSuppressesWithoutAction()
         try testRightModifierReleaseWithLeftFlagStillSet()
         try testTogglePressFlipsOnceAndReleaseIsNoOp()
+    }
+
+    private static func testReadiness() throws {
+        try expect(
+            readinessTransition(isReady: false,
+                                isCoreRuntimeReady: false,
+                                missingPermissions: []),
+            equals: .rebuildMenuOnly,
+            "not-ready app without core runtime should wait and rebuild only"
+        )
+        try expect(
+            readinessTransition(isReady: false,
+                                isCoreRuntimeReady: true,
+                                missingPermissions: [.microphone]),
+            equals: .blockForPermissions([.microphone]),
+            "core-ready app with missing microphone should block"
+        )
+        try expect(
+            readinessTransition(isReady: true,
+                                isCoreRuntimeReady: true,
+                                missingPermissions: [.accessibility]),
+            equals: .blockForPermissions([.accessibility]),
+            "ready app with missing accessibility should block"
+        )
+        try expect(
+            readinessTransition(isReady: false,
+                                isCoreRuntimeReady: true,
+                                missingPermissions: []),
+            equals: .startHotkeyListener,
+            "core-ready app with all permissions should start hotkey"
+        )
+        try expect(
+            readinessTransition(isReady: true,
+                                isCoreRuntimeReady: true,
+                                missingPermissions: []),
+            equals: .rebuildMenuOnly,
+            "ready app with all permissions should remain ready and rebuild only"
+        )
     }
 
     private static func testHandledHotkeySuppression() throws {
@@ -3168,9 +3234,9 @@ private enum ParakeySelfTest {
         )
     }
 
-    private static func expect(
-        _ actual: HotkeyTransitionResult,
-        equals expected: HotkeyTransitionResult,
+    private static func expect<T: Equatable>(
+        _ actual: T,
+        equals expected: T,
         _ message: String
     ) throws {
         guard actual == expected else {

@@ -1,9 +1,8 @@
 name: check
 
-# Lightweight macOS repo-hygiene checks: shell + plist/XML/JSON/YAML/HTML syntax.
-# Building the Swift app downloads the FluidAudio CoreML weights (~600 MB) on
-# first build, so the actual build/notarise path lives in ship-swift.sh on the
-# maintainer's Mac.
+# Lightweight macOS repo-hygiene checks plus pure DEBUG self-tests.
+# The Swift self-test lane is pure DEBUG logic; the full build/notarise path
+# still lives in ship-swift.sh on the maintainer's Mac.
 
 on:
   push:
@@ -15,6 +14,9 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+      - name: Swift self-tests
+        working-directory: swift
+        run: swift run -c debug Parakey --self-test all
       - name: Shell syntax
         run: |
           bash -n ship-swift.sh
