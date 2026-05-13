@@ -1105,6 +1105,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var isBusy = false
     private var isReady = false
     private var isCoreRuntimeReady = false
+    private var isTerminating = false
     private var didStartUpdateCheckLoop = false
     private var permissionReadinessTimer: Timer?
     private var lastPermissionReadinessMissingKey: String?
@@ -1240,9 +1241,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
         stopPermissionReadinessMonitor()
         correctionSyncTimer?.invalidate()
         correctionSyncTimer = nil
+        cancelRecordingForTermination()
     }
 
     private func missingPermissions() -> [Permission] {
@@ -1391,7 +1394,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     // MARK: - Recording loop
 
     private func handlePress() {
-        guard isReady, !isRecording, !isBusy else { return }
+        guard isReady, !isRecording, !isBusy, !isTerminating else { return }
         isRecording = true
         audio.beginRecording()
         setMenuBarState(.recording)
@@ -1406,7 +1409,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func handleRelease() {
-        guard isRecording else { return }
+        guard isRecording, !isTerminating else { return }
         isRecording = false
         cancelMute()
         cancelMaxDurationAutoRelease()
@@ -1428,22 +1431,49 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 let t0 = Date()
                 let text = try await asr.transcribe(samples: samples)
                 let dt = Date().timeIntervalSince(t0)
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let corrected = TranscriptCorrector.apply(to: trimmed, corrections: settings.transcriptCorrections)
-                if corrected.appliedCount > 0 {
-                    log("transcript corrections applied: \(corrected.appliedCount)")
-                }
-                log("\(String(format: "%.2f", dur)) s audio → \(String(format: "%.2f", dt)) s → \(corrected.text.count) chars")
-                if !corrected.text.isEmpty {
-                    Paster.paste(corrected.text + " ")
-                    Sounds.playDone()
-                    addToHistory(corrected.text)
+                if !isTerminating {
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let corrected = TranscriptCorrector.apply(to: trimmed, corrections: settings.transcriptCorrections)
+                    if corrected.appliedCount > 0 {
+                        log("transcript corrections applied: \(corrected.appliedCount)")
+                    }
+                    log("\(String(format: "%.2f", dur)) s audio → \(String(format: "%.2f", dt)) s → \(corrected.text.count) chars")
+                    if !corrected.text.isEmpty {
+                        Paster.paste(corrected.text + " ")
+                        Sounds.playDone()
+                        addToHistory(corrected.text)
+                    }
                 }
             } catch {
                 log("transcribe failed: \(error)")
             }
             isBusy = false
             setMenuBarState(.idle)
+        }
+    }
+
+    // Quit cancels any in-flight recording instead of releasing it:
+    // release intentionally starts transcription/paste/history work,
+    // while termination only needs to discard audio and restore mute.
+    private func cancelRecordingForTermination() {
+        cancelMute()
+        cancelMaxDurationAutoRelease()
+        hotkey.onPress = nil
+        hotkey.onRelease = nil
+        hotkey.stop()
+
+        let hadActiveRecording = isRecording || audio.isRunning
+        let hadMute = didMuteThisRecording
+        if hadActiveRecording {
+            _ = audio.endRecording()
+        }
+        isRecording = false
+        isBusy = false
+        hotkey.resetToggleState()
+        unmuteIfWeMuted()
+
+        if hadActiveRecording || hadMute {
+            log("terminate: active recording canceled")
         }
     }
 
