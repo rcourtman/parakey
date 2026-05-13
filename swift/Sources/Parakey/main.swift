@@ -1039,7 +1039,7 @@ actor TranscriptionWorker {
     private var asr: AsrManager?
     private(set) var ready = false
 
-    func load() async throws {
+    func load(progressHandler: DownloadUtils.ProgressHandler? = nil) async throws {
         if ready, asr != nil {
             log("ASR: already ready")
             return
@@ -1047,7 +1047,7 @@ actor TranscriptionWorker {
 
         log("ASR: downloading + loading Parakeet TDT v3 CoreML weights…")
         let t0 = Date()
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
+        let models = try await AsrModels.downloadAndLoad(version: .v3, progressHandler: progressHandler)
         asr = AsrManager(config: .default, models: models)
         ready = true
         log("ASR: ready in \(String(format: "%.2f", Date().timeIntervalSince(t0))) s")
@@ -1138,6 +1138,20 @@ func pastedText(from correctedTranscript: String, suffix: PasteSuffix) -> String
         return correctedTranscript
     case .appendNewline:
         return correctedTranscript + "\n"
+    }
+}
+
+func speechModelStartupStatusTitle(_ progress: DownloadUtils.DownloadProgress) -> String {
+    switch progress.phase {
+    case .listing:
+        return "Checking speech model files…"
+    case .downloading(let completedFiles, let totalFiles):
+        guard totalFiles > 0 else { return "Loading cached speech model…" }
+        let downloadFraction = min(max(progress.fractionCompleted / 0.5, 0), 1)
+        let percent = min(100, max(0, Int((downloadFraction * 20).rounded()) * 5))
+        return "Downloading speech model… \(percent)% (\(completedFiles)/\(totalFiles))"
+    case .compiling:
+        return "Preparing speech model…"
     }
 }
 
@@ -1528,7 +1542,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             }
 
             do {
-                try await asr.load()
+                try await asr.load { [weak self] progress in
+                    Task { @MainActor in
+                        self?.updateSpeechModelStartupProgress(progress)
+                    }
+                }
                 guard !Task.isCancelled, !isTerminating else { return }
 
                 stage = .audioInput
@@ -1577,6 +1595,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
 
         setMenuBarState(.loading)
+        rebuildMenu()
+    }
+
+    private func updateSpeechModelStartupProgress(_ progress: DownloadUtils.DownloadProgress) {
+        guard startupTask != nil, !isTerminating else { return }
+        let next = speechModelStartupStatusTitle(progress)
+        guard next != startupStatusTitle else { return }
+        startupStatusTitle = next
         rebuildMenu()
     }
 
@@ -3303,6 +3329,7 @@ private enum ParakeySelfTest {
         try testReadiness()
         try testPasteSuffixFormatting()
         try testAudioInputDeviceFiltering()
+        try testSpeechModelStartupStatus()
     }
 
     private static func testHotkey() throws {
@@ -3402,6 +3429,33 @@ private enum ParakeySelfTest {
             audioInputDevice(matching: "Yeti Nano", in: [real])?.uid,
             equals: "real-yeti-nano",
             "named microphone preferences should still resolve by display name"
+        )
+    }
+
+    private static func testSpeechModelStartupStatus() throws {
+        try expect(
+            speechModelStartupStatusTitle(.init(fractionCompleted: 0,
+                                                phase: .listing)),
+            equals: "Checking speech model files…",
+            "listing phase should be visible during first-launch model setup"
+        )
+        try expect(
+            speechModelStartupStatusTitle(.init(fractionCompleted: 0.25,
+                                                phase: .downloading(completedFiles: 2, totalFiles: 4))),
+            equals: "Downloading speech model… 50% (2/4)",
+            "download phase should show quantized progress"
+        )
+        try expect(
+            speechModelStartupStatusTitle(.init(fractionCompleted: 0.5,
+                                                phase: .downloading(completedFiles: 0, totalFiles: 0))),
+            equals: "Loading cached speech model…",
+            "cached model load should not pretend to download files"
+        )
+        try expect(
+            speechModelStartupStatusTitle(.init(fractionCompleted: 1,
+                                                phase: .compiling(modelName: "Encoder.mlmodelc"))),
+            equals: "Preparing speech model…",
+            "compile phase should be visible without exposing model internals"
         )
     }
 

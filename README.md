@@ -235,8 +235,9 @@ The first time Parakey runs, it downloads the Parakeet TDT v3 model
 `~/Library/Application Support/FluidAudio/`. This is a one-time
 download — subsequent launches load the cached CoreML weights and
 are ready in well under a second. During the download the menu bar
-icon shows a "loading…" indicator; there's no progress bar (yet), so
-allow 1–5 minutes on a typical connection.
+icon shows a loading indicator and the menu status row reports
+checking, downloading, and preparing progress, so allow 1–5 minutes
+on a typical connection.
 
 After the model is loaded, Parakey still waits for the three macOS
 privacy permissions below before it will record. Dictation only starts
