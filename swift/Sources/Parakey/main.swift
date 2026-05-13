@@ -38,6 +38,7 @@ import UniformTypeIdentifiers
 
 let SAMPLE_RATE: Double = 16_000
 let DEFAULT_HOTKEY_KEYCODE: CGKeyCode = 61  // Right Option
+let ESCAPE_KEYCODE: CGKeyCode = 53
 let MIN_CLIP_SECONDS: Double = 0.25
 let MAX_RECORDING_SECONDS: TimeInterval = 120   // auto-release if held longer
 let MUTE_AFTER_START_SOUND: TimeInterval = 0.18 // let the start tink finish before muting
@@ -558,6 +559,7 @@ private struct HotkeyEventSnapshot: Sendable {
 private enum HotkeyTransitionAction: Equatable, Sendable {
     case press
     case release
+    case cancel
 }
 
 private struct HotkeyTransitionResult: Equatable, Sendable {
@@ -571,10 +573,12 @@ private struct HotkeyTransitionResult: Equatable, Sendable {
 private struct HotkeyTransitionState {
     private var hotkeyModifierDown = false
     private var toggleActive = false
+    private var suppressEscapeKeyUp = false
 
     mutating func resetAll() {
         hotkeyModifierDown = false
         toggleActive = false
+        suppressEscapeKeyUp = false
     }
 
     mutating func resetToggleState() {
@@ -584,8 +588,13 @@ private struct HotkeyTransitionState {
     mutating func transition(
         for event: HotkeyEventSnapshot,
         hotkey: HotkeyChoice,
-        triggerMode: TriggerMode
+        triggerMode: TriggerMode,
+        isRecording: Bool
     ) -> HotkeyTransitionResult {
+        if event.keycode == ESCAPE_KEYCODE {
+            return transitionEscape(for: event, isRecording: isRecording)
+        }
+
         guard event.keycode == hotkey.keycode else { return .pass }
 
         // Modifier masks are side-agnostic, so the physical keycode's
@@ -627,6 +636,29 @@ private struct HotkeyTransitionState {
             return HotkeyTransitionResult(suppress: true, actions: [action])
         }
     }
+
+    private mutating func transitionEscape(
+        for event: HotkeyEventSnapshot,
+        isRecording: Bool
+    ) -> HotkeyTransitionResult {
+        if event.typeRawValue == CGEventType.keyDown.rawValue {
+            if event.isAutoRepeat, suppressEscapeKeyUp {
+                return .suppressOnly
+            }
+            guard isRecording else { return .pass }
+            suppressEscapeKeyUp = true
+            return event.isAutoRepeat
+                ? .suppressOnly
+                : HotkeyTransitionResult(suppress: true, actions: [.cancel])
+        }
+
+        if event.typeRawValue == CGEventType.keyUp.rawValue, suppressEscapeKeyUp {
+            suppressEscapeKeyUp = false
+            return .suppressOnly
+        }
+
+        return .pass
+    }
 }
 
 @MainActor
@@ -643,8 +675,11 @@ final class HotkeyListener {
     /// onPress fires when a recording should start (press in hold mode,
     /// or first press in toggle mode). onRelease fires when it should
     /// stop (release in hold mode, or second press in toggle mode).
+    /// onCancel fires for Escape while a recording is active.
     var onPress: (() -> Void)?
     var onRelease: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var isRecordingActive: (() -> Bool)?
 
     @discardableResult
     func start() -> Bool {
@@ -730,7 +765,10 @@ final class HotkeyListener {
             return false
         }
 
-        let result = transitionState.transition(for: event, hotkey: hotkey, triggerMode: triggerMode)
+        let result = transitionState.transition(for: event,
+                                                hotkey: hotkey,
+                                                triggerMode: triggerMode,
+                                                isRecording: isRecordingActive?() ?? false)
         dispatchHotkeyActions(result.actions)
         return result.suppress
     }
@@ -748,6 +786,7 @@ final class HotkeyListener {
             switch action {
             case .press: onPress?()
             case .release: onRelease?()
+            case .cancel: onCancel?()
             }
         }
     }
@@ -1351,12 +1390,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         hotkey.onPress = { [weak self] in self?.handlePress() }
         hotkey.onRelease = { [weak self] in self?.handleRelease() }
+        hotkey.onCancel = { [weak self] in self?.cancelActiveRecording(reason: "escape") }
+        hotkey.isRecordingActive = { [weak self] in self?.isRecording == true }
         guard hotkey.start() else {
             isReady = false
             isRecording = false
             isBusy = false
             hotkey.onPress = nil
             hotkey.onRelease = nil
+            hotkey.onCancel = nil
+            hotkey.isRecordingActive = nil
             hotkey.resetToggleState()
             hotkey.stop()
             log("readiness failed (\(reason)): hotkey listener unavailable")
@@ -1471,6 +1514,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         hotkey.onPress = nil
         hotkey.onRelease = nil
+        hotkey.onCancel = nil
+        hotkey.isRecordingActive = nil
         hotkey.resetToggleState()
         hotkey.stop()
         if didTouchAudioEngine {
@@ -1489,6 +1534,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         hotkey.onPress = nil
         hotkey.onRelease = nil
+        hotkey.onCancel = nil
+        hotkey.isRecordingActive = nil
         hotkey.resetToggleState()
         hotkey.stop()
         if didTouchAudioEngine {
@@ -1524,6 +1571,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         isBusy = false
         hotkey.onPress = nil
         hotkey.onRelease = nil
+        hotkey.onCancel = nil
+        hotkey.isRecordingActive = nil
         hotkey.resetToggleState()
         hotkey.stop()
 
@@ -1703,6 +1752,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         // starts playing during dictation is. Restored on release.
         scheduleMute()
         scheduleMaxDurationAutoRelease()
+        rebuildMenu()
     }
 
     private func handleRelease() {
@@ -1723,10 +1773,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if dur < MIN_CLIP_SECONDS {
             log("release: clip too short (\(String(format: "%.2f", dur)) s), discarding")
             setMenuBarState(.idle)
+            rebuildMenu()
             return
         }
         isBusy = true
         setMenuBarState(.busy)
+        rebuildMenu()
         log("release: \(String(format: "%.2f", dur)) s captured, transcribing")
 
         Task { @MainActor in
@@ -1762,7 +1814,25 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             }
             isBusy = false
             setMenuBarState(.idle)
+            rebuildMenu()
         }
+    }
+
+    private func cancelActiveRecording(reason: String) {
+        guard isRecording || audio.isRunning else {
+            hotkey.resetToggleState()
+            return
+        }
+
+        cancelMute()
+        cancelMaxDurationAutoRelease()
+        _ = audio.endRecording()
+        isRecording = false
+        hotkey.resetToggleState()
+        unmuteIfWeMuted()
+        setMenuBarState(.idle)
+        rebuildMenu()
+        log("recording canceled (\(reason))")
     }
 
     // Quit cancels any in-flight recording instead of releasing it:
@@ -1773,6 +1843,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         cancelMaxDurationAutoRelease()
         hotkey.onPress = nil
         hotkey.onRelease = nil
+        hotkey.onCancel = nil
+        hotkey.isRecordingActive = nil
         hotkey.stop()
 
         let hadActiveRecording = isRecording || audio.isRunning
@@ -1861,6 +1933,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         NSApp.terminate(self)
     }
 
+    @objc private func cancelRecordingClicked(_ sender: NSMenuItem) {
+        cancelActiveRecording(reason: "menu")
+    }
+
     // MARK: - Menu
 
     private func rebuildMenu() {
@@ -1881,6 +1957,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         menu.addItem(status)
 
         menu.addItem(.separator())
+
+        if isRecording {
+            let cancel = NSMenuItem(title: "Cancel Recording",
+                                    action: #selector(cancelRecordingClicked(_:)),
+                                    keyEquivalent: "")
+            cancel.target = self
+            menu.addItem(cancel)
+            menu.addItem(.separator())
+        }
 
         if let failure = startupFailure {
             let retry = NSMenuItem(title: failure.retryTitle,
@@ -1967,6 +2052,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func menuStatusTitle() -> String {
+        if isRecording {
+            return "Recording..."
+        }
+        if isBusy {
+            return "Transcribing..."
+        }
         if isReady {
             let hk = hotkey.hotkey.name
             let verb = settings.triggerMode == .hold ? "Hold" : "Press"
@@ -3105,6 +3196,8 @@ private enum ParakeySelfTest {
         try testFKeyAutoRepeatSuppressesWithoutAction()
         try testRightModifierReleaseWithLeftFlagStillSet()
         try testTogglePressFlipsOnceAndReleaseIsNoOp()
+        try testEscapePassesThroughWhenNotRecording()
+        try testEscapeSuppressesCancelRepeatAndKeyUpWhileRecording()
     }
 
     private static func testReadiness() throws {
@@ -3150,17 +3243,17 @@ private enum ParakeySelfTest {
         let f5 = hotkeyChoice(forKeycode: 96)
 
         try expect(
-            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .hold),
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .hold, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
             "F-key keyDown should suppress and press"
         )
         try expect(
-            state.transition(for: event(.keyDown, keycode: 97), hotkey: f5, triggerMode: .hold),
+            state.transition(for: event(.keyDown, keycode: 97), hotkey: f5, triggerMode: .hold, isRecording: false),
             equals: .pass,
             "non-hotkey keyDown should pass through"
         )
         try expect(
-            state.transition(for: event(.keyUp, keycode: f5.keycode), hotkey: f5, triggerMode: .hold),
+            state.transition(for: event(.keyUp, keycode: f5.keycode), hotkey: f5, triggerMode: .hold, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
             "F-key keyUp should suppress and release"
         )
@@ -3171,12 +3264,12 @@ private enum ParakeySelfTest {
         let f5 = hotkeyChoice(forKeycode: 96)
 
         try expect(
-            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .hold),
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .hold, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
             "initial F-key keyDown should press"
         )
         try expect(
-            state.transition(for: event(.keyDown, keycode: f5.keycode, isAutoRepeat: true), hotkey: f5, triggerMode: .hold),
+            state.transition(for: event(.keyDown, keycode: f5.keycode, isAutoRepeat: true), hotkey: f5, triggerMode: .hold, isRecording: false),
             equals: .suppressOnly,
             "F-key autorepeat keyDown should suppress without action"
         )
@@ -3188,12 +3281,12 @@ private enum ParakeySelfTest {
         let alternate = CGEventFlags.maskAlternate.rawValue
 
         try expect(
-            state.transition(for: event(.flagsChanged, keycode: rightOption.keycode, flags: alternate), hotkey: rightOption, triggerMode: .hold),
+            state.transition(for: event(.flagsChanged, keycode: rightOption.keycode, flags: alternate), hotkey: rightOption, triggerMode: .hold, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
             "right modifier flagsChanged should press"
         )
         try expect(
-            state.transition(for: event(.flagsChanged, keycode: rightOption.keycode, flags: alternate), hotkey: rightOption, triggerMode: .hold),
+            state.transition(for: event(.flagsChanged, keycode: rightOption.keycode, flags: alternate), hotkey: rightOption, triggerMode: .hold, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
             "right modifier release should be recognized while left-side flag remains set"
         )
@@ -3204,19 +3297,66 @@ private enum ParakeySelfTest {
         let f5 = hotkeyChoice(forKeycode: 96)
 
         try expect(
-            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle),
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
             "first toggle press should start"
         )
         try expect(
-            state.transition(for: event(.keyUp, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle),
+            state.transition(for: event(.keyUp, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle, isRecording: false),
             equals: .suppressOnly,
             "toggle release should be a no-op"
         )
         try expect(
-            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle),
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
             "second toggle press should stop"
+        )
+    }
+
+    private static func testEscapePassesThroughWhenNotRecording() throws {
+        var state = HotkeyTransitionState()
+        let f5 = hotkeyChoice(forKeycode: 96)
+
+        try expect(
+            state.transition(for: event(.keyDown, keycode: ESCAPE_KEYCODE), hotkey: f5, triggerMode: .hold, isRecording: false),
+            equals: .pass,
+            "Escape keyDown should pass through when not recording"
+        )
+        try expect(
+            state.transition(for: event(.keyDown, keycode: ESCAPE_KEYCODE, isAutoRepeat: true), hotkey: f5, triggerMode: .hold, isRecording: false),
+            equals: .pass,
+            "Escape autorepeat should pass through when not recording"
+        )
+        try expect(
+            state.transition(for: event(.keyUp, keycode: ESCAPE_KEYCODE), hotkey: f5, triggerMode: .hold, isRecording: false),
+            equals: .pass,
+            "Escape keyUp should pass through when not recording"
+        )
+    }
+
+    private static func testEscapeSuppressesCancelRepeatAndKeyUpWhileRecording() throws {
+        var state = HotkeyTransitionState()
+        let f5 = hotkeyChoice(forKeycode: 96)
+
+        try expect(
+            state.transition(for: event(.keyDown, keycode: ESCAPE_KEYCODE), hotkey: f5, triggerMode: .hold, isRecording: true),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.cancel]),
+            "Escape keyDown should suppress and cancel while recording"
+        )
+        try expect(
+            state.transition(for: event(.keyDown, keycode: ESCAPE_KEYCODE, isAutoRepeat: true), hotkey: f5, triggerMode: .hold, isRecording: false),
+            equals: .suppressOnly,
+            "Escape autorepeat from a canceled press should stay suppressed"
+        )
+        try expect(
+            state.transition(for: event(.keyUp, keycode: ESCAPE_KEYCODE), hotkey: f5, triggerMode: .hold, isRecording: false),
+            equals: .suppressOnly,
+            "paired Escape keyUp should stay suppressed after cancel"
+        )
+        try expect(
+            state.transition(for: event(.keyUp, keycode: ESCAPE_KEYCODE), hotkey: f5, triggerMode: .hold, isRecording: false),
+            equals: .pass,
+            "later Escape keyUp should pass through once the canceled press is complete"
         )
     }
 
