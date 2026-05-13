@@ -12,6 +12,21 @@
 	<string>com.local.parakey</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Parakey Corrections</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.local.parakey.corrections</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleName</key>
 	<string>Parakey</string>
 	<key>CFBundlePackageType</key>
@@ -32,5 +47,25 @@
 	<string>MIT licensed. github.com/rcourtman/parakey</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Parakey records audio while you hold the dictation hotkey, then transcribes it locally on your Mac.</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Parakey Corrections</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.local.parakey.corrections</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<string>parakey-corrections</string>
+				<key>public.mime-type</key>
+				<string>application/vnd.parakey.corrections+json</string>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

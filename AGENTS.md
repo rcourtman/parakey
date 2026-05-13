@@ -165,9 +165,11 @@ that's a setup gap, not a bug to work around.
   AppKit, Carbon, CoreGraphics, NSAppleScript, FluidAudio's CoreML
   path). Linux/Windows ports belong in separate forks if anyone
   wants to do them.
-- **AI rewriting / cloud sync / preference windows.** The README's
-  opener positions Parakey as "focused — push-to-talk dictation
-  only, no extras." Don't grow the feature surface.
+- **AI rewriting / Parakey-operated cloud sync / preference windows.**
+  The README's opener positions Parakey as focused push-to-talk
+  dictation. Text-correction portability is intentionally limited to
+  export/import/share and a user-chosen local sync file; do not add
+  accounts, a Parakey backend, or a background sync service.
 - **Drag-and-drop file transcription.** Considered and rejected;
   if added, evaluate it on its own merits, not as an excuse for
   the dock icon to do something.
@@ -238,6 +240,12 @@ documented here:
 
 That is the entire list. If you're about to add a fourth, stop and
 read the "Invariant: no telemetry" section above.
+
+Text-correction sync does not add a Parakey network call: the app
+reads and writes one local `.parakey-corrections` file chosen by the
+user. If that file lives in iCloud Drive, Dropbox, Syncthing, or a
+shared folder, the OS or that provider handles any network transfer
+outside Parakey.
 
 ### Other privacy / security invariants
 

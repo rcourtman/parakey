@@ -30,6 +30,7 @@ import CoreGraphics
 import ApplicationServices
 import FluidAudio
 import IOKit
+import UniformTypeIdentifiers
 
 // MARK: - Constants
 
@@ -46,6 +47,9 @@ let GITHUB_LATEST_RELEASE_URL = URL(string: "https://api.github.com/repos/rcourt
 let GITHUB_RELEASES_PAGE = URL(string: "https://github.com/rcourtman/parakey/releases/latest")!
 
 let SETTINGS_SUITE = "com.local.parakey"
+let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
+let CORRECTIONS_FILE_EXTENSION = "parakey-corrections"
+let CORRECTIONS_FILE_NAME = "Parakey Corrections.\(CORRECTIONS_FILE_EXTENSION)"
 
 /// Visible state of the menu-bar item. The image stays the same
 /// across all of these; only the tint colour changes — system
@@ -97,6 +101,104 @@ let TRIGGER_DISPLAY: [TriggerMode: String] = [
 struct TranscriptCorrection: Codable, Equatable, Sendable {
     let source: String
     let replacement: String
+}
+
+// MARK: - Text correction transfer
+
+struct TranscriptCorrectionsDocument: Codable {
+    let schemaVersion: Int
+    let exportedAt: Date
+    let appVersion: String
+    let corrections: [TranscriptCorrection]
+}
+
+enum TranscriptCorrectionsDocumentError: LocalizedError {
+    case unsupportedSchema(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedSchema(let version):
+            return "This corrections file uses schema version \(version), which this version of Parakey cannot read."
+        }
+    }
+}
+
+enum TranscriptCorrectionsTransfer {
+    static let schemaVersion = 1
+    static var contentType: UTType {
+        UTType(filenameExtension: CORRECTIONS_FILE_EXTENSION)
+            ?? UTType(exportedAs: CORRECTIONS_FILE_UTI, conformingTo: .json)
+    }
+
+    static func encode(_ corrections: [TranscriptCorrection]) throws -> Data {
+        let document = TranscriptCorrectionsDocument(
+            schemaVersion: schemaVersion,
+            exportedAt: Date(),
+            appVersion: currentBundleVersion(),
+            corrections: normalizedTranscriptCorrections(corrections)
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(document)
+    }
+
+    static func decode(_ data: Data) throws -> [TranscriptCorrection] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        if let document = try? decoder.decode(TranscriptCorrectionsDocument.self, from: data) {
+            guard document.schemaVersion == schemaVersion else {
+                throw TranscriptCorrectionsDocumentError.unsupportedSchema(document.schemaVersion)
+            }
+            return normalizedTranscriptCorrections(document.corrections)
+        }
+
+        // Early internal builds stored the bare array. Keeping the
+        // fallback costs almost nothing and makes hand-authored files
+        // forgiving while the public file format settles.
+        return normalizedTranscriptCorrections(try decoder.decode([TranscriptCorrection].self, from: data))
+    }
+
+    static func write(_ corrections: [TranscriptCorrection], to url: URL) throws {
+        let data = try encode(corrections)
+        let parent = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
+    static func read(from url: URL) throws -> [TranscriptCorrection] {
+        try decode(try Data(contentsOf: url))
+    }
+}
+
+func normalizedTranscriptCorrectionSource(_ source: String) -> String {
+    source
+        .split(whereSeparator: { $0.isWhitespace })
+        .joined(separator: " ")
+        .lowercased()
+}
+
+func normalizedTranscriptCorrections(_ corrections: [TranscriptCorrection]) -> [TranscriptCorrection] {
+    var result: [TranscriptCorrection] = []
+    var indexBySource: [String: Int] = [:]
+
+    for correction in corrections {
+        let source = correction.source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replacement = correction.replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = normalizedTranscriptCorrectionSource(source)
+        guard !source.isEmpty, !replacement.isEmpty, !key.isEmpty else { continue }
+
+        let cleaned = TranscriptCorrection(source: source, replacement: replacement)
+        if let existing = indexBySource[key] {
+            result[existing] = cleaned
+        } else {
+            indexBySource[key] = result.count
+            result.append(cleaned)
+        }
+    }
+
+    return result
 }
 
 // MARK: - Logger
@@ -166,6 +268,7 @@ final class Settings: @unchecked Sendable {
     private static let keyLastSeenVersion = "last_seen_version"
     private static let keySkippedVersions = "skipped_versions"
     private static let keyTranscriptCorrections = "transcript_corrections"
+    private static let keyTranscriptCorrectionsSyncFile = "transcript_corrections_sync_file"
 
     private let defaults: UserDefaults
 
@@ -237,22 +340,35 @@ final class Settings: @unchecked Sendable {
         get {
             guard let data = defaults.data(forKey: Self.keyTranscriptCorrections) else { return [] }
             do {
-                return try JSONDecoder().decode([TranscriptCorrection].self, from: data)
+                return normalizedTranscriptCorrections(try JSONDecoder().decode([TranscriptCorrection].self, from: data))
             } catch {
                 log("settings: transcript correction decode failed: \(error)")
                 return []
             }
         }
         set {
-            guard !newValue.isEmpty else {
+            let corrections = normalizedTranscriptCorrections(newValue)
+            guard !corrections.isEmpty else {
                 defaults.removeObject(forKey: Self.keyTranscriptCorrections)
                 return
             }
             do {
-                let data = try JSONEncoder().encode(newValue)
+                let data = try JSONEncoder().encode(corrections)
                 defaults.set(data, forKey: Self.keyTranscriptCorrections)
             } catch {
                 log("settings: transcript correction encode failed: \(error)")
+            }
+        }
+    }
+
+    var transcriptCorrectionsSyncFile: String {
+        get { defaults.string(forKey: Self.keyTranscriptCorrectionsSyncFile) ?? "" }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                defaults.removeObject(forKey: Self.keyTranscriptCorrectionsSyncFile)
+            } else {
+                defaults.set(trimmed, forKey: Self.keyTranscriptCorrectionsSyncFile)
             }
         }
     }
@@ -855,6 +971,29 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     /// or user has skipped it.
     private var pendingUpdate: GitHubRelease?
 
+    private struct CorrectionImportSummary {
+        let total: Int
+        let newCount: Int
+        let updatedCount: Int
+        let unchangedCount: Int
+    }
+
+    private enum CorrectionImportChoice {
+        case merge
+        case replace
+    }
+
+    private struct CorrectionSyncFileFingerprint: Equatable {
+        let modifiedAt: Date?
+        let size: Int?
+    }
+
+    private var correctionSyncTimer: Timer?
+    private var correctionSyncFileFingerprint: CorrectionSyncFileFingerprint?
+    private var isApplyingCorrectionSyncFile = false
+    private var correctionSharePicker: NSSharingServicePicker?
+    private var pendingSharedCorrectionsURL: URL?
+
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -863,6 +1002,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         configureStatusItemImage()
         setMenuBarState(.loading)
+        startCorrectionSyncIfConfigured()
         rebuildMenu()
 
         // Configure hotkey listener up front so it picks up the user's
@@ -901,6 +1041,22 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 setMenuBarState(.error)
             }
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        correctionSyncTimer?.invalidate()
+        correctionSyncTimer = nil
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        var didImport = false
+        for filename in filenames {
+            let url = URL(fileURLWithPath: filename)
+            if importCorrectionsFromUserSelectedFile(url) {
+                didImport = true
+            }
+        }
+        sender.reply(toOpenOrPrint: didImport ? .success : .failure)
     }
 
     // MARK: - Menu bar appearance
@@ -1330,22 +1486,74 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         let sub = NSMenu()
         sub.autoenablesItems = false
 
+        let corrections = settings.transcriptCorrections
+
         let add = NSMenuItem(title: "Add Correction…",
                              action: #selector(addCorrectionClicked(_:)),
                              keyEquivalent: "")
         add.target = self
         sub.addItem(add)
 
-        let corrections = settings.transcriptCorrections
-        guard !corrections.isEmpty else {
+        sub.addItem(.separator())
+
+        let importItem = NSMenuItem(title: "Import Corrections…",
+                                    action: #selector(importCorrectionsClicked(_:)),
+                                    keyEquivalent: "")
+        importItem.target = self
+        sub.addItem(importItem)
+
+        let exportItem = NSMenuItem(title: "Export Corrections…",
+                                    action: #selector(exportCorrectionsClicked(_:)),
+                                    keyEquivalent: "")
+        exportItem.target = self
+        exportItem.isEnabled = !corrections.isEmpty
+        sub.addItem(exportItem)
+
+        let shareItem = NSMenuItem(title: "Share Corrections…",
+                                   action: #selector(shareCorrectionsClicked(_:)),
+                                   keyEquivalent: "")
+        shareItem.target = self
+        shareItem.isEnabled = !corrections.isEmpty
+        sub.addItem(shareItem)
+
+        sub.addItem(.separator())
+
+        if let syncURL = correctionSyncFileURL() {
+            let syncLabel = NSMenuItem(title: "Syncing: \(syncURL.lastPathComponent)",
+                                       action: nil,
+                                       keyEquivalent: "")
+            syncLabel.isEnabled = false
+            syncLabel.toolTip = syncURL.path
+            sub.addItem(syncLabel)
+
+            let syncNow = NSMenuItem(title: "Sync Now",
+                                     action: #selector(syncCorrectionsNowClicked(_:)),
+                                     keyEquivalent: "")
+            syncNow.target = self
+            sub.addItem(syncNow)
+
+            let stopSync = NSMenuItem(title: "Stop Syncing…",
+                                      action: #selector(stopSyncingCorrectionsClicked(_:)),
+                                      keyEquivalent: "")
+            stopSync.target = self
+            sub.addItem(stopSync)
+        } else {
+            let startSync = NSMenuItem(title: "Set Up Sync…",
+                                       action: #selector(setUpCorrectionsSyncClicked(_:)),
+                                       keyEquivalent: "")
+            startSync.target = self
+            sub.addItem(startSync)
+        }
+
+        sub.addItem(.separator())
+
+        if corrections.isEmpty {
             let empty = NSMenuItem(title: "No corrections", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             sub.addItem(empty)
             parent.submenu = sub
             return parent
         }
-
-        sub.addItem(.separator())
 
         for (index, correction) in corrections.enumerated() {
             let item = NSMenuItem(title: correctionMenuTitle(correction),
@@ -1411,8 +1619,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         var corrections = settings.transcriptCorrections
         guard corrections.indices.contains(index) else { return }
         corrections.remove(at: index)
-        settings.transcriptCorrections = corrections
-        rebuildMenu()
+        updateTranscriptCorrections(corrections)
     }
 
     @objc private func removeAllCorrectionsClicked(_ sender: NSMenuItem) {
@@ -1424,8 +1631,386 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Remove All")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        settings.transcriptCorrections = []
+        updateTranscriptCorrections([])
+    }
+
+    @objc private func importCorrectionsClicked(_ sender: NSMenuItem) {
+        showAppForModal()
+        let panel = NSOpenPanel()
+        panel.title = "Import Text Corrections"
+        panel.message = "Choose a Parakey corrections file to import."
+        panel.prompt = "Import"
+        panel.allowedContentTypes = [TranscriptCorrectionsTransfer.contentType]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        _ = importCorrectionsFromUserSelectedFile(url)
+    }
+
+    @objc private func exportCorrectionsClicked(_ sender: NSMenuItem) {
+        showAppForModal()
+        let panel = NSSavePanel()
+        panel.title = "Export Text Corrections"
+        panel.message = "Save a file you can AirDrop, store in iCloud Drive, or import on another Mac."
+        panel.prompt = "Export"
+        panel.nameFieldStringValue = CORRECTIONS_FILE_NAME
+        panel.allowedContentTypes = [TranscriptCorrectionsTransfer.contentType]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try TranscriptCorrectionsTransfer.write(settings.transcriptCorrections, to: url)
+            log("correction export wrote \(settings.transcriptCorrections.count) corrections")
+        } catch {
+            showCorrectionTransferError(title: "Export Failed", error: error)
+        }
+    }
+
+    @objc private func shareCorrectionsClicked(_ sender: NSMenuItem) {
+        showAppForModal()
+        do {
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Parakey-\(UUID().uuidString)", isDirectory: true)
+            let url = folder.appendingPathComponent(CORRECTIONS_FILE_NAME)
+            try TranscriptCorrectionsTransfer.write(settings.transcriptCorrections, to: url)
+            pendingSharedCorrectionsURL = url
+
+            let picker = NSSharingServicePicker(items: [url])
+            correctionSharePicker = picker
+            if let button = statusItem.button {
+                picker.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            }
+            log("correction share prepared \(settings.transcriptCorrections.count) corrections")
+        } catch {
+            showCorrectionTransferError(title: "Share Failed", error: error)
+        }
+    }
+
+    @objc private func setUpCorrectionsSyncClicked(_ sender: NSMenuItem) {
+        showAppForModal()
+        let alert = NSAlert()
+        alert.messageText = "Set Up Text Correction Sync"
+        alert.informativeText = """
+            Parakey can keep corrections in one local file. Put that file in iCloud Drive, Dropbox, Syncthing, or another synced folder to keep multiple Macs aligned without a Parakey account.
+
+            Parakey only reads and writes the file you choose.
+            """
+        alert.addButton(withTitle: "Create Sync File")
+        alert.addButton(withTitle: "Use Existing File")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            createCorrectionsSyncFile()
+        case .alertSecondButtonReturn:
+            useExistingCorrectionsSyncFile()
+        default:
+            return
+        }
+    }
+
+    @objc private func syncCorrectionsNowClicked(_ sender: NSMenuItem) {
+        guard correctionSyncFileURL() != nil else { return }
+        _ = refreshCorrectionSyncFromDisk(force: true, presentErrors: true)
+    }
+
+    @objc private func stopSyncingCorrectionsClicked(_ sender: NSMenuItem) {
+        showAppForModal()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Stop Syncing Text Corrections?"
+        alert.informativeText = "Parakey will keep the corrections already on this Mac. The sync file will not be deleted."
+        alert.addButton(withTitle: "Stop Syncing")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        settings.transcriptCorrectionsSyncFile = ""
+        correctionSyncTimer?.invalidate()
+        correctionSyncTimer = nil
+        correctionSyncFileFingerprint = nil
         rebuildMenu()
+    }
+
+    private func showAppForModal() {
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @discardableResult
+    private func importCorrectionsFromUserSelectedFile(_ url: URL) -> Bool {
+        showAppForModal()
+        do {
+            let imported = try TranscriptCorrectionsTransfer.read(from: url)
+            guard let choice = chooseCorrectionImportMode(imported: imported,
+                                                          sourceName: url.lastPathComponent,
+                                                          allowsEmptyReplace: false) else {
+                return false
+            }
+            let next = corrections(afterApplying: imported, mode: choice)
+            updateTranscriptCorrections(next)
+            log("correction import read \(imported.count) corrections")
+            return true
+        } catch {
+            showCorrectionTransferError(title: "Import Failed", error: error)
+            return false
+        }
+    }
+
+    private func createCorrectionsSyncFile() {
+        let panel = NSSavePanel()
+        panel.title = "Create Text Correction Sync File"
+        panel.message = "Choose where Parakey should keep the sync file. A folder synced by iCloud Drive or another provider works best."
+        panel.prompt = "Create"
+        panel.nameFieldStringValue = CORRECTIONS_FILE_NAME
+        panel.allowedContentTypes = [TranscriptCorrectionsTransfer.contentType]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try TranscriptCorrectionsTransfer.write(settings.transcriptCorrections, to: url)
+            settings.transcriptCorrectionsSyncFile = url.path
+            startCorrectionSyncIfConfigured()
+            log("correction sync created file with \(settings.transcriptCorrections.count) corrections")
+        } catch {
+            showCorrectionTransferError(title: "Sync Setup Failed", error: error)
+        }
+    }
+
+    private func useExistingCorrectionsSyncFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Text Correction Sync File"
+        panel.message = "Choose an existing Parakey corrections file."
+        panel.prompt = "Use File"
+        panel.allowedContentTypes = [TranscriptCorrectionsTransfer.contentType]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let imported = try TranscriptCorrectionsTransfer.read(from: url)
+            guard let choice = chooseCorrectionImportMode(imported: imported,
+                                                          sourceName: url.lastPathComponent,
+                                                          allowsEmptyReplace: true) else {
+                return
+            }
+            let next = corrections(afterApplying: imported, mode: choice)
+            settings.transcriptCorrectionsSyncFile = url.path
+            updateTranscriptCorrections(next, writeToSync: false)
+            if choice == .merge {
+                guard writeCorrectionsToSyncFile(presentErrors: true) else {
+                    settings.transcriptCorrectionsSyncFile = ""
+                    rebuildMenu()
+                    return
+                }
+            } else {
+                correctionSyncFileFingerprint = correctionSyncFingerprint(for: url)
+            }
+            startCorrectionSyncIfConfigured()
+            log("correction sync linked file with \(imported.count) corrections")
+        } catch {
+            showCorrectionTransferError(title: "Sync Setup Failed", error: error)
+        }
+    }
+
+    private func chooseCorrectionImportMode(imported: [TranscriptCorrection],
+                                            sourceName: String,
+                                            allowsEmptyReplace: Bool) -> CorrectionImportChoice? {
+        let imported = normalizedTranscriptCorrections(imported)
+        if imported.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "No Text Corrections Found"
+            alert.informativeText = allowsEmptyReplace
+                ? "\(sourceName) does not contain any corrections. You can still use it as an empty sync file."
+                : "\(sourceName) does not contain any corrections to import."
+            alert.addButton(withTitle: allowsEmptyReplace ? "Use Empty File" : "OK")
+            if allowsEmptyReplace { alert.addButton(withTitle: "Cancel") }
+            let response = alert.runModal()
+            return allowsEmptyReplace && response == .alertFirstButtonReturn ? .replace : nil
+        }
+
+        let summary = correctionImportSummary(for: imported)
+        let alert = NSAlert()
+        alert.messageText = "Import Text Corrections?"
+        alert.informativeText = """
+            \(sourceName) contains \(summary.total) corrections.
+
+            \(summary.newCount) new, \(summary.updatedCount) will update existing corrections, \(summary.unchangedCount) already match.
+
+            Merge keeps local corrections that are not in the file. Replace All makes this Mac match the file exactly.
+            """
+        alert.addButton(withTitle: "Merge")
+        alert.addButton(withTitle: "Replace All")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .merge
+        case .alertSecondButtonReturn:
+            return .replace
+        default:
+            return nil
+        }
+    }
+
+    private func correctionImportSummary(for imported: [TranscriptCorrection]) -> CorrectionImportSummary {
+        let existingBySource = Dictionary(uniqueKeysWithValues: settings.transcriptCorrections.map {
+            (normalizedTranscriptCorrectionSource($0.source), $0)
+        })
+
+        var newCount = 0
+        var updatedCount = 0
+        var unchangedCount = 0
+
+        for correction in imported {
+            let key = normalizedTranscriptCorrectionSource(correction.source)
+            guard let existing = existingBySource[key] else {
+                newCount += 1
+                continue
+            }
+            if existing == correction {
+                unchangedCount += 1
+            } else {
+                updatedCount += 1
+            }
+        }
+
+        return CorrectionImportSummary(
+            total: imported.count,
+            newCount: newCount,
+            updatedCount: updatedCount,
+            unchangedCount: unchangedCount
+        )
+    }
+
+    private func corrections(afterApplying imported: [TranscriptCorrection],
+                             mode: CorrectionImportChoice) -> [TranscriptCorrection] {
+        let imported = normalizedTranscriptCorrections(imported)
+        switch mode {
+        case .replace:
+            return imported
+        case .merge:
+            var merged = settings.transcriptCorrections
+            var indexBySource = Dictionary(uniqueKeysWithValues: merged.enumerated().map {
+                (normalizedTranscriptCorrectionSource($0.element.source), $0.offset)
+            })
+
+            for correction in imported {
+                let key = normalizedTranscriptCorrectionSource(correction.source)
+                if let index = indexBySource[key] {
+                    merged[index] = correction
+                } else {
+                    indexBySource[key] = merged.count
+                    merged.append(correction)
+                }
+            }
+            return merged
+        }
+    }
+
+    private func updateTranscriptCorrections(_ corrections: [TranscriptCorrection],
+                                             writeToSync: Bool = true) {
+        settings.transcriptCorrections = normalizedTranscriptCorrections(corrections)
+        if writeToSync, !isApplyingCorrectionSyncFile {
+            writeCorrectionsToSyncFile(presentErrors: false)
+        }
+        rebuildMenu()
+    }
+
+    private func correctionSyncFileURL() -> URL? {
+        let path = settings.transcriptCorrectionsSyncFile
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    private func startCorrectionSyncIfConfigured() {
+        correctionSyncTimer?.invalidate()
+        correctionSyncTimer = nil
+        guard correctionSyncFileURL() != nil else {
+            correctionSyncFileFingerprint = nil
+            return
+        }
+
+        _ = refreshCorrectionSyncFromDisk(force: true, presentErrors: false)
+        correctionSyncTimer = Timer.scheduledTimer(timeInterval: 4,
+                                                   target: self,
+                                                   selector: #selector(correctionSyncTimerFired(_:)),
+                                                   userInfo: nil,
+                                                   repeats: true)
+        correctionSyncTimer?.tolerance = 1
+    }
+
+    @objc private func correctionSyncTimerFired(_ timer: Timer) {
+        _ = refreshCorrectionSyncFromDisk(force: false, presentErrors: false)
+    }
+
+    @discardableResult
+    private func refreshCorrectionSyncFromDisk(force: Bool, presentErrors: Bool) -> Bool {
+        guard let url = correctionSyncFileURL() else { return false }
+        guard let fingerprint = correctionSyncFingerprint(for: url) else {
+            if presentErrors {
+                showCorrectionTransferError(title: "Sync Failed",
+                                            message: "Parakey could not find the selected sync file.")
+            }
+            return false
+        }
+
+        guard force || fingerprint != correctionSyncFileFingerprint else { return false }
+
+        do {
+            let corrections = try TranscriptCorrectionsTransfer.read(from: url)
+            isApplyingCorrectionSyncFile = true
+            updateTranscriptCorrections(corrections, writeToSync: false)
+            isApplyingCorrectionSyncFile = false
+            correctionSyncFileFingerprint = fingerprint
+            log("correction sync read \(corrections.count) corrections")
+            return true
+        } catch {
+            isApplyingCorrectionSyncFile = false
+            log("correction sync read failed: \(error)")
+            if presentErrors {
+                showCorrectionTransferError(title: "Sync Failed", error: error)
+            }
+            return false
+        }
+    }
+
+    @discardableResult
+    private func writeCorrectionsToSyncFile(presentErrors: Bool) -> Bool {
+        guard let url = correctionSyncFileURL() else { return true }
+        do {
+            try TranscriptCorrectionsTransfer.write(settings.transcriptCorrections, to: url)
+            correctionSyncFileFingerprint = correctionSyncFingerprint(for: url)
+            log("correction sync wrote \(settings.transcriptCorrections.count) corrections")
+            return true
+        } catch {
+            log("correction sync write failed: \(error)")
+            if presentErrors {
+                showCorrectionTransferError(title: "Sync Failed", error: error)
+            }
+            return false
+        }
+    }
+
+    private func correctionSyncFingerprint(for url: URL) -> CorrectionSyncFileFingerprint? {
+        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]) else {
+            return nil
+        }
+        return CorrectionSyncFileFingerprint(modifiedAt: values.contentModificationDate,
+                                             size: values.fileSize)
+    }
+
+    private func showCorrectionTransferError(title: String, error: Error) {
+        showCorrectionTransferError(title: title, message: error.localizedDescription)
+    }
+
+    private func showCorrectionTransferError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func showCorrectionEditor(existing: TranscriptCorrection?) -> TranscriptCorrection? {
@@ -1488,31 +2073,23 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private func saveCorrection(_ correction: TranscriptCorrection, replacing index: Int? = nil) {
         var corrections = settings.transcriptCorrections
-        let key = normalizedCorrectionSource(correction.source)
+        let key = normalizedTranscriptCorrectionSource(correction.source)
 
         if let index, corrections.indices.contains(index) {
             corrections[index] = correction
             var keepIndex = index
             for i in corrections.indices.reversed() {
-                guard i != keepIndex, normalizedCorrectionSource(corrections[i].source) == key else { continue }
+                guard i != keepIndex, normalizedTranscriptCorrectionSource(corrections[i].source) == key else { continue }
                 corrections.remove(at: i)
                 if i < keepIndex { keepIndex -= 1 }
             }
-        } else if let duplicate = corrections.firstIndex(where: { normalizedCorrectionSource($0.source) == key }) {
+        } else if let duplicate = corrections.firstIndex(where: { normalizedTranscriptCorrectionSource($0.source) == key }) {
             corrections[duplicate] = correction
         } else {
             corrections.append(correction)
         }
 
-        settings.transcriptCorrections = corrections
-        rebuildMenu()
-    }
-
-    private func normalizedCorrectionSource(_ source: String) -> String {
-        source
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
-            .lowercased()
+        updateTranscriptCorrections(corrections)
     }
 
     @objc private func selectHotkey(_ sender: NSMenuItem) {

@@ -56,10 +56,13 @@ ANE delivers both lower latency *and* lower power draw on battery.
 - **Private** — audio is captured in memory, transcribed locally,
   and discarded. Nothing leaves your Mac during dictation. No
   telemetry, no accounts, transcripts are never written to disk.
-  Saved text corrections stay local too. (Two narrow exceptions:
-  the first launch downloads the speech model, and Parakey checks
-  GitHub every six hours for a newer release. Both are anonymous;
-  the second is toggleable in Settings.)
+  Saved text corrections stay local unless you choose to keep them
+  in a sync file. Parakey only reads and writes the file you choose;
+  iCloud Drive, Dropbox, Syncthing, or another folder provider can
+  move it between Macs. (Two narrow network exceptions: the first
+  launch downloads the speech model, and Parakey checks GitHub every
+  six hours for a newer release. Both are anonymous; the second is
+  toggleable in Settings.)
 
 - **Free** — MIT-licensed open source. No trials, no premium tier,
   no upsell.
@@ -69,8 +72,8 @@ ANE delivers both lower latency *and* lower power draw on battery.
   submenu.
 
 - **Focused** — push-to-talk dictation with a small local corrections
-  dictionary for recurring mishearings. No AI rewriting, no cloud
-  sync, no extras.
+  dictionary for recurring mishearings. No AI rewriting, no Parakey
+  account, no Parakey cloud backend.
 
 ## Built on Apple's neural-ML stack
 
@@ -269,6 +272,14 @@ and the text it should paste under **Paste** — for example,
 `clawed` → `Claude`. Corrections apply to whole words or phrases
 after transcription and before paste/history.
 
+Corrections can be exported, imported, shared with the macOS share
+sheet, or synced through a user-chosen `.parakey-corrections` file.
+For sync, put that file in iCloud Drive, Dropbox, Syncthing, or any
+other folder that already syncs between your Macs. Parakey has no
+account system and does not run a sync service; it just keeps the
+chosen file up to date. The file is readable JSON, which keeps it
+portable and easy to inspect.
+
 Menu structure:
 
 - **Status row** — what Parakey is doing right now (idle / recording /
@@ -288,8 +299,9 @@ Menu structure:
   - **Microphone** — System default (default) or any specific input
     device. Switching takes effect immediately. If the saved device
     is later unplugged, Parakey falls back to system default.
-  - **Text Corrections** — add, edit, or remove local replacements
-    for words and phrases the speech model consistently mishears
+  - **Text Corrections** — add, edit, remove, import, export, share,
+    or sync replacements for words and phrases the speech model
+    consistently mishears
   - **Mute system audio while recording** — on by default; turn off
     if you'd rather music keep playing while you dictate
   - **Show Parakey in Dock** — off by default (menu-bar only)
