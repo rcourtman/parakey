@@ -2076,6 +2076,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func addCorrectionFromHistoryClicked(_ sender: NSMenuItem) {
+        guard let transcript = sender.representedObject as? String else { return }
+        log("correction editor opened from history (\(transcript.count) chars)")
+        guard let correction = showCorrectionEditor(existing: nil, prefillSource: transcript) else { return }
+        saveCorrection(correction)
+    }
+
     @objc private func quitClicked(_ sender: NSMenuItem) {
         NSApp.terminate(self)
     }
@@ -2153,12 +2160,31 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             inline.toolTip = newest
             menu.addItem(inline)
 
+            let addCorrection = NSMenuItem(title: "Add Correction From Latest…",
+                                           action: #selector(addCorrectionFromHistoryClicked(_:)),
+                                           keyEquivalent: "")
+            addCorrection.target = self
+            addCorrection.representedObject = newest
+            addCorrection.toolTip = newest
+            menu.addItem(addCorrection)
+
             if history.count > 1 {
                 let parent = NSMenuItem(title: "Recent", action: nil, keyEquivalent: "")
                 let sub = NSMenu()
+                sub.autoenablesItems = false
                 for entry in history.dropFirst() {
                     let item = NSMenuItem(title: previewLine(for: entry),
                                           action: #selector(historyClicked(_:)),
+                                          keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = entry
+                    item.toolTip = entry
+                    sub.addItem(item)
+                }
+                sub.addItem(.separator())
+                for entry in history.dropFirst() {
+                    let item = NSMenuItem(title: "Add Correction From \"\(previewLine(for: entry))\"…",
+                                          action: #selector(addCorrectionFromHistoryClicked(_:)),
                                           keyEquivalent: "")
                     item.target = self
                     item.representedObject = entry
@@ -3043,7 +3069,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    private func showCorrectionEditor(existing: TranscriptCorrection?) -> TranscriptCorrection? {
+    private func showCorrectionEditor(existing: TranscriptCorrection?,
+                                      prefillSource: String = "") -> TranscriptCorrection? {
         let alert = NSAlert()
         alert.messageText = existing == nil ? "Add Text Correction" : "Edit Text Correction"
         alert.informativeText = "Add the incorrect text Parakey typed, then the text it should paste instead."
@@ -3062,7 +3089,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         sourceLabel.frame = NSRect(x: 0, y: 34, width: labelWidth, height: rowHeight)
 
         let sourceField = NSTextField(frame: NSRect(x: labelWidth + 10, y: 34, width: fieldWidth, height: rowHeight))
-        sourceField.stringValue = existing?.source ?? ""
+        sourceField.stringValue = existing?.source ?? prefillSource.trimmingCharacters(in: .whitespacesAndNewlines)
         sourceField.placeholderString = "clawed"
 
         let replacementLabel = NSTextField(labelWithString: "Paste")

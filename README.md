@@ -311,9 +311,10 @@ Menu structure:
   rows disappear once all three are granted.
 - **Recent transcripts** — the most recent one inline (click to copy
   it back to the clipboard); a **Recent** submenu appears once
-  you've dictated more than once and holds the previous four. The
-  whole transcript history is in-memory only, can be cleared from
-  the menu, and clears when you quit Parakey.
+  you've dictated more than once and holds the previous four. Recent
+  entries can also seed a new text correction when you notice a
+  misrecognition. The whole transcript history is in-memory only, can
+  be cleared from the menu, and clears when you quit Parakey.
 - **Settings** ▶
   - **Hotkey** — Right Option (default), Right Control, Right
     Command, F5, F6, F13, F18, F19
