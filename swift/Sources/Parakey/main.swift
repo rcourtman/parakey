@@ -1304,12 +1304,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     // MARK: - Lifecycle
 
-    private func completeReadinessIfPossible(requireAllPermissions: Bool, reason: String) {
+    private func completeReadinessIfPossible(reason: String) {
         if isReady {
-            if missingPermissions().isEmpty {
-                permClickCount.removeAll()
-                stopPermissionReadinessMonitor()
+            let missing = missingPermissions()
+            guard missing.isEmpty else {
+                enterPermissionBlockedState(missing: missing, reason: reason)
+                return
             }
+            permClickCount.removeAll()
+            stopPermissionReadinessMonitor()
             rebuildMenu()
             return
         }
@@ -1319,14 +1322,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             return
         }
 
-        if requireAllPermissions {
-            let missing = missingPermissions()
-            guard missing.isEmpty else {
-                logPermissionReadinessWait(missing)
-                startPermissionReadinessMonitor(reason: reason)
-                rebuildMenu()
-                return
-            }
+        let missing = missingPermissions()
+        guard missing.isEmpty else {
+            enterPermissionBlockedState(missing: missing, reason: reason)
+            return
         }
 
         hotkey.onPress = { [weak self] in self?.handlePress() }
@@ -1335,6 +1334,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             isReady = false
             isRecording = false
             isBusy = false
+            hotkey.onPress = nil
+            hotkey.onRelease = nil
+            hotkey.resetToggleState()
             hotkey.stop()
             log("readiness failed (\(reason)): hotkey listener unavailable")
             setMenuBarState(.error)
@@ -1422,7 +1424,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 isCoreRuntimeReady = true
                 startupFailure = nil
                 startupStatusTitle = "Finishing setup…"
-                completeReadinessIfPossible(requireAllPermissions: false, reason: reason)
+                completeReadinessIfPossible(reason: reason)
             } catch {
                 guard !Task.isCancelled, !isTerminating else { return }
                 recordStartupFailure(stage: stage, error: error, reason: reason)
@@ -1482,6 +1484,34 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    private func enterPermissionBlockedState(missing: [Permission]? = nil, reason: String) {
+        let missing = missing ?? missingPermissions()
+        guard !missing.isEmpty else {
+            completeReadinessIfPossible(reason: reason)
+            return
+        }
+
+        cancelMute()
+        cancelMaxDurationAutoRelease()
+        if isRecording || audio.isRunning {
+            _ = audio.endRecording()
+        }
+        unmuteIfWeMuted()
+
+        isReady = false
+        isRecording = false
+        isBusy = false
+        hotkey.onPress = nil
+        hotkey.onRelease = nil
+        hotkey.resetToggleState()
+        hotkey.stop()
+
+        logPermissionReadinessWait(missing)
+        startPermissionReadinessMonitor(reason: reason)
+        setMenuBarState(.loading)
+        rebuildMenu()
+    }
+
     private func missingPermissions() -> [Permission] {
         Permission.allCases.filter { !Permissions.isGranted($0) }
     }
@@ -1537,13 +1567,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 rebuildMenu()
                 return
             }
-            if logPermissionReadinessWait(missing) {
-                rebuildMenu()
-            }
+            enterPermissionBlockedState(missing: missing, reason: "permission monitor")
             return
         }
 
-        completeReadinessIfPossible(requireAllPermissions: true, reason: "permission monitor")
+        completeReadinessIfPossible(reason: "permission monitor")
     }
 
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
@@ -1638,6 +1666,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private func handlePress() {
         guard isReady, !isRecording, !isBusy, !isTerminating else { return }
+        let missing = missingPermissions()
+        guard missing.isEmpty else {
+            enterPermissionBlockedState(missing: missing, reason: "hotkey press")
+            return
+        }
         isRecording = true
         audio.beginRecording()
         setMenuBarState(.recording)
@@ -1653,6 +1686,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private func handleRelease() {
         guard isRecording, !isTerminating else { return }
+        let missing = missingPermissions()
+        guard missing.isEmpty else {
+            enterPermissionBlockedState(missing: missing, reason: "hotkey release")
+            return
+        }
+
         isRecording = false
         cancelMute()
         cancelMaxDurationAutoRelease()
@@ -1675,6 +1714,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 let text = try await asr.transcribe(samples: samples)
                 let dt = Date().timeIntervalSince(t0)
                 if !isTerminating {
+                    let missing = missingPermissions()
+                    guard missing.isEmpty else {
+                        enterPermissionBlockedState(missing: missing, reason: "transcription complete")
+                        return
+                    }
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     let corrected = TranscriptCorrector.apply(to: trimmed, corrections: settings.transcriptCorrections)
                     if corrected.appliedCount > 0 {
@@ -1682,6 +1726,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                     }
                     log("\(String(format: "%.2f", dur)) s audio → \(String(format: "%.2f", dt)) s → \(corrected.text.count) chars")
                     if !corrected.text.isEmpty {
+                        let missing = missingPermissions()
+                        guard missing.isEmpty else {
+                            enterPermissionBlockedState(missing: missing, reason: "paste")
+                            return
+                        }
                         Paster.paste(corrected.text + " ")
                         Sounds.playDone()
                         addToHistory(corrected.text)
@@ -1948,7 +1997,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if Permissions.isGranted(p) {
             permClickCount[p] = nil
             log("perm click ignored: \(p.rawValue) already granted")
-            completeReadinessIfPossible(requireAllPermissions: true, reason: "permission already granted")
+            completeReadinessIfPossible(reason: "permission already granted")
             return
         }
 
@@ -2121,7 +2170,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 didTouchAudioEngine = true
                 try audio.startEngine(inputDevicePreference: settings.inputDevice)
                 isCoreRuntimeReady = true
-                completeReadinessIfPossible(requireAllPermissions: true, reason: "input device change")
+                completeReadinessIfPossible(reason: "input device change")
             } catch {
                 isCoreRuntimeReady = false
                 isReady = false
