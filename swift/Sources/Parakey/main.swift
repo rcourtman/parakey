@@ -1354,16 +1354,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         stopPermissionReadinessMonitor()
         setMenuBarState(.idle)
 
-        // Belt-and-braces: clear any TCC entries stuck 'denied' from
-        // an upgrade. Granted permissions stay intact. See the TCC
-        // recovery section comment for why this is needed.
-        recoverStaleTCCAfterUpgrade()
-
         rebuildMenu()
         startUpdateCheckLoop()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        recoverStaleTCCAfterUpgrade()
+
         NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
