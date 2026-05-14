@@ -1839,6 +1839,10 @@ private final class RecordingHUDView: NSView {
         didSet { needsDisplay = true }
     }
 
+    var showsCancelHint: Bool = false {
+        didSet { needsDisplay = true }
+    }
+
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -1859,20 +1863,41 @@ private final class RecordingHUDView: NSView {
         NSColor.systemRed.withAlphaComponent(0.92).setFill()
         NSBezierPath(ovalIn: recordDotRect).fill()
 
+        var waveformMaxX = bounds.maxX - 15
+        if showsCancelHint && bounds.width > 150 {
+            let hint = "Esc cancel" as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor.white.withAlphaComponent(0.48),
+            ]
+            let size = hint.size(withAttributes: attributes)
+            let rect = NSRect(x: bounds.maxX - size.width - 17,
+                              y: bounds.midY - (size.height / 2),
+                              width: size.width,
+                              height: size.height)
+            hint.draw(in: rect, withAttributes: attributes)
+            waveformMaxX = rect.minX - 14
+        }
+
         guard clamped > 0.001 else { return }
 
-        let barCount = 29
         let barWidth: CGFloat = 3
         let barGap: CGFloat = 3
         let minHeight: CGFloat = 3
         let maxHeight: CGFloat = 28
         let startX: CGFloat = 46
+        let maxBarCount = 29
+        let availableWidth = max(0, waveformMaxX - startX)
+        let barCount = min(maxBarCount, Int((availableWidth + barGap) / (barWidth + barGap)))
+        guard barCount > 0 else { return }
+
         let centerY = bounds.midY
         let centerIndex = CGFloat(barCount - 1) / 2
+        let centerDenominator = max(centerIndex, 1)
 
         for index in 0..<barCount {
             let i = CGFloat(index)
-            let distance = abs(i - centerIndex) / centerIndex
+            let distance = abs(i - centerIndex) / centerDenominator
             let envelope = pow(max(0, 1 - distance), 0.55)
             let ripple = (sin((i * 0.74) + phase) + 1) / 2
             let fineRipple = (sin((i * 1.73) - (phase * 0.7)) + 1) / 2
@@ -2487,6 +2512,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if let view = recordingHUDView {
             view.level = level
             view.phase = recordingHUDPhase
+            view.showsCancelHint = settings.triggerMode == .toggle
         }
         if shouldAnimate {
             animateRecordingHUDIn(panel)
@@ -2501,11 +2527,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private func updateRecordingHUD(level: Float) {
         recordingHUDView?.level = level
         recordingHUDView?.phase = recordingHUDPhase
+        recordingHUDView?.showsCancelHint = settings.triggerMode == .toggle
     }
 
     private func hideRecordingHUD() {
         recordingHUDView?.level = 0
         recordingHUDView?.phase = 0
+        recordingHUDView?.showsCancelHint = false
         guard let panel = recordingHUDPanel else { return }
         recordingHUDAnimationToken += 1
         guard panel.isVisible else {
