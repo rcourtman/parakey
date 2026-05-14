@@ -404,7 +404,6 @@ For deeper changes, constants live at the top of
 |---|---|---|
 | `MIN_CLIP_SECONDS` | `0.25` | Recordings shorter than this are discarded (treated as accidental key-tap). |
 | `MAX_RECORDING_SECONDS` | `120` | Auto-release if the hotkey is held longer. |
-| `MUTE_AFTER_START_SOUND` | `0.18` | Delay before muting so the start sound isn't clipped. |
 | `DEFAULT_RECENT_TRANSCRIPT_LIMIT` | `last5` | Rolling in-memory transcript history default; users can switch to last 1 or off. |
 | `UPDATE_CHECK_INTERVAL_SECONDS` | `21600` (6 h) | How often the app polls GitHub for a newer release. |
 

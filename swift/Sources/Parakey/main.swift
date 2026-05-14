@@ -41,8 +41,6 @@ let DEFAULT_HOTKEY_KEYCODE: CGKeyCode = 61  // Right Option
 let ESCAPE_KEYCODE: CGKeyCode = 53
 let MIN_CLIP_SECONDS: Double = 0.25
 let MAX_RECORDING_SECONDS: TimeInterval = 120   // auto-release if held longer
-let MUTE_AFTER_START_SOUND: TimeInterval = 0.18 // let the start tink finish before muting
-let RECORDING_LEVEL_SUPPRESS_AFTER_START_SOUND: TimeInterval = 0.75 // keep the HUD calm through the start sound tail
 let UPDATE_CHECK_FIRST_DELAY_SECONDS: TimeInterval = 30
 let UPDATE_CHECK_INTERVAL_SECONDS: TimeInterval = 6 * 3600  // 6h
 let GITHUB_LATEST_RELEASE_URL = URL(string: "https://api.github.com/repos/rcourtman/parakey/releases/latest")!
@@ -286,11 +284,8 @@ func normalizedAudioLevel(sumSquares: Double, sampleCount: Int) -> Float {
     return Float(max(0, min(1, lifted)))
 }
 
-func visibleRecordingLevel(rawLevel: Float, now: Date, suppressUntil: Date?) -> Float {
+func visibleRecordingLevel(rawLevel: Float) -> Float {
     guard rawLevel.isFinite else { return 0 }
-    if let suppressUntil, now < suppressUntil {
-        return 0
-    }
     return max(0, min(1, rawLevel))
 }
 
@@ -1855,6 +1850,8 @@ private final class RecordingHUDView: NSView {
         NSColor.systemRed.withAlphaComponent(0.92).setFill()
         NSBezierPath(ovalIn: recordDotRect).fill()
 
+        guard clamped > 0.001 else { return }
+
         let barCount = 29
         let barWidth: CGFloat = 3
         let barGap: CGFloat = 3
@@ -1915,7 +1912,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var lastPermissionReadinessMissingKey: String?
     private var didMuteThisRecording: Bool = false
     private var maxDurationWorkItem: DispatchWorkItem?
-    private var muteWorkItem: DispatchWorkItem?
     private var isRestartingAudioInput = false
     private var pendingAudioRouteRefresh = false
     private var recordingLevelTimer: Timer?
@@ -1923,7 +1919,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var recordingHUDPhase: CGFloat = 0
     private var lastRecordingLevelSequence: UInt64 = 0
     private var staleRecordingLevelTicks = 0
-    private var recordingLevelSuppressUntil: Date?
     private var recordingHUDPanel: NSPanel?
     private var recordingHUDView: RecordingHUDView?
 
@@ -2163,7 +2158,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func prepareForStartupAttempt() {
-        cancelMute()
         cancelMaxDurationAutoRelease()
 
         if isRecording || audio.isRunning {
@@ -2235,7 +2229,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             return
         }
 
-        cancelMute()
         cancelMaxDurationAutoRelease()
         if isRecording || audio.isRunning {
             _ = audio.endRecording()
@@ -2414,14 +2407,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func startRecordingLevelMeter() {
-        stopRecordingLevelMeter(resetImage: false)
+        recordingLevelTimer?.invalidate()
+        recordingLevelTimer = nil
         recordingVisualLevel = 0
         lastRecordingLevelSequence = 0
         staleRecordingLevelTicks = 0
         recordingHUDPhase = 0
-        recordingLevelSuppressUntil = settings.playFeedbackSounds
-            ? Date().addingTimeInterval(RECORDING_LEVEL_SUPPRESS_AFTER_START_SOUND)
-            : nil
         setMenuBarState(.recording)
         if settings.showRecordingWaveform {
             showRecordingHUD(level: 0)
@@ -2443,7 +2434,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         lastRecordingLevelSequence = 0
         staleRecordingLevelTicks = 0
         recordingHUDPhase = 0
-        recordingLevelSuppressUntil = nil
         hideRecordingHUD()
         if resetImage, isRecording {
             setMenuBarState(.recording)
@@ -2463,9 +2453,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             staleRecordingLevelTicks = 0
         }
         let unsuppressedLevel = staleRecordingLevelTicks > 8 ? 0 : snapshot.level
-        let rawLevel = visibleRecordingLevel(rawLevel: unsuppressedLevel,
-                                             now: Date(),
-                                             suppressUntil: recordingLevelSuppressUntil)
+        let rawLevel = visibleRecordingLevel(rawLevel: unsuppressedLevel)
         let attack: Float = rawLevel > recordingVisualLevel ? 0.65 : 0.28
         recordingVisualLevel += (rawLevel - recordingVisualLevel) * attack
         recordingHUDPhase += 0.34 + (CGFloat(recordingVisualLevel) * 0.42)
@@ -2552,16 +2540,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             return
         }
         isRecording = true
-        audio.beginRecording()
         startRecordingLevelMeter()
         if settings.playFeedbackSounds {
             Sounds.playStart()
         }
+        muteIfNeededForRecording()
+        audio.beginRecording()
         log("press: recording")
 
-        // Mute shortly after the start sound so the Tink itself is not
-        // suppressed.
-        scheduleMute()
         scheduleMaxDurationAutoRelease()
         rebuildMenu()
     }
@@ -2576,7 +2562,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         isRecording = false
         stopRecordingLevelMeter()
-        cancelMute()
         cancelMaxDurationAutoRelease()
         unmuteIfWeMuted()
 
@@ -2639,7 +2624,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             return
         }
 
-        cancelMute()
         cancelMaxDurationAutoRelease()
         _ = audio.endRecording()
         isRecording = false
@@ -2656,7 +2640,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     // release intentionally starts transcription/paste/history work,
     // while termination only needs to discard audio and restore mute.
     private func cancelRecordingForTermination() {
-        cancelMute()
         cancelMaxDurationAutoRelease()
         hotkey.onPress = nil
         hotkey.onRelease = nil
@@ -2681,25 +2664,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func scheduleMute() {
+    private func muteIfNeededForRecording() {
         guard settings.muteWhileRecording else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isRecording else { return }
-            // Only mute if we wouldn't be stomping a user-set mute.
-            if !SystemAudio.isMuted() {
-                SystemAudio.mute()
-                self.didMuteThisRecording = true
-                log("output muted")
-            }
+        // Only mute if we wouldn't be stomping a user-set mute.
+        if !SystemAudio.isMuted() {
+            SystemAudio.mute()
+            didMuteThisRecording = true
+            log("output muted")
         }
-        muteWorkItem = work
-        let delay = settings.playFeedbackSounds ? MUTE_AFTER_START_SOUND : 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func cancelMute() {
-        muteWorkItem?.cancel()
-        muteWorkItem = nil
     }
 
     private func unmuteIfWeMuted() {
@@ -4454,32 +4426,18 @@ private enum ParakeySelfTest {
             equals: 0,
             "non-finite samples should not produce a visible level"
         )
-        let now = Date()
         try expect(
-            visibleRecordingLevel(rawLevel: .nan,
-                                  now: now,
-                                  suppressUntil: nil),
+            visibleRecordingLevel(rawLevel: .nan),
             equals: 0,
             "visible recording level should ignore non-finite input"
         )
         try expect(
-            visibleRecordingLevel(rawLevel: 0.8,
-                                  now: now,
-                                  suppressUntil: now.addingTimeInterval(1)),
-            equals: 0,
-            "visual level should ignore the local start sound while suppression is active"
-        )
-        try expect(
-            visibleRecordingLevel(rawLevel: 0.8,
-                                  now: now,
-                                  suppressUntil: now.addingTimeInterval(-1)),
+            visibleRecordingLevel(rawLevel: 0.8),
             equals: 0.8,
-            "visual level should resume after start-sound suppression expires"
+            "visible recording level should pass through normal input immediately"
         )
         try expect(
-            visibleRecordingLevel(rawLevel: 1.2,
-                                  now: now,
-                                  suppressUntil: nil),
+            visibleRecordingLevel(rawLevel: 1.2),
             equals: 1,
             "visible recording level should clamp high input"
         )
