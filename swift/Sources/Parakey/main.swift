@@ -1608,10 +1608,11 @@ enum TCC {
 
 // MARK: - Update check
 //
-// Hits the GitHub Releases API once at boot + every 6 h. When a newer
-// version is found AND it's not in the user's skipped list, a
-// submenu inserts itself at the top of the menu: What's new /
-// Update now / Skip vX.Y.Z.
+// Hits the GitHub Releases API once at boot + every 6 h. Users can
+// also force the same lookup from the menu. When a newer version is
+// found AND it's not in the user's skipped list, a submenu inserts
+// itself at the top of the menu: What's new / Update now / Skip
+// vX.Y.Z.
 
 struct GitHubRelease: Sendable {
     let tagName: String      // 'v0.1.7'
@@ -1925,6 +1926,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     /// Latest release detected by the periodic check. nil = no update,
     /// or user has skipped it.
     private var pendingUpdate: GitHubRelease?
+    private var isCheckingForUpdates = false
 
     private struct CorrectionImportSummary {
         let total: Int
@@ -2892,6 +2894,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         menu.addItem(buildSettingsItem())
         menu.addItem(.separator())
 
+        let checkUpdates = NSMenuItem(title: isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…",
+                                      action: #selector(checkForUpdatesClicked(_:)),
+                                      keyEquivalent: "")
+        checkUpdates.target = self
+        checkUpdates.isEnabled = !isCheckingForUpdates && !isTerminating
+        menu.addItem(checkUpdates)
+
         // About + Quit.
         let about = NSMenuItem(title: "About Parakey",
                                action: #selector(showAboutClicked(_:)),
@@ -3017,6 +3026,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         - Feedback sounds: \(settings.playFeedbackSounds)
         - Show in Dock: \(settings.showInDock)
         - Automatic update checks: \(settings.checkForUpdates)
+        - Manual update check active: \(isCheckingForUpdates)
         - Pending update: \(pendingUpdateText)
 
         Microphone:
@@ -3186,11 +3196,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         dock.state = settings.showInDock ? .on : .off
         sub.addItem(dock)
 
-        // Periodic-check toggle. The 6-hour poll plus the 30-seconds-
-        // after-launch initial check catches every release; we don't
-        // also expose a "Check now" action because (a) it duplicates
-        // what the automatic poll already does and (b) users who want
-        // to force one can quit + relaunch.
+        // Periodic-check toggle. Manual checks live at top level so
+        // users can force a fresh GitHub lookup without changing the
+        // background polling preference.
         let checkToggle = NSMenuItem(title: "Check for updates automatically",
                                      action: #selector(toggleCheckForUpdates(_:)),
                                      keyEquivalent: "")
@@ -4153,8 +4161,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         return parent
     }
 
-    @objc private func whatsNewClicked(_ sender: NSMenuItem) {
-        guard let release = pendingUpdate else { return }
+    private func showReleaseNotes(for release: GitHubRelease) {
         let alert = NSAlert()
         alert.messageText = "Parakey v\(release.version)"
         var body = release.body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4170,17 +4177,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func whatsNewClicked(_ sender: NSMenuItem) {
+        guard let release = pendingUpdate else { return }
+        showReleaseNotes(for: release)
+    }
+
     @objc private func updateNowClicked(_ sender: NSMenuItem) {
         guard let release = pendingUpdate else { return }
-        // Two paths: brew-installed users get the automated
-        // upgrade-and-relaunch flow, source / non-brew installs
-        // get the GitHub Releases page opened.
-        if let brew = findBrew(), isBrewInstall(brewPath: brew) {
-            spawnUpdateHelper(brewPath: brew, targetVersion: release.version)
-        } else {
-            log("update click: not a brew install or no brew, opening releases page")
-            NSWorkspace.shared.open(GITHUB_RELEASES_PAGE)
-        }
+        startUpdate(for: release)
     }
 
     @objc private func skipVersionClicked(_ sender: NSMenuItem) {
@@ -4193,6 +4197,126 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
         pendingUpdate = nil
         rebuildMenu()
+    }
+
+    @objc private func checkForUpdatesClicked(_ sender: NSMenuItem) {
+        guard !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
+        rebuildMenu()
+        Task { [weak self] in
+            let release = await UpdateCheck.fetchLatest()
+            self?.finishManualUpdateCheck(release)
+        }
+    }
+
+    private func finishManualUpdateCheck(_ release: GitHubRelease?) {
+        isCheckingForUpdates = false
+        guard let release else {
+            rebuildMenu()
+            showUpdateCheckFailedAlert()
+            return
+        }
+
+        let current = currentBundleVersion()
+        guard isNewer(release.version, than: current) else {
+            if pendingUpdate?.version == release.version {
+                pendingUpdate = nil
+            }
+            rebuildMenu()
+            showUpToDateAlert(currentVersion: current)
+            return
+        }
+
+        if settings.skippedVersions.contains(release.version) {
+            settings.skippedVersions = settings.skippedVersions.filter { $0 != release.version }
+        }
+        pendingUpdate = release
+        rebuildMenu()
+        showUpdateAvailableAlert(for: release, currentVersion: current)
+    }
+
+    private func showUpdateAvailableAlert(for release: GitHubRelease, currentVersion: String) {
+        let alert = NSAlert()
+        alert.messageText = "Parakey v\(release.version) is available"
+        alert.informativeText = "You're running v\(currentVersion)."
+        alert.addButton(withTitle: "Update Now")
+        alert.addButton(withTitle: "What's New")
+        alert.addButton(withTitle: "Later")
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            startUpdate(for: release)
+        } else if response == .alertSecondButtonReturn {
+            showReleaseNotes(for: release)
+        }
+    }
+
+    private func showUpToDateAlert(currentVersion: String) {
+        let alert = NSAlert()
+        alert.messageText = "Parakey is up to date"
+        alert.informativeText = "You're running v\(currentVersion)."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func showUpdateCheckFailedAlert() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn't check for updates"
+        alert.informativeText = "Parakey couldn't reach GitHub. Check your internet connection and try again."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func startUpdate(for release: GitHubRelease) {
+        guard let brew = findBrew() else {
+            showManualUpdateRequired(for: release, reason: "Homebrew was not found on this Mac.")
+            return
+        }
+        guard isBrewInstall(brewPath: brew) else {
+            showManualUpdateRequired(
+                for: release,
+                reason: "This copy of Parakey was not detected as a Homebrew-managed app in /Applications."
+            )
+            return
+        }
+        spawnUpdateHelper(brewPath: brew, targetVersion: release.version)
+    }
+
+    private func showManualUpdateRequired(for release: GitHubRelease, reason: String) {
+        log("update click: manual update required: \(reason)")
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Manual update needed"
+        alert.informativeText = """
+        \(reason)
+
+        Open the release page, or if this Mac uses Homebrew run:
+
+        brew update && brew upgrade --cask \(HOMEBREW_CASK_TOKEN)
+        """
+        alert.addButton(withTitle: "Open Release Page")
+        alert.addButton(withTitle: "Close")
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn,
+           let url = URL(string: release.htmlURL) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func showUpdateCouldNotStart(detail: String) {
+        log("update: could not start helper: \(detail)")
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Update couldn't start"
+        alert.informativeText = """
+        \(detail)
+
+        You can still update from Terminal:
+
+        brew update && brew upgrade --cask \(HOMEBREW_CASK_TOKEN)
+        """
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func isBrewInstall(brewPath: String) -> Bool {
@@ -4235,12 +4359,18 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             _ = chmod(helperPath, 0o755)
         } catch {
             log("update: writing helper failed: \(error)")
+            showUpdateCouldNotStart(detail: "Parakey couldn't write the update helper script.")
             return
         }
         let proc = Process()
         proc.launchPath = "/bin/bash"
         proc.arguments = [helperPath]
-        try? proc.run()
+        do {
+            try proc.run()
+        } catch {
+            showUpdateCouldNotStart(detail: "Parakey couldn't launch the update helper.")
+            return
+        }
         log("update helper spawned at \(helperPath); quitting for upgrade")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             NSApp.terminate(nil)
