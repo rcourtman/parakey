@@ -46,6 +46,7 @@ let UPDATE_CHECK_FIRST_DELAY_SECONDS: TimeInterval = 30
 let UPDATE_CHECK_INTERVAL_SECONDS: TimeInterval = 6 * 3600  // 6h
 let GITHUB_LATEST_RELEASE_URL = URL(string: "https://api.github.com/repos/rcourtman/parakey/releases/latest")!
 let GITHUB_RELEASES_PAGE = URL(string: "https://github.com/rcourtman/parakey/releases/latest")!
+let HOMEBREW_CASK_TAP = "rcourtman/parakey"
 let HOMEBREW_CASK_TOKEN = "rcourtman/parakey/parakey"
 let HOMEBREW_CASK_INSTALLED_TOKEN = "parakey"
 let INSTALLED_APP_BUNDLE_PATH = "/Applications/Parakey.app"
@@ -1664,8 +1665,11 @@ func updateHelperScript(pid: pid_t,
     APP_PATH=\#(shellSingleQuoted(appPath))
     RELEASES_PAGE=\#(shellSingleQuoted(releasesPageURL))
     PARAKEY_PID=\#(pid)
+    CASK_TAP=\#(shellSingleQuoted(HOMEBREW_CASK_TAP))
     CASK_TOKEN=\#(shellSingleQuoted(HOMEBREW_CASK_TOKEN))
+    CASK_INSTALLED_TOKEN=\#(shellSingleQuoted(HOMEBREW_CASK_INSTALLED_TOKEN))
     INFO_PLIST="$APP_PATH/Contents/Info.plist"
+    APP_DIR="$(/usr/bin/dirname "$APP_PATH")"
 
     timestamp() {
         /bin/date -u '+%Y-%m-%dT%H:%M:%SZ'
@@ -1741,23 +1745,36 @@ func updateHelperScript(pid: pid_t,
         echo "Target version: $TARGET_VERSION"
         echo "Current installed version: $(app_version)"
         echo "Brew: $BREW"
+        echo "Cask tap: $CASK_TAP"
         echo "Cask: $CASK_TOKEN"
+        echo "Installed cask name: $CASK_INSTALLED_TOKEN"
         echo "App: $APP_PATH"
     } >"$LOG"
 
     wait_for_parakey_exit
 
-    if ! run_brew update; then
+    if ! run_brew tap "$CASK_TAP"; then
+        fail "brew tap failed; leaving the existing app in place."
+    fi
+
+    if ! run_brew update --force; then
         fail "brew update failed; leaving the existing app in place."
     fi
 
-    if ! run_brew upgrade --cask "$CASK_TOKEN"; then
+    if ! run_brew fetch --cask --force "$CASK_TOKEN"; then
+        fail "brew cask fetch failed; leaving the existing app in place."
+    fi
+
+    if ! run_brew upgrade --cask --force --appdir="$APP_DIR" "$CASK_TOKEN"; then
         fail "brew cask upgrade failed; leaving the existing app in place."
     fi
 
     if ! installed_target_version; then
-        log "brew upgrade completed without installing v$TARGET_VERSION; forcing cask reinstall."
-        if ! run_brew reinstall --cask "$CASK_TOKEN"; then
+        log "brew upgrade completed without installing v$TARGET_VERSION; forcing qualified cask reinstall."
+        if ! run_brew update --force; then
+            fail "brew update failed before reinstall; leaving the existing app in place."
+        fi
+        if ! run_brew reinstall --cask --force --appdir="$APP_DIR" "$CASK_TOKEN"; then
             fail "brew cask reinstall failed; leaving the existing app in place."
         fi
     fi
@@ -4787,12 +4804,16 @@ private enum ParakeySelfTest {
         for fragment in [
             "TARGET_VERSION='9.8.7'",
             "PARAKEY_PID=123",
+            "CASK_TAP='rcourtman/parakey'",
             "CASK_TOKEN='rcourtman/parakey/parakey'",
+            "CASK_INSTALLED_TOKEN='parakey'",
             "PlistBuddy -c \"Print :CFBundleShortVersionString\"",
             "version_at_least \"$installed\" \"$TARGET_VERSION\"",
-            "run_brew update",
-            "run_brew upgrade --cask \"$CASK_TOKEN\"",
-            "run_brew reinstall --cask \"$CASK_TOKEN\"",
+            "run_brew tap \"$CASK_TAP\"",
+            "run_brew update --force",
+            "run_brew fetch --cask --force \"$CASK_TOKEN\"",
+            "run_brew upgrade --cask --force --appdir=\"$APP_DIR\" \"$CASK_TOKEN\"",
+            "run_brew reinstall --cask --force --appdir=\"$APP_DIR\" \"$CASK_TOKEN\"",
             "installed_target_version",
             "/usr/bin/open \"$APP_PATH\""
         ] {
