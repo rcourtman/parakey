@@ -43,23 +43,24 @@ let MIN_CLIP_SECONDS: Double = 0.25
 let MAX_RECORDING_SECONDS: TimeInterval = 120   // auto-release if held longer
 let MUTE_AFTER_START_SOUND: TimeInterval = 0.18 // let the start tink finish before muting
 let RECORDING_LEVEL_SUPPRESS_AFTER_START_SOUND: TimeInterval = 0.75 // keep the HUD calm through the start sound tail
-let HISTORY_SIZE = 5
-
 let UPDATE_CHECK_FIRST_DELAY_SECONDS: TimeInterval = 30
 let UPDATE_CHECK_INTERVAL_SECONDS: TimeInterval = 6 * 3600  // 6h
 let GITHUB_LATEST_RELEASE_URL = URL(string: "https://api.github.com/repos/rcourtman/parakey/releases/latest")!
 let GITHUB_RELEASES_PAGE = URL(string: "https://github.com/rcourtman/parakey/releases/latest")!
+let HOMEBREW_CASK_TOKEN = "rcourtman/parakey/parakey"
+let HOMEBREW_CASK_INSTALLED_TOKEN = "parakey"
+let INSTALLED_APP_BUNDLE_PATH = "/Applications/Parakey.app"
+let UPDATE_HELPER_LOG_PATH = "/tmp/parakey-update.log"
 
 let SETTINGS_SUITE = "com.local.parakey"
 let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
 let CORRECTIONS_FILE_EXTENSION = "parakey-corrections"
 let CORRECTIONS_FILE_NAME = "Parakey Corrections.\(CORRECTIONS_FILE_EXTENSION)"
-let RECORDING_ICON_FRAME_COUNT = 10
 
 /// Visible state of the menu-bar item. Idle/loading/busy use the
-/// template image so macOS handles light/dark menu bars. Recording
-/// uses pre-rendered red frames driven by live input level; errors
-/// use a pre-tinted yellow frame.
+/// template image so macOS handles light/dark menu bars. Recording and
+/// error states use pre-tinted static frames so the state remains
+/// visible even when macOS ignores contentTintColor on template images.
 enum MenuBarState {
     case loading
     case idle
@@ -107,6 +108,44 @@ let PASTE_SUFFIX_DISPLAY: [PasteSuffix: String] = [
     .none: "No suffix",
     .appendNewline: "Append newline",
 ]
+
+enum RecentTranscriptLimit: String, CaseIterable {
+    case off
+    case last1 = "1"
+    case last5 = "5"
+
+    var count: Int {
+        switch self {
+        case .off: return 0
+        case .last1: return 1
+        case .last5: return 5
+        }
+    }
+}
+
+let DEFAULT_RECENT_TRANSCRIPT_LIMIT = RecentTranscriptLimit.last5
+let RECENT_TRANSCRIPT_LIMIT_DISPLAY: [RecentTranscriptLimit: String] = [
+    .off: "Off",
+    .last1: "Last 1",
+    .last5: "Last 5",
+]
+
+func parseRecentTranscriptLimit(storedValue value: Any?) -> RecentTranscriptLimit? {
+    if let raw = value as? String {
+        return RecentTranscriptLimit(rawValue: raw)
+    }
+    if let number = value as? NSNumber {
+        return RecentTranscriptLimit(rawValue: number.stringValue)
+    }
+    return nil
+}
+
+func limitedRecentTranscripts(_ transcripts: [String], limit: RecentTranscriptLimit) -> [String] {
+    let count = limit.count
+    guard count > 0 else { return [] }
+    guard transcripts.count > count else { return transcripts }
+    return Array(transcripts.prefix(count))
+}
 
 struct AudioInputDevice: Equatable {
     let id: AudioDeviceID
@@ -245,12 +284,6 @@ func normalizedAudioLevel(sumSquares: Double, sampleCount: Int) -> Float {
     guard gated > 0.06 else { return 0 }
     let lifted = pow(max(0, min(1, gated)), 0.42)
     return Float(max(0, min(1, lifted)))
-}
-
-func recordingIconFrameIndex(for level: Float, frameCount: Int) -> Int {
-    guard frameCount > 1, level.isFinite else { return 0 }
-    let clamped = max(0, min(1, level))
-    return min(frameCount - 1, Int((clamped * Float(frameCount - 1)).rounded()))
 }
 
 func visibleRecordingLevel(rawLevel: Float, now: Date, suppressUntil: Date?) -> Float {
@@ -473,6 +506,9 @@ final class Settings: @unchecked Sendable {
     private static let keyHotkeyKeycode = "hotkey_keycode"
     private static let keyTriggerMode = "trigger_mode"
     private static let keyPasteSuffix = "paste_suffix"
+    private static let keyRecentTranscripts = "recent_transcripts"
+    private static let keyShowRecordingWaveform = "show_recording_waveform"
+    private static let legacyKeyShowRecordingIndicator = "show_recording_indicator"
     private static let keyMuteWhileRecording = "mute_while_recording"
     private static let keyPlayFeedbackSounds = "play_feedback_sounds"
     private static let keyShowInDock = "show_in_dock"
@@ -521,6 +557,27 @@ final class Settings: @unchecked Sendable {
             return .appendSpace
         }
         set { defaults.set(newValue.rawValue, forKey: Self.keyPasteSuffix) }
+    }
+
+    var recentTranscriptLimit: RecentTranscriptLimit {
+        get {
+            parseRecentTranscriptLimit(storedValue: defaults.object(forKey: Self.keyRecentTranscripts))
+                ?? DEFAULT_RECENT_TRANSCRIPT_LIMIT
+        }
+        set { defaults.set(newValue.rawValue, forKey: Self.keyRecentTranscripts) }
+    }
+
+    var showRecordingWaveform: Bool {
+        get {
+            if defaults.object(forKey: Self.keyShowRecordingWaveform) != nil {
+                return defaults.bool(forKey: Self.keyShowRecordingWaveform)
+            }
+            if defaults.object(forKey: Self.legacyKeyShowRecordingIndicator) != nil {
+                return defaults.bool(forKey: Self.legacyKeyShowRecordingIndicator)
+            }
+            return true
+        }
+        set { defaults.set(newValue, forKey: Self.keyShowRecordingWaveform) }
     }
 
     var muteWhileRecording: Bool {
@@ -983,6 +1040,8 @@ final class HotkeyListener {
 final class AudioCapture: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
+    private var manuallyMixInputToMono = false
     private let lock = NSLock()
     private var samples: [Float] = []
     private var _isRunning = false
@@ -1010,8 +1069,12 @@ final class AudioCapture: @unchecked Sendable {
             interleaved: false
         ) else { throw NSError(domain: "Parakey", code: -1) }
 
-        converter = AVAudioConverter(from: inputFormat, to: targetFormat)
-        log("AudioCapture: input \(inputFormat.sampleRate) Hz \(inputFormat.channelCount)ch → \(targetFormat.sampleRate) Hz mono")
+        let sourceFormat = converterSourceFormat(for: inputFormat)
+        converterInputFormat = sourceFormat
+        manuallyMixInputToMono = inputFormat.channelCount > 1 && sourceFormat.channelCount == 1
+        converter = AVAudioConverter(from: sourceFormat, to: targetFormat)
+        let mixLabel = manuallyMixInputToMono ? " via manual mono mix" : ""
+        log("AudioCapture: input \(inputFormat.sampleRate) Hz \(inputFormat.channelCount)ch\(mixLabel) → \(targetFormat.sampleRate) Hz mono")
 
         // Capture targetFormat by value into the closure. self is
         // weak so the engine doesn't keep AudioCapture alive past
@@ -1047,6 +1110,8 @@ final class AudioCapture: @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         converter = nil
+        converterInputFormat = nil
+        manuallyMixInputToMono = false
     }
 
     private func installConfigurationObserver() {
@@ -1102,8 +1167,9 @@ final class AudioCapture: @unchecked Sendable {
         lock.unlock()
         guard running, let converter else { return }
 
-        let ratio = target.sampleRate / buffer.format.sampleRate
-        let outCap = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 1024)
+        let converterInput = preparedConverterInputBuffer(from: buffer) ?? buffer
+        let ratio = target.sampleRate / converterInput.format.sampleRate
+        let outCap = AVAudioFrameCount(Double(converterInput.frameLength) * ratio + 1024)
         guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCap) else { return }
 
         // .noDataNow vs .endOfStream: this is reusing the same
@@ -1114,7 +1180,7 @@ final class AudioCapture: @unchecked Sendable {
         // every press after that was 0.00s" bug we saw before this
         // fix. .noDataNow means "I'm out of input *for this call*,
         // but the stream continues" and leaves the converter usable.
-        let inputProvider = AudioConverterInputProvider(buffer: buffer)
+        let inputProvider = AudioConverterInputProvider(buffer: converterInput)
         var error: NSError?
         let status = converter.convert(to: out, error: &error) { _, outStatus in
             inputProvider.provide(outStatus: outStatus)
@@ -1150,6 +1216,64 @@ final class AudioCapture: @unchecked Sendable {
             latestLevelSequence &+= 1
         }
         lock.unlock()
+    }
+
+    private func converterSourceFormat(for inputFormat: AVAudioFormat) -> AVAudioFormat {
+        guard inputFormat.channelCount > 1,
+              let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                             sampleRate: inputFormat.sampleRate,
+                                             channels: 1,
+                                             interleaved: false) else {
+            return inputFormat
+        }
+        return monoFormat
+    }
+
+    private func preparedConverterInputBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard manuallyMixInputToMono else { return buffer }
+        guard let monoFormat = converterInputFormat,
+              let channels = buffer.floatChannelData else {
+            return nil
+        }
+
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        guard channelCount > 1, frameCount > 0 else { return buffer }
+        guard let out = AVAudioPCMBuffer(pcmFormat: monoFormat,
+                                         frameCapacity: AVAudioFrameCount(frameCount)),
+              let mono = out.floatChannelData?[0] else {
+            return nil
+        }
+
+        var channelRMS = Array(repeating: 0.0, count: channelCount)
+        for channelIndex in 0..<channelCount {
+            var sumSquares = 0.0
+            let source = channels[channelIndex]
+            for frameIndex in 0..<frameCount {
+                let sample = source[frameIndex]
+                guard sample.isFinite else { continue }
+                let clamped = max(-1, min(1, sample))
+                sumSquares += Double(clamped * clamped)
+            }
+            channelRMS[channelIndex] = sqrt(sumSquares / Double(frameCount))
+        }
+
+        let peak = channelRMS.max() ?? 0
+        let activeChannels = channelRMS.enumerated()
+            .filter { pair in peak > 0 && pair.element >= peak * 0.25 }
+            .map { $0.offset }
+        let selectedChannels = activeChannels.isEmpty ? [0] : activeChannels
+        let scale = Float(1.0 / Double(selectedChannels.count))
+
+        for frameIndex in 0..<frameCount {
+            var mixed: Float = 0
+            for channelIndex in selectedChannels {
+                mixed += channels[channelIndex][frameIndex] * scale
+            }
+            mono[frameIndex] = mixed
+        }
+        out.frameLength = AVAudioFrameCount(frameCount)
+        return out
     }
 
     private func applyInputDevicePreference(_ preference: String, to input: AVAudioInputNode) {
@@ -1389,9 +1513,9 @@ enum SystemAudio {
 
 // MARK: - Sounds
 //
-// Two short system sounds — Tink on recording start, Pop on
-// finished transcribe. Loaded from /System/Library/Sounds so we
-// don't have to bundle audio resources.
+// Short system sounds: Tink on recording start, Pop after a
+// successful paste. Loaded from /System/Library/Sounds so we don't
+// have to bundle audio resources.
 
 @MainActor
 enum Sounds {
@@ -1519,6 +1643,133 @@ enum UpdateCheck {
     }
 }
 
+func shellSingleQuoted(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+}
+
+func updateHelperScript(pid: pid_t,
+                        brewPath: String,
+                        targetVersion: String,
+                        appPath: String = INSTALLED_APP_BUNDLE_PATH,
+                        releasesPageURL: String = GITHUB_RELEASES_PAGE.absoluteString,
+                        logPath: String = UPDATE_HELPER_LOG_PATH) -> String {
+    #"""
+    #!/bin/bash
+    set -u
+
+    LOG=\#(shellSingleQuoted(logPath))
+    BREW=\#(shellSingleQuoted(brewPath))
+    TARGET_VERSION=\#(shellSingleQuoted(targetVersion))
+    APP_PATH=\#(shellSingleQuoted(appPath))
+    RELEASES_PAGE=\#(shellSingleQuoted(releasesPageURL))
+    PARAKEY_PID=\#(pid)
+    CASK_TOKEN=\#(shellSingleQuoted(HOMEBREW_CASK_TOKEN))
+    INFO_PLIST="$APP_PATH/Contents/Info.plist"
+
+    timestamp() {
+        /bin/date -u '+%Y-%m-%dT%H:%M:%SZ'
+    }
+
+    log() {
+        echo "[$(timestamp)] $*" >>"$LOG"
+    }
+
+    fail() {
+        log "$*"
+        /usr/bin/open "$RELEASES_PAGE"
+        exit 1
+    }
+
+    app_version() {
+        /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST" 2>/dev/null || true
+    }
+
+    version_at_least() {
+        /usr/bin/awk -v actual="$1" -v target="$2" '
+            BEGIN {
+                actual_count = split(actual, actual_parts, ".")
+                target_count = split(target, target_parts, ".")
+                for (i = 1; i <= 4; i++) {
+                    actual_part = i <= actual_count ? actual_parts[i] : "0"
+                    target_part = i <= target_count ? target_parts[i] : "0"
+                    sub(/[^0-9].*$/, "", actual_part)
+                    sub(/[^0-9].*$/, "", target_part)
+                    actual_number = actual_part == "" ? 0 : actual_part + 0
+                    target_number = target_part == "" ? 0 : target_part + 0
+                    if (actual_number > target_number) { exit 0 }
+                    if (actual_number < target_number) { exit 1 }
+                }
+                exit 0
+            }'
+    }
+
+    run_brew() {
+        log "Running: $BREW $*"
+        "$BREW" "$@" >>"$LOG" 2>&1
+    }
+
+    wait_for_parakey_exit() {
+        for _ in {1..60}; do
+            if ! kill -0 "$PARAKEY_PID" 2>/dev/null; then
+                return 0
+            fi
+            sleep 0.5
+        done
+
+        log "Parakey was still running after 30s; sending TERM before updating."
+        kill -TERM "$PARAKEY_PID" 2>/dev/null || true
+        for _ in {1..20}; do
+            if ! kill -0 "$PARAKEY_PID" 2>/dev/null; then
+                return 0
+            fi
+            sleep 0.5
+        done
+
+        fail "Parakey did not quit, so the app bundle was not touched."
+    }
+
+    installed_target_version() {
+        local installed
+        installed="$(app_version)"
+        log "Installed app version: ${installed:-unknown}"
+        [ -n "$installed" ] && version_at_least "$installed" "$TARGET_VERSION"
+    }
+
+    {
+        echo "[$(timestamp)] Parakey update starting"
+        echo "Target version: $TARGET_VERSION"
+        echo "Current installed version: $(app_version)"
+        echo "Brew: $BREW"
+        echo "Cask: $CASK_TOKEN"
+        echo "App: $APP_PATH"
+    } >"$LOG"
+
+    wait_for_parakey_exit
+
+    if ! run_brew update; then
+        fail "brew update failed; leaving the existing app in place."
+    fi
+
+    if ! run_brew upgrade --cask "$CASK_TOKEN"; then
+        fail "brew cask upgrade failed; leaving the existing app in place."
+    fi
+
+    if ! installed_target_version; then
+        log "brew upgrade completed without installing v$TARGET_VERSION; forcing cask reinstall."
+        if ! run_brew reinstall --cask "$CASK_TOKEN"; then
+            fail "brew cask reinstall failed; leaving the existing app in place."
+        fi
+    fi
+
+    if ! installed_target_version; then
+        fail "Expected Parakey v$TARGET_VERSION or newer after update, but the installed app is still $(app_version)."
+    fi
+
+    log "Update complete; relaunching Parakey."
+    /usr/bin/open "$APP_PATH"
+    """#
+}
+
 // MARK: - App
 //
 // Single class that owns the lifecycle and the AppKit menu-bar UI.
@@ -1644,7 +1895,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var templateImage: NSImage?
     private var recordingImage: NSImage?
-    private var recordingLevelImages: [NSImage] = []
     private var errorImage: NSImage?
     private let audio = AudioCapture()
     private let hotkey = HotkeyListener()
@@ -1670,13 +1920,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var pendingAudioRouteRefresh = false
     private var recordingLevelTimer: Timer?
     private var recordingVisualLevel: Float = 0
-    private var recordingLevelFrameIndex = 0
+    private var recordingHUDPhase: CGFloat = 0
     private var lastRecordingLevelSequence: UInt64 = 0
     private var staleRecordingLevelTicks = 0
+    private var recordingLevelSuppressUntil: Date?
     private var recordingHUDPanel: NSPanel?
     private var recordingHUDView: RecordingHUDView?
-    private var recordingHUDPhase: CGFloat = 0
-    private var recordingLevelSuppressUntil: Date?
 
     /// Last N transcripts, newest first. Shown in the History submenu.
     private var history: [String] = []
@@ -2085,13 +2334,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu bar appearance
     //
-    // Same silhouette across all states; only colour and recording
-    // intensity shift. The template image is used for idle/loading/busy
-    // so it auto-adapts to light/dark menu bar. For recording/error we
-    // swap to pre-rendered, non-template images: NSStatusItem.button
-    // silently drops contentTintColor on template images in some macOS
-    // configurations, so baking the colour into the image is the only
-    // reliable way to guarantee the recording state actually reads.
+    // Same silhouette across all states; only colour shifts. The
+    // template image is used for idle/loading/busy so it auto-adapts to
+    // light/dark menu bar. For recording/error we swap to pre-rendered,
+    // non-template images: NSStatusItem.button silently drops
+    // contentTintColor on template images in some macOS configurations,
+    // so baking the colour into the image is the only reliable way to
+    // guarantee the recording state actually reads.
 
     private func configureStatusItemImage() {
         guard let button = statusItem.button else { return }
@@ -2105,13 +2354,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         image?.isTemplate = true
         image?.size = NSSize(width: 18, height: 18)
         templateImage = image
-        recordingLevelImages = image.map { source in
-            (0..<RECORDING_ICON_FRAME_COUNT).map { index in
-                let level = Float(index) / Float(max(1, RECORDING_ICON_FRAME_COUNT - 1))
-                return recordingLevelCopy(of: source, level: level)
-            }
-        } ?? []
-        recordingImage = recordingLevelImages.last ?? image.map { tintedCopy(of: $0, with: .systemRed) }
+        recordingImage = image.map { tintedCopy(of: $0, with: .systemRed) }
         errorImage = image.map { tintedCopy(of: $0, with: .systemYellow) }
         button.image = image
         button.imagePosition = .imageOnly
@@ -2133,30 +2376,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         return tinted
     }
 
-    private func recordingLevelCopy(of source: NSImage, level: Float) -> NSImage {
-        let clamped = CGFloat(max(0, min(1, level)))
-        let size = source.size
-        let iconRect = NSRect(origin: .zero, size: size)
-        let fillHeight = max(1, size.height * clamped)
-        let fillRect = NSRect(x: 0,
-                              y: 0,
-                              width: size.width,
-                              height: fillHeight)
-
-        let image = NSImage(size: size)
-        image.lockFocus()
-        drawTintedIcon(source, in: iconRect, color: NSColor.systemRed.withAlphaComponent(0.3))
-        if clamped > 0 {
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(rect: fillRect).addClip()
-            drawTintedIcon(source, in: iconRect, color: .systemRed)
-            NSGraphicsContext.restoreGraphicsState()
-        }
-        image.unlockFocus()
-        image.isTemplate = false
-        return image
-    }
-
     private func drawTintedIcon(_ source: NSImage, in rect: NSRect, color: NSColor) {
         source.draw(in: rect,
                     from: NSRect(origin: .zero, size: source.size),
@@ -2164,12 +2383,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                     fraction: 1.0)
         color.set()
         rect.fill(using: .sourceAtop)
-    }
-
-    private func currentRecordingImage() -> NSImage? {
-        guard !recordingLevelImages.isEmpty else { return recordingImage ?? templateImage }
-        let index = max(0, min(recordingLevelFrameIndex, recordingLevelImages.count - 1))
-        return recordingLevelImages[index]
     }
 
     private func setMenuBarState(_ state: MenuBarState) {
@@ -2186,7 +2399,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             button.image = templateImage
             button.contentTintColor = nil
         case .recording:
-            button.image = currentRecordingImage()
+            button.image = recordingImage ?? templateImage
             button.contentTintColor = nil
         case .busy:
             // Transcribe is typically <200 ms, briefer than a perceptible
@@ -2203,7 +2416,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private func startRecordingLevelMeter() {
         stopRecordingLevelMeter(resetImage: false)
         recordingVisualLevel = 0
-        recordingLevelFrameIndex = 0
         lastRecordingLevelSequence = 0
         staleRecordingLevelTicks = 0
         recordingHUDPhase = 0
@@ -2211,7 +2423,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             ? Date().addingTimeInterval(RECORDING_LEVEL_SUPPRESS_AFTER_START_SOUND)
             : nil
         setMenuBarState(.recording)
-        showRecordingHUD(level: 0)
+        if settings.showRecordingWaveform {
+            showRecordingHUD(level: 0)
+        }
         let timer = Timer(timeInterval: 1.0 / 24.0,
                           target: self,
                           selector: #selector(recordingLevelTimerFired(_:)),
@@ -2226,7 +2440,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         recordingLevelTimer?.invalidate()
         recordingLevelTimer = nil
         recordingVisualLevel = 0
-        recordingLevelFrameIndex = 0
         lastRecordingLevelSequence = 0
         staleRecordingLevelTicks = 0
         recordingHUDPhase = 0
@@ -2238,7 +2451,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func recordingLevelTimerFired(_ timer: Timer) {
-        guard isRecording, let button = statusItem.button else {
+        guard isRecording else {
             stopRecordingLevelMeter()
             return
         }
@@ -2256,15 +2469,19 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         let attack: Float = rawLevel > recordingVisualLevel ? 0.65 : 0.28
         recordingVisualLevel += (rawLevel - recordingVisualLevel) * attack
         recordingHUDPhase += 0.34 + (CGFloat(recordingVisualLevel) * 0.42)
-        updateRecordingHUD(level: recordingVisualLevel)
-        let nextIndex = recordingIconFrameIndex(for: recordingVisualLevel,
-                                                frameCount: recordingLevelImages.count)
-        guard nextIndex != recordingLevelFrameIndex else { return }
-        recordingLevelFrameIndex = nextIndex
-        button.image = currentRecordingImage()
+        if settings.showRecordingWaveform {
+            if recordingHUDPanel?.isVisible == true {
+                updateRecordingHUD(level: recordingVisualLevel)
+            } else {
+                showRecordingHUD(level: recordingVisualLevel)
+            }
+        } else {
+            hideRecordingHUD()
+        }
     }
 
     private func showRecordingHUD(level: Float) {
+        guard settings.showRecordingWaveform else { return }
         let panel = recordingHUDPanel ?? makeRecordingHUDPanel()
         recordingHUDPanel = panel
         if let view = recordingHUDView {
@@ -2342,9 +2559,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
         log("press: recording")
 
-        // Mute system audio shortly after the start sound finishes,
-        // so the Tink itself isn't suppressed but anything that
-        // starts playing during dictation is. Restored on release.
+        // Mute shortly after the start sound so the Tink itself is not
+        // suppressed.
         scheduleMute()
         scheduleMaxDurationAutoRelease()
         rebuildMenu()
@@ -2512,9 +2728,19 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     // MARK: - History
 
     private func addToHistory(_ text: String) {
-        history.insert(text, at: 0)
-        if history.count > HISTORY_SIZE { history.removeLast(history.count - HISTORY_SIZE) }
+        let next = limitedRecentTranscripts([text] + history,
+                                            limit: settings.recentTranscriptLimit)
+        guard next != history else { return }
+        history = next
         rebuildMenu()
+    }
+
+    private func applyRecentTranscriptLimit() {
+        let next = limitedRecentTranscripts(history, limit: settings.recentTranscriptLimit)
+        guard next.count != history.count else { return }
+        let removed = history.count - next.count
+        history = next
+        log("recent transcript history trimmed by \(removed) entr\(removed == 1 ? "y" : "ies")")
     }
 
     /// 60-char preview with ellipsis. Newlines collapsed so a multi-
@@ -2538,13 +2764,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         history.removeAll()
         log("history cleared (\(count) entries)")
         rebuildMenu()
-    }
-
-    @objc private func addCorrectionFromHistoryClicked(_ sender: NSMenuItem) {
-        guard let transcript = sender.representedObject as? String else { return }
-        log("correction editor opened from history (\(transcript.count) chars)")
-        guard let correction = showCorrectionEditor(existing: nil, prefillSource: transcript) else { return }
-        saveCorrection(correction)
     }
 
     @objc private func quitClicked(_ sender: NSMenuItem) {
@@ -2632,14 +2851,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             inline.toolTip = newest
             menu.addItem(inline)
 
-            let addCorrection = NSMenuItem(title: "Add Correction From Latest…",
-                                           action: #selector(addCorrectionFromHistoryClicked(_:)),
-                                           keyEquivalent: "")
-            addCorrection.target = self
-            addCorrection.representedObject = newest
-            addCorrection.toolTip = newest
-            menu.addItem(addCorrection)
-
             if history.count > 1 {
                 let parent = NSMenuItem(title: "Recent", action: nil, keyEquivalent: "")
                 let sub = NSMenu()
@@ -2647,16 +2858,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 for entry in history.dropFirst() {
                     let item = NSMenuItem(title: previewLine(for: entry),
                                           action: #selector(historyClicked(_:)),
-                                          keyEquivalent: "")
-                    item.target = self
-                    item.representedObject = entry
-                    item.toolTip = entry
-                    sub.addItem(item)
-                }
-                sub.addItem(.separator())
-                for entry in history.dropFirst() {
-                    let item = NSMenuItem(title: "Add Correction From \"\(previewLine(for: entry))\"…",
-                                          action: #selector(addCorrectionFromHistoryClicked(_:)),
                                           keyEquivalent: "")
                     item.target = self
                     item.representedObject = entry
@@ -2799,6 +3000,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         - Hotkey: \(hotkey.hotkey.name)
         - Trigger mode: \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)
         - Paste behavior: \(PASTE_SUFFIX_DISPLAY[settings.pasteSuffix] ?? settings.pasteSuffix.rawValue)
+        - Recent transcripts: \(RECENT_TRANSCRIPT_LIMIT_DISPLAY[settings.recentTranscriptLimit] ?? settings.recentTranscriptLimit.rawValue)
+        - Recording waveform: \(settings.showRecordingWaveform)
         - Mute while recording: \(settings.muteWhileRecording)
         - Feedback sounds: \(settings.playFeedbackSounds)
         - Show in Dock: \(settings.showInDock)
@@ -2920,9 +3123,33 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         pasteParent.submenu = pasteSub
         sub.addItem(pasteParent)
 
+        // Recent transcript history submenu.
+        let recentParent = NSMenuItem(title: "Recent Transcripts", action: nil, keyEquivalent: "")
+        let recentSub = NSMenu()
+        recentSub.autoenablesItems = false
+        for limit in RecentTranscriptLimit.allCases {
+            let item = NSMenuItem(title: RECENT_TRANSCRIPT_LIMIT_DISPLAY[limit] ?? limit.rawValue,
+                                  action: #selector(selectRecentTranscriptLimit(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.state = (limit == settings.recentTranscriptLimit) ? .on : .off
+            item.representedObject = limit.rawValue
+            recentSub.addItem(item)
+        }
+        recentParent.submenu = recentSub
+        sub.addItem(recentParent)
+
         sub.addItem(buildInputDeviceItem())
 
         sub.addItem(buildCorrectionsItem())
+
+        // Recording waveform toggle.
+        let waveform = NSMenuItem(title: "Show recording waveform",
+                                  action: #selector(toggleRecordingWaveform(_:)),
+                                  keyEquivalent: "")
+        waveform.target = self
+        waveform.state = settings.showRecordingWaveform ? .on : .off
+        sub.addItem(waveform)
 
         // Mute toggle.
         let mute = NSMenuItem(title: "Mute system audio while recording",
@@ -3786,6 +4013,24 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func selectRecentTranscriptLimit(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let limit = RecentTranscriptLimit(rawValue: raw) else { return }
+        settings.recentTranscriptLimit = limit
+        applyRecentTranscriptLimit()
+        rebuildMenu()
+    }
+
+    @objc private func toggleRecordingWaveform(_ sender: NSMenuItem) {
+        settings.showRecordingWaveform.toggle()
+        sender.state = settings.showRecordingWaveform ? .on : .off
+        if settings.showRecordingWaveform, isRecording {
+            showRecordingHUD(level: recordingVisualLevel)
+        } else {
+            hideRecordingHUD()
+        }
+    }
+
     @objc private func toggleMute(_ sender: NSMenuItem) {
         settings.muteWhileRecording.toggle()
         sender.state = settings.muteWhileRecording ? .on : .off
@@ -3915,11 +4160,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     @objc private func updateNowClicked(_ sender: NSMenuItem) {
+        guard let release = pendingUpdate else { return }
         // Two paths: brew-installed users get the automated
         // upgrade-and-relaunch flow, source / non-brew installs
         // get the GitHub Releases page opened.
-        if isBrewInstall(), let brew = findBrew() {
-            spawnUpdateHelper(brewPath: brew)
+        if let brew = findBrew(), isBrewInstall(brewPath: brew) {
+            spawnUpdateHelper(brewPath: brew, targetVersion: release.version)
         } else {
             log("update click: not a brew install or no brew, opening releases page")
             NSWorkspace.shared.open(GITHUB_RELEASES_PAGE)
@@ -3938,8 +4184,22 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
-    private func isBrewInstall() -> Bool {
-        Bundle.main.bundlePath == "/Applications/Parakey.app"
+    private func isBrewInstall(brewPath: String) -> Bool {
+        guard Bundle.main.bundlePath == INSTALLED_APP_BUNDLE_PATH else { return false }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: brewPath)
+        proc.arguments = ["list", "--cask", "--versions", HOMEBREW_CASK_INSTALLED_TOKEN]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            return proc.terminationStatus == 0
+        } catch {
+            log("update: brew install check failed: \(error)")
+            return false
+        }
     }
 
     private func findBrew() -> String? {
@@ -3949,27 +4209,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         return nil
     }
 
-    private func spawnUpdateHelper(brewPath: String) {
+    private func spawnUpdateHelper(brewPath: String, targetVersion: String) {
         // Detached shell helper that waits for THIS process to exit,
-        // runs `brew upgrade --cask parakey`, then re-opens
-        // /Applications/Parakey.app. We can't run `brew upgrade`
-        // in-process because brew will try to replace the very
-        // bundle we're executing from; the indirection through a
-        // detached shell is what lets the upgrade actually complete.
-        let pid = getpid()
-        let script = """
-            #!/bin/bash
-            set -u
-            for _ in $(seq 1 60); do
-                if ! kill -0 \(pid) 2>/dev/null; then break; fi
-                sleep 0.5
-            done
-            if ! "\(brewPath)" upgrade --cask parakey >/tmp/parakey-update.log 2>&1; then
-                /usr/bin/open "\(GITHUB_RELEASES_PAGE.absoluteString)"
-                exit 1
-            fi
-            /usr/bin/open "/Applications/Parakey.app"
-            """
+        // refreshes Homebrew, upgrades/reinstalls the cask, verifies the
+        // installed bundle version, then re-opens /Applications/Parakey.app.
+        // We can't run brew in-process because it replaces the bundle we're
+        // executing from.
+        let script = updateHelperScript(pid: getpid(),
+                                        brewPath: brewPath,
+                                        targetVersion: targetVersion)
         let helperPath = "/tmp/parakey-update-\(UUID().uuidString.prefix(8)).sh"
         do {
             try script.write(toFile: helperPath, atomically: true, encoding: .utf8)
@@ -4035,10 +4283,14 @@ private enum ParakeySelfTest {
             return runSuite("readiness", testReadiness)
         case "paste":
             return runSuite("paste", testPasteSuffixFormatting)
+        case "history":
+            return runSuite("history", testRecentTranscriptLimit)
         case "corrections":
             return runSuite("corrections", testTranscriptCorrections)
         case "audio-level":
             return runSuite("audio-level", testAudioLevelMetering)
+        case "update":
+            return runSuite("update", testUpdateHelperScript)
         case "all":
             return runSuite("all", testAll)
         default:
@@ -4066,11 +4318,13 @@ private enum ParakeySelfTest {
         try testHotkey()
         try testReadiness()
         try testPasteSuffixFormatting()
+        try testRecentTranscriptLimit()
         try testTranscriptCorrections()
         try testAudioLevelMetering()
         try testAudioInputDeviceFiltering()
         try testSpeechModelStartupStatus()
         try testAudioRouteChangeDecision()
+        try testUpdateHelperScript()
     }
 
     private static func testHotkey() throws {
@@ -4143,6 +4397,31 @@ private enum ParakeySelfTest {
         )
     }
 
+    private static func testRecentTranscriptLimit() throws {
+        let transcripts = ["newest", "second", "third", "fourth", "fifth", "sixth"]
+
+        try expect(
+            limitedRecentTranscripts(transcripts, limit: .off),
+            equals: [],
+            "off should keep no recent transcripts"
+        )
+        try expect(
+            limitedRecentTranscripts(transcripts, limit: .last1),
+            equals: ["newest"],
+            "last-one history should keep only the newest transcript"
+        )
+        try expect(
+            limitedRecentTranscripts(transcripts, limit: .last5),
+            equals: ["newest", "second", "third", "fourth", "fifth"],
+            "last-five history should preserve the current default cap"
+        )
+        try expect(
+            parseRecentTranscriptLimit(storedValue: NSNumber(value: 1)),
+            equals: .last1,
+            "numeric defaults writes should be accepted for last-one history"
+        )
+    }
+
     private static func testAudioLevelMetering() throws {
         try expect(
             normalizedAudioLevel(from: Array(repeating: 0, count: 128)),
@@ -4164,16 +4443,6 @@ private enum ParakeySelfTest {
         guard normal > quiet else {
             throw SelfTestFailure.failed("higher RMS should produce a higher visual level")
         }
-        guard recordingIconFrameIndex(for: quiet, frameCount: RECORDING_ICON_FRAME_COUNT) >= 4 else {
-            throw SelfTestFailure.failed("quiet close-mic speech should reach a visibly active frame")
-        }
-        guard recordingIconFrameIndex(for: lowVoice, frameCount: RECORDING_ICON_FRAME_COUNT) >= 2 else {
-            throw SelfTestFailure.failed("low close-mic voice should still move the meter")
-        }
-        guard recordingIconFrameIndex(for: normal, frameCount: RECORDING_ICON_FRAME_COUNT)
-            >= RECORDING_ICON_FRAME_COUNT - 2 else {
-            throw SelfTestFailure.failed("normal close-mic speech should reach a high visibility frame")
-        }
         try expect(
             loud,
             equals: 1,
@@ -4186,6 +4455,13 @@ private enum ParakeySelfTest {
             "non-finite samples should not produce a visible level"
         )
         let now = Date()
+        try expect(
+            visibleRecordingLevel(rawLevel: .nan,
+                                  now: now,
+                                  suppressUntil: nil),
+            equals: 0,
+            "visible recording level should ignore non-finite input"
+        )
         try expect(
             visibleRecordingLevel(rawLevel: 0.8,
                                   now: now,
@@ -4201,19 +4477,12 @@ private enum ParakeySelfTest {
             "visual level should resume after start-sound suppression expires"
         )
         try expect(
-            recordingIconFrameIndex(for: -1, frameCount: RECORDING_ICON_FRAME_COUNT),
-            equals: 0,
-            "negative levels should clamp to the first frame"
+            visibleRecordingLevel(rawLevel: 1.2,
+                                  now: now,
+                                  suppressUntil: nil),
+            equals: 1,
+            "visible recording level should clamp high input"
         )
-        try expect(
-            recordingIconFrameIndex(for: 2, frameCount: RECORDING_ICON_FRAME_COUNT),
-            equals: RECORDING_ICON_FRAME_COUNT - 1,
-            "levels above one should clamp to the final frame"
-        )
-        guard recordingIconFrameIndex(for: normal, frameCount: RECORDING_ICON_FRAME_COUNT)
-            > recordingIconFrameIndex(for: quiet, frameCount: RECORDING_ICON_FRAME_COUNT) else {
-            throw SelfTestFailure.failed("frame buckets should preserve louder-than ordering")
-        }
     }
 
     private static func testTranscriptCorrections() throws {
@@ -4373,6 +4642,53 @@ private enum ParakeySelfTest {
             equals: "Preparing speech model…",
             "compile phase should be visible without exposing model internals"
         )
+    }
+
+    private static func testUpdateHelperScript() throws {
+        try expect(
+            shellSingleQuoted("a'b"),
+            equals: "'a'\"'\"'b'",
+            "shell quoting should preserve embedded single quotes"
+        )
+
+        let script = updateHelperScript(pid: 123,
+                                        brewPath: "/opt/homebrew/bin/brew",
+                                        targetVersion: "9.8.7",
+                                        appPath: "/Applications/Parakey.app",
+                                        releasesPageURL: "https://example.test/releases",
+                                        logPath: "/tmp/parakey-update.log")
+        for fragment in [
+            "TARGET_VERSION='9.8.7'",
+            "PARAKEY_PID=123",
+            "CASK_TOKEN='rcourtman/parakey/parakey'",
+            "PlistBuddy -c \"Print :CFBundleShortVersionString\"",
+            "version_at_least \"$installed\" \"$TARGET_VERSION\"",
+            "run_brew update",
+            "run_brew upgrade --cask \"$CASK_TOKEN\"",
+            "run_brew reinstall --cask \"$CASK_TOKEN\"",
+            "installed_target_version",
+            "/usr/bin/open \"$APP_PATH\""
+        ] {
+            guard script.contains(fragment) else {
+                throw SelfTestFailure.failed("update helper script missing fragment: \(fragment)")
+            }
+        }
+
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("parakey-update-self-test-\(UUID().uuidString).sh")
+        try script.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = ["-n", tmp.path]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw SelfTestFailure.failed("update helper script should pass bash -n")
+        }
     }
 
     private static func testAudioRouteChangeDecision() throws {

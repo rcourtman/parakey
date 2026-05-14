@@ -5,7 +5,8 @@
 # between invocations. Reads the current version out of
 # swift/Info.plist, bumps it, builds a release-optimised binary, wraps
 # it in a signed + notarised .app, tags the commit, creates the
-# GitHub release, and updates the sibling Homebrew Cask in one shot.
+# GitHub release, and updates + verifies the sibling Homebrew Cask in
+# one shot.
 #
 #   ./ship-swift.sh                 # default: bump patch (0.2.0 -> 0.2.1)
 #   ./ship-swift.sh --minor         # 0.2.x -> 0.3.0
@@ -18,6 +19,7 @@
 #   - clean working tree on `main`
 #   - notary credentials stored (keychain profile "parakey-notary")
 #   - gh CLI authenticated for github.com
+#   - brew CLI installed for post-release Cask verification
 #   - sibling Homebrew tap at ../homebrew-parakey (override with
 #     PARAKEY_HOMEBREW_TAP=/path/to/tap)
 #
@@ -37,6 +39,7 @@ ZIP_OUT="$SWIFT_DIR/dist/Parakey.zip"
 NOTARY_PROFILE="parakey-notary"
 CASK_TAP="${PARAKEY_HOMEBREW_TAP:-$PROJECT_DIR/../homebrew-parakey}"
 CASK_FILE="$CASK_TAP/Casks/parakey.rb"
+CASK_TOKEN="rcourtman/parakey/parakey"
 
 # ---- 0. CLI ---------------------------------------------------------------
 BUMP=patch
@@ -82,6 +85,7 @@ if [[ "$DRY_RUN" -eq 0 ]]; then
 fi
 
 if [[ "$NO_CASK" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
+    command -v brew >/dev/null || die "'brew' CLI not installed (needed to verify the published Cask)"
     [[ -f "$CASK_FILE" ]] || die "cask not found at $CASK_FILE — set PARAKEY_HOMEBREW_TAP or use --no-cask"
     tap_branch="$(git -C "$CASK_TAP" rev-parse --abbrev-ref HEAD)"
     git -C "$CASK_TAP" update-index --refresh >/dev/null 2>&1 || true
@@ -279,11 +283,27 @@ PY
     git -C "$CASK_TAP" add Casks/parakey.rb
     git -C "$CASK_TAP" commit -m "parakey $new_version"
     git -C "$CASK_TAP" push origin "$tap_branch"
+
+    say "Verifying published Homebrew Cask"
+    remote_tap_head="$(git -C "$CASK_TAP" ls-remote origin "refs/heads/$tap_branch" | awk '{print $1}')"
+    local_tap_head="$(git -C "$CASK_TAP" rev-parse HEAD)"
+    [[ "$remote_tap_head" == "$local_tap_head" ]] || die "tap push did not publish HEAD ($local_tap_head)"
+
+    brew tap rcourtman/parakey >/dev/null || die "brew tap rcourtman/parakey failed"
+    brew update >/dev/null || die "brew update failed after Cask push"
+
+    published_version="$(brew info --cask "$CASK_TOKEN" 2>/dev/null | awk 'NR == 1 { print $NF; exit }')"
+    [[ "$published_version" == "$new_version" ]] \
+        || die "Homebrew sees $CASK_TOKEN as '$published_version', expected '$new_version'"
+
+    brew fetch --cask --force "$CASK_TOKEN" \
+        || die "brew fetch failed for $CASK_TOKEN v$new_version"
+    say "Homebrew Cask OK ($CASK_TOKEN v$new_version)"
 fi
 
 # ---- 12. Done -------------------------------------------------------------
 say "Shipped v$new_version"
 echo
 echo "  GitHub:   https://github.com/rcourtman/parakey/releases/tag/v$new_version"
-echo "  Cask:     brew upgrade --cask parakey   (after tap pulls)"
+echo "  Cask:     brew update && brew upgrade --cask $CASK_TOKEN"
 echo

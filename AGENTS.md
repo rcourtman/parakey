@@ -34,7 +34,7 @@ type plus a handful of small support classes). The hot path is:
 | `swift/Resources/parakey-menubar.png` (+ `@2x`) | Template menu-bar icon. Copied into `Contents/Resources/` by `dev-run.sh` and `ship-swift.sh`. |
 | `swift/dev-run.sh` | Local iteration loop: `swift build` → wrap binary in `/tmp/Parakey-dev.app` → sign with Developer ID + hardened runtime + production entitlements → relaunch. |
 | `entitlements.plist` | Hardened-runtime entitlements. Just two keys: `device.audio-input` (Tahoe 26 requirement) and `device.microphone` (legacy fallback). Anything new expands TCC surface — justify before adding. |
-| `ship-swift.sh` | One-command release: version bump in Info.plist → build → sign → notarise → ditto-zip → tag → push → `gh release create` → bump sibling Homebrew Cask. |
+| `ship-swift.sh` | One-command release: version bump in Info.plist → build → sign → notarise → ditto-zip → tag → push → `gh release create` → bump and verify sibling Homebrew Cask. |
 | `icon/` | SVG sources (`hero.svg`, `latency.svg`, `parakey.svg`, etc.), `Parakey.icns`, menu-bar PNGs, `make-icons.sh`. |
 | `experiments/swift-bench/` | Standalone ASR latency benchmark used to validate FluidAudio against alternatives (Apple SpeechAnalyzer, parakey-mlx) on the same audio. Re-run when bumping FluidAudio or evaluating a backend swap. |
 
@@ -265,8 +265,9 @@ outside Parakey.
   `cs.disable-library-validation`: the only reason to want any of
   those is to embed a runtime interpreter / unsigned dylib in the
   bundle, and that's not what Parakey is.
-- **Transcripts are in-memory only.** A rolling history of 5
-  transcripts clears on quit. Nothing is persisted.
+- **Transcripts are in-memory only.** Recent transcript history is
+  configurable from off / last 1 / last 5, defaults to last 5, and
+  clears on quit. Nothing is persisted.
 - **Transcript content never reaches the logger.** There's no
   opt-in flag for this in the Swift port. If you need to inspect a
   transcript while debugging, use the in-menu Recent history while
@@ -349,6 +350,10 @@ When the user does ask for a release, the mechanics are:
     file before running `ship-swift.sh` to control the release body.
 12. Rewrite `version` + `sha256` in the sibling Homebrew tap's
     `Casks/parakey.rb`, commit, push
+13. Refresh Homebrew metadata, assert
+    `brew info --cask rcourtman/parakey/parakey` reports the new
+    version, and run `brew fetch --cask --force
+    rcourtman/parakey/parakey` to verify the published URL + sha256
 
 With `--dry-run`, the script still builds, signs, checks embedded
 entitlements, packages `swift/dist/Parakey.zip`, removes the temporary

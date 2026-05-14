@@ -288,6 +288,10 @@ the parakeet glyph in the bar's normal label colour when idle, dimmed
 while loading, **red** while recording, **yellow** if something went
 wrong.
 
+An optional floating waveform appears near the bottom of the screen
+while recording. It is on by default and can be disabled under
+**Settings → Show recording waveform**.
+
 Recurring transcription mistakes can be fixed from **Settings → Text
 Corrections**. Add the incorrect text Parakey typed under **Typed**
 and the text it should paste under **Paste** — for example,
@@ -311,16 +315,17 @@ Menu structure:
   rows disappear once all three are granted.
 - **Recent transcripts** — the most recent one inline (click to copy
   it back to the clipboard); a **Recent** submenu appears once
-  you've dictated more than once and holds the previous four. Recent
-  entries can also seed a new text correction when you notice a
-  misrecognition. The whole transcript history is in-memory only, can
-  be cleared from the menu, and clears when you quit Parakey.
+  you've dictated more than once and holds older entries up to the
+  configured limit. The whole transcript history is in-memory only,
+  can be cleared or disabled from the menu, and clears when you quit
+  Parakey.
 - **Settings** ▶
   - **Hotkey** — Right Option (default), Right Control, Right
     Command, F5, F6, F13, F18, F19
   - **Trigger mode** — *Press and hold* or *Press to toggle*
   - **Paste Behavior** — append a space (default), no suffix, or
     append a newline after the pasted transcript
+  - **Recent Transcripts** — last 5 (default), last 1, or off
   - **Microphone** — System default (default) or any specific input
     device. Switching takes effect immediately; if macOS reports an
     audio route change while idle, Parakey refreshes input without a
@@ -329,6 +334,8 @@ Menu structure:
   - **Text Corrections** — add, edit, remove, import, export, share,
     or sync replacements for words and phrases the speech model
     consistently mishears
+  - **Show recording waveform** — on by default; turn off to hide the
+    floating waveform while recording
   - **Mute system audio while recording** — on by default; turn off
     if you'd rather music keep playing while you dictate
   - **Play feedback sounds** — on by default; turn off for silent
@@ -368,6 +375,7 @@ For latency / accuracy numbers and the test methodology, see
 
 Most settings live in the menu's **Settings** submenu (described
 above). All — **Hotkey**, **Trigger mode**, **Paste Behavior**,
+**Recent Transcripts**, **Show recording waveform**,
 **Mute system audio while recording**, **Microphone**, **Show Parakey
 in Dock**, **Text Corrections**, **Check for updates automatically** —
 persist across restarts via `NSUserDefaults`
@@ -379,6 +387,8 @@ Power users can also poke them via `defaults` directly:
 defaults write com.local.parakey hotkey_keycode -int 105   # F13
 defaults write com.local.parakey trigger_mode toggle
 defaults write com.local.parakey paste_suffix none          # space, none, or newline
+defaults write com.local.parakey recent_transcripts -string off  # off, 1, or 5
+defaults write com.local.parakey show_recording_waveform -bool false
 defaults write com.local.parakey mute_while_recording -bool false
 defaults write com.local.parakey show_in_dock -bool true
 defaults write com.local.parakey input_device "AirPods Pro"  # exact device name or UID
@@ -395,7 +405,7 @@ For deeper changes, constants live at the top of
 | `MIN_CLIP_SECONDS` | `0.25` | Recordings shorter than this are discarded (treated as accidental key-tap). |
 | `MAX_RECORDING_SECONDS` | `120` | Auto-release if the hotkey is held longer. |
 | `MUTE_AFTER_START_SOUND` | `0.18` | Delay before muting so the start sound isn't clipped. |
-| `HISTORY_SIZE` | `5` | Rolling in-memory transcript history (cleared on quit). |
+| `DEFAULT_RECENT_TRANSCRIPT_LIMIT` | `last5` | Rolling in-memory transcript history default; users can switch to last 1 or off. |
 | `UPDATE_CHECK_INTERVAL_SECONDS` | `21600` (6 h) | How often the app polls GitHub for a newer release. |
 
 After editing, rebuild + relaunch via `swift/dev-run.sh`.
@@ -408,9 +418,10 @@ an **"Update to vX.Y.Z"** submenu appears at the top of the menu:
 
 - **What's new…** — opens the release notes in a dialog with a link
   out to the full GitHub release page.
-- **Update now…** — runs `brew upgrade --cask parakey` in a detached
-  shell helper and re-opens the app once the upgrade finishes. No
-  terminal needed.
+- **Update now…** — runs a detached Homebrew helper that refreshes the
+  tap, upgrades the Cask, force-reinstalls if Homebrew reports success
+  without replacing the bundle, verifies the installed app version, and
+  then re-opens the app. No terminal needed.
 - **Skip vX.Y.Z** — suppresses *just this version* without disabling
   the periodic check. A newer release published later still surfaces.
 
@@ -454,6 +465,12 @@ If a release-notes file exists at `swift/release-notes/v<new_version>.md`,
 ship-swift.sh uses it for the GitHub release body; otherwise the body
 is auto-generated from `git log <prev-tag>..<new-tag>`.
 
+After the Homebrew tap commit is pushed, the release script refreshes
+Homebrew's local metadata, asserts that `brew info --cask
+rcourtman/parakey/parakey` reports the new version, and runs
+`brew fetch --cask --force rcourtman/parakey/parakey` so the published
+Cask URL and sha256 are verified before the script prints "Shipped".
+
 Full release packaging produces:
 
 - a signed, notarised, stapled `Parakey.app` bundle, wrapped for
@@ -496,7 +513,8 @@ Transcript content is **never** written to disk — only timing and
 length metadata. There's no opt-in debug flag for logging
 transcripts; the only way to see what the model heard is to read the
 in-memory history from the menu while the app is still running. You
-can clear that in-memory history from the menu at any time.
+can clear that in-memory history from the menu at any time, or turn
+it off under **Settings → Recent Transcripts**.
 
 The **Copy Diagnostics** menu item is also transcript-free: it copies
 version, permission, microphone, startup, and settings metadata for
@@ -512,8 +530,8 @@ contents.
 | Menu bar shows "loading…" for several minutes on first launch | First-run model download from Hugging Face (~600 MB). One-time, then cached locally. |
 | Music doesn't pause, only quietens | Parakey mutes system *output*, it doesn't pause Spotify/Music. Resumes on release. |
 | The Parakey.app you downloaded won't open | Confirm Apple Silicon + macOS 26+. If it's an older release from before notarisation was set up, you may hit a Gatekeeper warning — right-click → Open → Open. |
-| Clicked **Update now…** and the GitHub releases page opened instead of the app upgrading | Means brew either isn't installed at the expected path (`/opt/homebrew/bin/brew` or `/usr/local/bin/brew`) *or* this install wasn't placed by `brew install --cask`. The release page is the safe fallback — install/upgrade manually from there. |
-| Clicked **Update now…** but the new version didn't come back | brew upgrade itself failed. Read `/tmp/parakey-update.log` for the brew output (network error, macOS-version mismatch, stale tap, etc.). |
+| Clicked **Update now…** and the GitHub releases page opened instead of the app upgrading | Means brew either isn't installed at the expected path (`/opt/homebrew/bin/brew` or `/usr/local/bin/brew`), this install wasn't placed by `brew install --cask`, or Homebrew could not install the detected release. The release page is the safe fallback — install/upgrade manually from there. |
+| Clicked **Update now…** but the new version didn't come back | Read `/tmp/parakey-update.log`. The helper logs `brew update`, `brew upgrade`, any forced reinstall, and the final installed bundle version. |
 
 The in-menu permission rows surface most permission issues directly —
 if you see ⚠ rows, click them. If you've toggled permissions in
