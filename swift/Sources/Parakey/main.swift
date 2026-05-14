@@ -32,6 +32,7 @@ import Darwin
 import ApplicationServices
 import FluidAudio
 import IOKit
+import QuartzCore
 import UniformTypeIdentifiers
 
 // MARK: - Constants
@@ -49,6 +50,10 @@ let HOMEBREW_CASK_TOKEN = "rcourtman/parakey/parakey"
 let HOMEBREW_CASK_INSTALLED_TOKEN = "parakey"
 let INSTALLED_APP_BUNDLE_PATH = "/Applications/Parakey.app"
 let UPDATE_HELPER_LOG_PATH = "/tmp/parakey-update.log"
+let RECORDING_HUD_EXPANDED_SIZE = NSSize(width: 232, height: 54)
+let RECORDING_HUD_COLLAPSED_SIZE = NSSize(width: 58, height: 42)
+let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
+let RECORDING_HUD_ANIMATE_OUT_SECONDS: TimeInterval = 0.08
 
 let SETTINGS_SUITE = "com.local.parakey"
 let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
@@ -1825,22 +1830,8 @@ private final class RecordingHUDView: NSView {
         let capsule = NSBezierPath(roundedRect: capsuleBounds,
                                    xRadius: capsuleBounds.height / 2,
                                    yRadius: capsuleBounds.height / 2)
-        NSColor(calibratedWhite: 0.05, alpha: 0.82).setFill()
+        NSColor(calibratedWhite: 0.06, alpha: 0.9).setFill()
         capsule.fill()
-
-        let sheenRect = NSRect(x: capsuleBounds.minX + 1,
-                               y: capsuleBounds.minY + 1,
-                               width: capsuleBounds.width - 2,
-                               height: capsuleBounds.height * 0.46)
-        let sheen = NSBezierPath(roundedRect: sheenRect,
-                                 xRadius: sheenRect.height / 2,
-                                 yRadius: sheenRect.height / 2)
-        NSColor.white.withAlphaComponent(0.08).setFill()
-        sheen.fill()
-
-        NSColor.white.withAlphaComponent(0.18).setStroke()
-        capsule.lineWidth = 1
-        capsule.stroke()
 
         let clamped = CGFloat(max(0, min(1, level)))
 
@@ -1921,6 +1912,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var staleRecordingLevelTicks = 0
     private var recordingHUDPanel: NSPanel?
     private var recordingHUDView: RecordingHUDView?
+    private var recordingHUDAnimationToken = 0
 
     /// Last N transcripts, newest first. Shown in the History submenu.
     private var history: [String] = []
@@ -2472,12 +2464,19 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         guard settings.showRecordingWaveform else { return }
         let panel = recordingHUDPanel ?? makeRecordingHUDPanel()
         recordingHUDPanel = panel
+        let shouldAnimate = !panel.isVisible
         if let view = recordingHUDView {
             view.level = level
             view.phase = recordingHUDPhase
         }
-        positionRecordingHUD(panel)
-        panel.orderFrontRegardless()
+        if shouldAnimate {
+            animateRecordingHUDIn(panel)
+        } else {
+            recordingHUDAnimationToken += 1
+            panel.alphaValue = 1
+            panel.setFrame(recordingHUDFrame(size: RECORDING_HUD_EXPANDED_SIZE), display: true)
+            panel.orderFrontRegardless()
+        }
     }
 
     private func updateRecordingHUD(level: Float) {
@@ -2486,18 +2485,43 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func hideRecordingHUD() {
-        recordingHUDPanel?.orderOut(nil)
         recordingHUDView?.level = 0
         recordingHUDView?.phase = 0
+        guard let panel = recordingHUDPanel else { return }
+        recordingHUDAnimationToken += 1
+        guard panel.isVisible else {
+            panel.alphaValue = 1
+            panel.setFrame(recordingHUDFrame(size: RECORDING_HUD_EXPANDED_SIZE), display: false)
+            return
+        }
+
+        let token = recordingHUDAnimationToken
+        let collapsedFrame = recordingHUDFrame(size: RECORDING_HUD_COLLAPSED_SIZE)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = RECORDING_HUD_ANIMATE_OUT_SECONDS
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().setFrame(collapsedFrame, display: true)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak panel, weak self] in
+            Task { @MainActor [weak panel, weak self] in
+                guard let self, let panel else { return }
+                guard self.recordingHUDAnimationToken == token else { return }
+                panel.orderOut(nil)
+                panel.alphaValue = 1
+                panel.setFrame(self.recordingHUDFrame(size: RECORDING_HUD_EXPANDED_SIZE),
+                               display: false)
+            }
+        }
     }
 
     private func makeRecordingHUDPanel() -> NSPanel {
-        let size = NSSize(width: 232, height: 54)
+        let size = RECORDING_HUD_EXPANDED_SIZE
         let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
                             styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered,
                             defer: false)
         let view = RecordingHUDView(frame: NSRect(origin: .zero, size: size))
+        view.autoresizingMask = [.width, .height]
         panel.contentView = view
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -2510,13 +2534,28 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         return panel
     }
 
-    private func positionRecordingHUD(_ panel: NSPanel) {
+    private func animateRecordingHUDIn(_ panel: NSPanel) {
+        recordingHUDAnimationToken += 1
+        let startFrame = recordingHUDFrame(size: RECORDING_HUD_COLLAPSED_SIZE)
+        let finalFrame = recordingHUDFrame(size: RECORDING_HUD_EXPANDED_SIZE)
+        panel.alphaValue = 0.7
+        panel.setFrame(startFrame, display: true)
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = RECORDING_HUD_ANIMATE_IN_SECONDS
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(finalFrame, display: true)
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    private func recordingHUDFrame(size: NSSize) -> NSRect {
         let screen = screenForRecordingHUD()
         let visible = screen.visibleFrame
-        let frame = panel.frame
-        let origin = NSPoint(x: visible.midX - (frame.width / 2),
-                             y: visible.minY + 84)
-        panel.setFrameOrigin(origin)
+        return NSRect(x: visible.midX - (size.width / 2),
+                      y: visible.minY + 84,
+                      width: size.width,
+                      height: size.height)
     }
 
     private func screenForRecordingHUD() -> NSScreen {
