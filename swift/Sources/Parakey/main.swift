@@ -1432,14 +1432,14 @@ enum TranscriptCorrector {
     }
 }
 
-// MARK: - Paste at cursor
+// MARK: - Text insertion
 //
-// Write to general pasteboard, post Cmd+V. We deliberately don't
-// preserve and restore the user's previous clipboard contents —
-// trying to round-trip it racily fights with paste-managers and
-// other clipboard observers, and most users find a clipboard that
-// silently reverts itself more surprising than one that ends up
-// holding whatever they last dictated.
+// Default path: write to general pasteboard, post Cmd+V. We
+// deliberately don't preserve and restore the user's previous
+// clipboard contents — trying to round-trip it racily fights with
+// paste-managers and other clipboard observers, and most users find a
+// clipboard that silently reverts itself more surprising than one that
+// ends up holding whatever they last dictated.
 
 func pastedText(from correctedTranscript: String, suffix: PasteSuffix) -> String {
     switch suffix {
@@ -1466,11 +1466,37 @@ func speechModelStartupStatusTitle(_ progress: DownloadUtils.DownloadProgress) -
     }
 }
 
+enum TextInsertionStrategy: String {
+    case clipboardPaste
+    case directUnicode
+
+    var displayName: String {
+        switch self {
+        case .clipboardPaste: return "Clipboard paste"
+        case .directUnicode: return "Direct Unicode typing"
+        }
+    }
+}
+
 @MainActor
-enum Paster {
+enum TextInserter {
+    nonisolated static let defaultStrategy = TextInsertionStrategy.clipboardPaste
+
+    static func insert(_ text: String, strategy: TextInsertionStrategy = defaultStrategy) {
+        switch strategy {
+        case .clipboardPaste:
+            ClipboardPasteInserter.insert(text)
+        case .directUnicode:
+            DirectUnicodeInserter.insert(text)
+        }
+    }
+}
+
+@MainActor
+private enum ClipboardPasteInserter {
     private static let virtualKeyV: CGKeyCode = 0x09  // ANSI 'v'
 
-    static func paste(_ text: String) {
+    static func insert(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
@@ -1484,6 +1510,40 @@ enum Paster {
         up.flags = .maskCommand
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+    }
+}
+
+@MainActor
+private enum DirectUnicodeInserter {
+    private static let maxUTF16UnitsPerEvent = 20
+
+    static func insert(_ text: String) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        var chunk: [UInt16] = []
+
+        for character in text {
+            let units = Array(String(character).utf16)
+            if !chunk.isEmpty && chunk.count + units.count > maxUTF16UnitsPerEvent {
+                post(chunk, source: source)
+                chunk.removeAll(keepingCapacity: true)
+            }
+            chunk.append(contentsOf: units)
+        }
+
+        if !chunk.isEmpty {
+            post(chunk, source: source)
+        }
+    }
+
+    private static func post(_ units: [UInt16], source: CGEventSource?) {
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) else {
+            return
+        }
+        units.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
+        }
+        event.post(tap: .cghidEventTap)
     }
 }
 
@@ -1974,7 +2034,7 @@ private final class RecordingHUDView: NSView {
 }
 
 @MainActor
-final class ParakeyApp: NSObject, NSApplicationDelegate {
+final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var templateImage: NSImage?
     private var recordingImage: NSImage?
@@ -1988,6 +2048,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var isBusy = false
     private var isReady = false
     private var isCoreRuntimeReady = false
+    private var isSpeechModelReady = false
     private var isTerminating = false
     private var didStartUpdateCheckLoop = false
     private var startupTask: Task<Void, Never>?
@@ -2000,6 +2061,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var maxDurationWorkItem: DispatchWorkItem?
     private var isRestartingAudioInput = false
     private var pendingAudioRouteRefresh = false
+    private var didOfferSetupChecklistThisLaunch = false
+    private var setupChecklistWindow: NSWindow?
+    private var setupChecklistRefreshTimer: Timer?
+    private var hotkeyTestSucceeded = false
     private var recordingLevelTimer: Timer?
     private var recordingVisualLevel: Float = 0
     private var recordingHUDPhase: CGFloat = 0
@@ -2158,6 +2223,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         hotkey.setTriggerMode(settings.triggerMode)
 
         startStartup(reason: "launch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.maybeShowSetupChecklist(reason: "launch")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -2165,6 +2233,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         startupTask?.cancel()
         startupTask = nil
         stopPermissionReadinessMonitor()
+        stopSetupChecklistRefreshTimer()
         correctionSyncTimer?.invalidate()
         correctionSyncTimer = nil
         cleanupPendingSharedCorrections(reason: "terminate")
@@ -2226,6 +2295,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                     }
                 }
                 guard !Task.isCancelled, !isTerminating else { return }
+                isSpeechModelReady = true
 
                 stage = .audioInput
                 startupStatusTitle = "Starting audio input…"
@@ -2257,6 +2327,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         isReady = false
         isCoreRuntimeReady = false
+        isSpeechModelReady = false
         isRecording = false
         isBusy = false
         startupFailure = nil
@@ -2286,6 +2357,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private func recordStartupFailure(stage: StartupFailureStage, error: Error, reason: String) {
         isCoreRuntimeReady = false
+        if stage == .speechModel {
+            isSpeechModelReady = false
+        }
         isReady = false
         isRecording = false
         isBusy = false
@@ -2308,6 +2382,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         if !missingPermissions().isEmpty {
             startPermissionReadinessMonitor(reason: reason)
         }
+        maybeShowSetupChecklist(reason: "startup failure")
         rebuildMenu()
     }
 
@@ -2337,6 +2412,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         logPermissionReadinessWait(missing)
         startPermissionReadinessMonitor(reason: reason)
+        maybeShowSetupChecklist(reason: reason)
         setMenuBarState(.loading)
         rebuildMenu()
     }
@@ -2701,6 +2777,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             return
         }
         isRecording = true
+        if setupChecklistWindow?.isVisible == true {
+            hotkeyTestSucceeded = true
+            updateSetupChecklist()
+        }
         startRecordingLevelMeter()
         if settings.playFeedbackSounds {
             Sounds.playStart()
@@ -2767,7 +2847,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                             enterPermissionBlockedState(missing: missing, reason: "paste")
                             return
                         }
-                        Paster.paste(pastedText(from: corrected.text, suffix: settings.pasteSuffix))
+                        TextInserter.insert(pastedText(from: corrected.text, suffix: settings.pasteSuffix))
                         if settings.playFeedbackSounds {
                             Sounds.playDone()
                         }
@@ -3027,6 +3107,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         checkUpdates.isEnabled = !isCheckingForUpdates && !isTerminating
         menu.addItem(checkUpdates)
 
+        let setup = NSMenuItem(title: "Setup Checklist…",
+                               action: #selector(showSetupChecklistClicked(_:)),
+                               keyEquivalent: "")
+        setup.target = self
+        menu.addItem(setup)
+
         // About + Quit.
         let about = NSMenuItem(title: "About Parakey",
                                action: #selector(showAboutClicked(_:)),
@@ -3160,6 +3246,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
         Status: \(menuStatusTitle())
         Startup: \(startupText)
+        Speech model ready: \(isSpeechModelReady)
         Core runtime ready: \(isCoreRuntimeReady)
         Ready for dictation: \(isReady)
         Recording active: \(isRecording)
@@ -3175,6 +3262,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         - Trigger mode: \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)
         - Paste behavior: \(PASTE_SUFFIX_DISPLAY[settings.pasteSuffix] ?? settings.pasteSuffix.rawValue)
         - Recent transcripts: \(RECENT_TRANSCRIPT_LIMIT_DISPLAY[settings.recentTranscriptLimit] ?? settings.recentTranscriptLimit.rawValue)
+        - Text insertion: \(TextInserter.defaultStrategy.displayName)
         - Recording waveform: \(settings.showRecordingWaveform)
         - Mute while recording: \(settings.muteWhileRecording)
         - Feedback sounds: \(settings.playFeedbackSounds)
@@ -3195,6 +3283,304 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     @objc private func retryStartupClicked(_ sender: NSMenuItem) {
         startStartup(reason: "manual retry")
+    }
+
+    // MARK: - Setup checklist
+
+    private func maybeShowSetupChecklist(reason: String) {
+        guard !didOfferSetupChecklistThisLaunch else { return }
+        guard startupFailure != nil || !missingPermissions().isEmpty else { return }
+        didOfferSetupChecklistThisLaunch = true
+        log("setup checklist shown (\(reason))")
+        showSetupChecklist()
+    }
+
+    @objc private func showSetupChecklistClicked(_ sender: NSMenuItem) {
+        showSetupChecklist()
+    }
+
+    private func showSetupChecklist() {
+        showAppForModal()
+        if let window = setupChecklistWindow {
+            updateSetupChecklist()
+            window.makeKeyAndOrderFront(nil)
+            startSetupChecklistRefreshTimer()
+            return
+        }
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 430),
+                              styleMask: [.titled, .closable],
+                              backing: .buffered,
+                              defer: false)
+        window.title = "Set Up Parakey"
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        setupChecklistWindow = window
+
+        updateSetupChecklist()
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        startSetupChecklistRefreshTimer()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === setupChecklistWindow else { return }
+        stopSetupChecklistRefreshTimer()
+    }
+
+    private func startSetupChecklistRefreshTimer() {
+        guard setupChecklistRefreshTimer == nil else { return }
+        setupChecklistRefreshTimer = Timer.scheduledTimer(timeInterval: 1,
+                                                          target: self,
+                                                          selector: #selector(setupChecklistTimerFired(_:)),
+                                                          userInfo: nil,
+                                                          repeats: true)
+        setupChecklistRefreshTimer?.tolerance = 0.25
+    }
+
+    private func stopSetupChecklistRefreshTimer() {
+        setupChecklistRefreshTimer?.invalidate()
+        setupChecklistRefreshTimer = nil
+    }
+
+    @objc private func setupChecklistTimerFired(_ timer: Timer) {
+        guard setupChecklistWindow?.isVisible == true else {
+            stopSetupChecklistRefreshTimer()
+            return
+        }
+        updateSetupChecklist()
+    }
+
+    private func updateSetupChecklist() {
+        guard let window = setupChecklistWindow else { return }
+        window.contentView = makeSetupChecklistView()
+        rebuildMenu()
+    }
+
+    private func makeSetupChecklistView() -> NSView {
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 14
+        root.edgeInsets = NSEdgeInsets(top: 20, left: 22, bottom: 18, right: 22)
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = setupLabel("Set Up Parakey", font: .systemFont(ofSize: 22, weight: .semibold))
+        let subtitle = setupLabel("Finish these checks before dictating. Parakey keeps this setup local to your Mac.",
+                                  font: .systemFont(ofSize: 13),
+                                  color: .secondaryLabelColor)
+        root.addArrangedSubview(title)
+        root.addArrangedSubview(subtitle)
+        root.addArrangedSubview(setupSeparator())
+
+        root.addArrangedSubview(makeSpeechModelSetupRow())
+
+        for permission in Permission.allCases {
+            root.addArrangedSubview(makePermissionSetupRow(permission))
+        }
+
+        root.addArrangedSubview(makeHotkeySetupRow())
+
+        let footer = NSStackView()
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 10
+        footer.translatesAutoresizingMaskIntoConstraints = false
+
+        let summary = setupLabel(setupChecklistSummary(),
+                                 font: .systemFont(ofSize: 12),
+                                 color: .secondaryLabelColor)
+        let close = NSButton(title: setupChecklistIsComplete ? "Done" : "Close",
+                             target: self,
+                             action: #selector(closeSetupChecklistClicked(_:)))
+        close.bezelStyle = .rounded
+
+        footer.addArrangedSubview(summary)
+        footer.addArrangedSubview(NSView())
+        footer.addArrangedSubview(close)
+        footer.setHuggingPriority(.defaultLow, for: .horizontal)
+        root.addArrangedSubview(setupSeparator())
+        root.addArrangedSubview(footer)
+
+        let container = NSView()
+        container.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            root.topAnchor.constraint(equalTo: container.topAnchor),
+            root.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            root.widthAnchor.constraint(equalToConstant: 520),
+        ])
+        return container
+    }
+
+    private var setupChecklistIsComplete: Bool {
+        isSpeechModelReady && isReady && missingPermissions().isEmpty
+    }
+
+    private func setupChecklistSummary() -> String {
+        setupChecklistIsComplete
+            ? "Setup is complete. Use Parakey from the menu bar."
+            : "You can close this window; the menu will keep tracking setup."
+    }
+
+    private func makeSpeechModelSetupRow() -> NSView {
+        let status: String
+        let detail: String
+        let button: String?
+
+        if let failure = startupFailure {
+            status = failure.stage == .speechModel ? "Needs retry" : "Ready"
+            detail = failure.stage == .speechModel
+                ? failure.detail
+                : "The speech model loaded. \(failure.stage.statusTitle)."
+            button = failure.stage == .speechModel ? "Retry" : nil
+        } else if isSpeechModelReady {
+            status = "Ready"
+            detail = "Parakeet TDT v3 is loaded locally."
+            button = nil
+        } else if startupTask != nil {
+            status = "Loading"
+            detail = startupStatusTitle
+            button = nil
+        } else {
+            status = "Waiting"
+            detail = "The speech model loads before dictation can start."
+            button = nil
+        }
+
+        return makeSetupChecklistRow(title: "Speech model",
+                                     detail: detail,
+                                     status: status,
+                                     buttonTitle: button,
+                                     action: button == nil ? nil : #selector(retryStartupFromSetupClicked(_:)))
+    }
+
+    private func makePermissionSetupRow(_ permission: Permission) -> NSView {
+        let granted = Permissions.isGranted(permission)
+        let clicks = permClickCount[permission] ?? 0
+        return makeSetupChecklistRow(title: permission.rawValue,
+                                     detail: setupDetail(for: permission),
+                                     status: granted ? "Granted" : "Missing",
+                                     buttonTitle: granted ? nil : (clicks >= 1 ? "Try Again" : "Grant"),
+                                     action: granted ? nil : #selector(grantSetupPermissionClicked(_:)),
+                                     tag: Permission.allCases.firstIndex(of: permission) ?? -1)
+    }
+
+    private func makeHotkeySetupRow() -> NSView {
+        let verb = settings.triggerMode == .hold ? "Hold" : "Press"
+        let status: String
+        let detail: String
+
+        if !isReady {
+            status = "Waiting"
+            detail = "Available after the model, audio input, and permissions are ready."
+        } else if hotkeyTestSucceeded {
+            status = "Detected"
+            detail = "\(verb) \(hotkey.hotkey.name) to dictate."
+        } else {
+            status = "Ready to test"
+            detail = "\(verb) \(hotkey.hotkey.name). A quick tap is enough to confirm the hotkey."
+        }
+
+        return makeSetupChecklistRow(title: "Hotkey",
+                                     detail: detail,
+                                     status: status)
+    }
+
+    private func setupDetail(for permission: Permission) -> String {
+        switch permission {
+        case .microphone:
+            return "Lets Parakey capture audio while you dictate."
+        case .accessibility:
+            return "Lets Parakey insert the transcript at the cursor."
+        case .inputMonitoring:
+            return "Lets Parakey catch and suppress the push-to-talk key."
+        }
+    }
+
+    private func makeSetupChecklistRow(title: String,
+                                       detail: String,
+                                       status: String,
+                                       buttonTitle: String? = nil,
+                                       action: Selector? = nil,
+                                       tag: Int = 0) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 14
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let textStack = NSStackView()
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 2
+
+        textStack.addArrangedSubview(setupLabel(title, font: .systemFont(ofSize: 13, weight: .semibold)))
+        textStack.addArrangedSubview(setupLabel(detail,
+                                                font: .systemFont(ofSize: 12),
+                                                color: .secondaryLabelColor))
+
+        let statusLabel = setupLabel(status,
+                                     font: .systemFont(ofSize: 12, weight: .medium),
+                                     color: setupStatusColor(status))
+        statusLabel.alignment = .right
+        statusLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        row.addArrangedSubview(textStack)
+        row.addArrangedSubview(NSView())
+        row.addArrangedSubview(statusLabel)
+
+        if let buttonTitle, let action {
+            let button = NSButton(title: buttonTitle, target: self, action: action)
+            button.bezelStyle = .rounded
+            button.tag = tag
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            row.addArrangedSubview(button)
+        }
+
+        row.setHuggingPriority(.defaultLow, for: .horizontal)
+        return row
+    }
+
+    private func setupLabel(_ text: String, font: NSFont, color: NSColor = .labelColor) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = font
+        label.textColor = color
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 0
+        return label
+    }
+
+    private func setupStatusColor(_ status: String) -> NSColor {
+        switch status {
+        case "Granted", "Ready", "Detected":
+            return .systemGreen
+        case "Missing", "Needs retry":
+            return .systemOrange
+        default:
+            return .secondaryLabelColor
+        }
+    }
+
+    private func setupSeparator() -> NSBox {
+        let separator = NSBox()
+        separator.boxType = .separator
+        return separator
+    }
+
+    @objc private func closeSetupChecklistClicked(_ sender: NSButton) {
+        setupChecklistWindow?.close()
+    }
+
+    @objc private func retryStartupFromSetupClicked(_ sender: NSButton) {
+        startStartup(reason: "setup checklist retry")
+    }
+
+    @objc private func grantSetupPermissionClicked(_ sender: NSButton) {
+        guard Permission.allCases.indices.contains(sender.tag) else { return }
+        requestPermissionFromMenu(Permission.allCases[sender.tag])
     }
 
     // MARK: - Permission row + click-twice-to-reset
@@ -3221,6 +3607,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     @objc private func grantPermissionClicked(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let p = Permission(rawValue: raw) else { return }
+        requestPermissionFromMenu(p)
+    }
+
+    private func requestPermissionFromMenu(_ p: Permission) {
         if Permissions.isGranted(p) {
             permClickCount[p] = nil
             log("perm click ignored: \(p.rawValue) already granted")
@@ -3241,6 +3631,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
         Permissions.request(p)
         startPermissionReadinessMonitor(reason: "permission grant")
+        updateSetupChecklist()
         rebuildMenu()
     }
 
@@ -4753,6 +5144,11 @@ private enum ParakeySelfTest {
             pastedText(from: "hello world ", suffix: .appendSpace),
             equals: "hello world  ",
             "suffix formatting should not trim or rewrite corrected text"
+        )
+        try expect(
+            TextInserter.defaultStrategy,
+            equals: .clipboardPaste,
+            "clipboard paste should remain the default insertion strategy"
         )
     }
 

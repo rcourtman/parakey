@@ -257,7 +257,9 @@ all three are granted:
   through to the focused app.
 
 Until they're all granted, the menu bar dropdown shows rows like
-**⚠ Grant Microphone permission…** just below the status row.
+**⚠ Grant Microphone permission…** just below the status row. It also
+offers **Setup Checklist…**, a small first-run window that shows model,
+permission, and hotkey readiness in one place.
 
 For each missing permission:
 
@@ -276,7 +278,7 @@ No restart needed.
 Hold **Right Option** (the default — change in Settings → Hotkey if
 you'd prefer something else), talk, release. The transcript is pasted
 at the cursor. By default Parakey appends one space after each paste;
-change this from Settings → Paste Behavior. A short tink confirms
+change this from Settings → After Pasting. A short tink confirms
 recording started; a pop confirms it landed.
 
 While the hotkey is held, system audio output is muted (so background
@@ -313,6 +315,8 @@ Menu structure:
 - **Permission rows** (only when something's missing) — a clickable
   ⚠ row per ungranted permission. Click → grant → row turns ✓ →
   rows disappear once all three are granted.
+- **Setup Checklist…** (only while setup needs attention) — opens a
+  small checklist for model readiness, permissions, and hotkey testing.
 - **Recent transcripts** — the most recent one inline (click to copy
   it back to the clipboard); a **Recent** submenu appears once
   you've dictated more than once and holds older entries up to the
@@ -323,7 +327,7 @@ Menu structure:
   - **Hotkey** — Right Option (default), Right Control, Right
     Command, F5, F6, F13, F18, F19
   - **Trigger mode** — *Press and hold* or *Press to toggle*
-  - **Paste Behavior** — append a space (default), no suffix, or
+  - **After Pasting** — append a space (default), no suffix, or
     append a newline after the pasted transcript
   - **Recent Transcripts** — last 5 (default), last 1, or off
   - **Microphone** — System default (default) or any specific input
@@ -341,10 +345,11 @@ Menu structure:
   - **Play feedback sounds** — on by default; turn off for silent
     start and completion feedback
   - **Show Parakey in Dock** — off by default (menu-bar only)
+  - **Launch at Login** — off by default; uses macOS Login Items
 - **About Parakey**
 - **Copy Diagnostics** — copies a transcript-free support summary
   with app version, permission states, selected microphone status,
-  and settings metadata
+  memory usage, text-insertion strategy, and settings metadata
 - **Quit** — clean shutdown
 
 A 2-minute hard cap auto-releases if the hotkey is held too long.
@@ -359,14 +364,32 @@ A 2-minute hard cap auto-releases if the hotkey is held too long.
    that owns FluidAudio's `AsrManager`. The Parakeet TDT v3 CoreML
    models run on the Apple Neural Engine; the encoder is the bound
    work, the TDT decoder is autoregressive but tiny.
-4. Local text corrections are applied, the transcript is placed on
-   `NSPasteboard`, and `Cmd+V` is posted via `CGEvent`. System audio
-   is unmuted via `NSAppleScript` and the "Pop" system sound plays.
+4. Local text corrections are applied, then `TextInserter` inserts the
+   transcript. The default strategy is clipboard paste:
+   `NSPasteboard` gets the text and `Cmd+V` is posted via `CGEvent`.
+   A direct-Unicode insertion path exists internally for future per-app
+   testing, but clipboard paste remains the shipped default.
+5. System audio is unmuted via `NSAppleScript`, the "Pop" system sound
+   plays, and the transcript can be kept briefly in in-memory history
+   depending on the user's Recent Transcripts setting.
 
 The event tap suppresses only the configured hotkey while Parakey is
 recording, so the press/release pair does not also trigger shortcuts
 or text input in the focused app. Non-hotkey events pass through
 normally.
+
+The app is intentionally still one Swift target and one app file. The
+main runtime pieces are:
+
+| Piece | Responsibility |
+|---|---|
+| `HotkeyListener` | Owns the Quartz event tap and translates key events into press, release, and cancel actions. |
+| `AudioCapture` | Owns `AVAudioEngine`, input-device selection, level metering, and 16 kHz mono resampling. |
+| `TranscriptionWorker` | Actor-isolates FluidAudio's `AsrManager` so CoreML/ANE transcription is serialized. |
+| `TranscriptCorrector` | Applies local phrase corrections after transcription and before insertion/history. |
+| `TextInserter` | Chooses how finished text reaches the focused app; default is clipboard paste. |
+| `RecordingHUDView` | Draws the transient waveform and delayed transcribing HUD. |
+| `ParakeyApp` | Main-actor app coordinator for menus, setup checklist, permissions, updates, and lifecycle. |
 
 For latency / accuracy numbers and the test methodology, see
 [`experiments/swift-bench/`](experiments/swift-bench/).
@@ -374,12 +397,14 @@ For latency / accuracy numbers and the test methodology, see
 ## Customise
 
 Most settings live in the menu's **Settings** submenu (described
-above). All — **Hotkey**, **Trigger mode**, **Paste Behavior**,
+above). All — **Hotkey**, **Trigger mode**, **After Pasting**,
 **Recent Transcripts**, **Show recording waveform**,
 **Mute system audio while recording**, **Microphone**, **Show Parakey
 in Dock**, **Text Corrections**, **Check for updates automatically** —
 persist across restarts via `NSUserDefaults`
 (`~/Library/Preferences/com.local.parakey.plist`).
+**Launch at Login** is stored by macOS Login Items via
+`SMAppService`, not in Parakey's preferences file.
 
 Power users can also poke them via `defaults` directly:
 
@@ -394,7 +419,7 @@ defaults write com.local.parakey show_in_dock -bool true
 defaults write com.local.parakey input_device "AirPods Pro"  # exact device name or UID
 defaults write com.local.parakey check_for_updates -bool false
 # Then quit + relaunch Parakey to pick up settings that affect startup
-# (most apply live; restart is only needed for the Dock toggle).
+# (most apply live).
 ```
 
 For deeper changes, constants live at the top of
@@ -516,15 +541,15 @@ can clear that in-memory history from the menu at any time, or turn
 it off under **Settings → Recent Transcripts**.
 
 The **Copy Diagnostics** menu item is also transcript-free: it copies
-version, permission, microphone, startup, and settings metadata for
-support without including recent transcripts or text-correction
-contents.
+version, permission, microphone, memory, startup, text-insertion, and
+settings metadata for support without including recent transcripts or
+text-correction contents.
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| Hotkey does nothing, no tink | Setup is not complete yet. Open the menu and clear any ⚠ permission rows; Parakey will not record until Microphone, Accessibility, and Input Monitoring are all granted. |
+| Hotkey does nothing, no tink | Setup is not complete yet. Open **Setup Checklist…** or clear any ⚠ permission rows; Parakey will not record until Microphone, Accessibility, and Input Monitoring are all granted. |
 | Menu says "Grant permissions to finish setup" | Click each ⚠ row. Microphone is for audio capture, Accessibility is for paste-at-cursor, and Input Monitoring is for the push-to-talk key. |
 | Menu bar shows "loading…" for several minutes on first launch | First-run model download from Hugging Face (~600 MB). One-time, then cached locally. |
 | Music doesn't pause, only quietens | Parakey mutes system *output*, it doesn't pause Spotify/Music. Resumes on release. |
