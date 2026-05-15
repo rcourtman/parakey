@@ -33,6 +33,7 @@ import ApplicationServices
 import FluidAudio
 import IOKit
 import QuartzCore
+import ServiceManagement
 import UniformTypeIdentifiers
 
 // MARK: - Constants
@@ -55,6 +56,7 @@ let RECORDING_HUD_EXPANDED_SIZE = NSSize(width: 232, height: 54)
 let RECORDING_HUD_COLLAPSED_SIZE = NSSize(width: 58, height: 42)
 let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
 let RECORDING_HUD_ANIMATE_OUT_SECONDS: TimeInterval = 0.08
+let RECORDING_HUD_BUSY_DELAY_SECONDS: TimeInterval = 0.25
 
 let SETTINGS_SUITE = "com.local.parakey"
 let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
@@ -71,6 +73,11 @@ enum MenuBarState {
     case recording
     case busy
     case error
+}
+
+enum RecordingHUDMode {
+    case recording
+    case transcribing
 }
 
 /// The hotkeys the user can pick from in Settings → Hotkey. Modifier
@@ -1537,6 +1544,31 @@ func currentBundleBuild() -> String {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
 }
 
+struct AppMemoryUsage {
+    let residentBytes: UInt64
+    let physicalFootprintBytes: UInt64
+}
+
+func currentAppMemoryUsage() -> AppMemoryUsage? {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.stride / MemoryLayout<natural_t>.stride)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+            task_info(mach_task_self_,
+                      task_flavor_t(TASK_VM_INFO),
+                      rebound,
+                      &count)
+        }
+    }
+    guard result == KERN_SUCCESS else { return nil }
+    return AppMemoryUsage(residentBytes: UInt64(info.resident_size),
+                          physicalFootprintBytes: UInt64(info.phys_footprint))
+}
+
+func formattedByteCount(_ bytes: UInt64) -> String {
+    ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+}
+
 func parseSemver(_ s: String) -> [Int] {
     // Strip leading whitespace + 'v', split on '.', take leading
     // digit run from each chunk. Tolerant by design; "" returns []
@@ -1831,6 +1863,10 @@ final class CorrectionShareCleanupDelegate: NSObject, @preconcurrency NSSharingS
 }
 
 private final class RecordingHUDView: NSView {
+    var mode: RecordingHUDMode = .recording {
+        didSet { needsDisplay = true }
+    }
+
     var level: Float = 0 {
         didSet { needsDisplay = true }
     }
@@ -1856,12 +1892,28 @@ private final class RecordingHUDView: NSView {
         capsule.fill()
 
         let clamped = CGFloat(max(0, min(1, level)))
+        let accentColor: NSColor = mode == .recording ? .systemRed : .systemBlue
 
         let recordDotRect = NSRect(x: 17, y: bounds.midY - 6, width: 12, height: 12)
-        NSColor.systemRed.withAlphaComponent(0.18 + (0.22 * clamped)).setFill()
+        accentColor.withAlphaComponent(0.18 + (0.22 * max(clamped, 0.35))).setFill()
         NSBezierPath(ovalIn: recordDotRect.insetBy(dx: -5, dy: -5)).fill()
-        NSColor.systemRed.withAlphaComponent(0.92).setFill()
+        accentColor.withAlphaComponent(0.92).setFill()
         NSBezierPath(ovalIn: recordDotRect).fill()
+
+        if mode == .transcribing {
+            let text = "Transcribing..." as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+                .foregroundColor: NSColor.white.withAlphaComponent(0.86),
+            ]
+            let size = text.size(withAttributes: attributes)
+            let rect = NSRect(x: 46,
+                              y: bounds.midY - (size.height / 2),
+                              width: min(size.width, bounds.width - 64),
+                              height: size.height)
+            text.draw(in: rect, withAttributes: attributes)
+            return
+        }
 
         var waveformMaxX = bounds.maxX - 15
         if showsCancelHint && bounds.width > 150 {
@@ -1956,6 +2008,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     private var recordingHUDPanel: NSPanel?
     private var recordingHUDView: RecordingHUDView?
     private var recordingHUDAnimationToken = 0
+    private var delayedBusyHUDWorkItem: DispatchWorkItem?
 
     /// Last N transcripts, newest first. Shown in the History submenu.
     private var history: [String] = []
@@ -2451,7 +2504,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         recordingHUDPhase = 0
         setMenuBarState(.recording)
         if settings.showRecordingWaveform {
-            showRecordingHUD(level: 0)
+            showRecordingHUD(mode: .recording, level: 0)
         }
         let timer = Timer(timeInterval: 1.0 / 24.0,
                           target: self,
@@ -2495,24 +2548,25 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         recordingHUDPhase += 0.34 + (CGFloat(recordingVisualLevel) * 0.42)
         if settings.showRecordingWaveform {
             if recordingHUDPanel?.isVisible == true {
-                updateRecordingHUD(level: recordingVisualLevel)
+                updateRecordingHUD(mode: .recording, level: recordingVisualLevel)
             } else {
-                showRecordingHUD(level: recordingVisualLevel)
+                showRecordingHUD(mode: .recording, level: recordingVisualLevel)
             }
         } else {
             hideRecordingHUD()
         }
     }
 
-    private func showRecordingHUD(level: Float) {
+    private func showRecordingHUD(mode: RecordingHUDMode, level: Float) {
         guard settings.showRecordingWaveform else { return }
         let panel = recordingHUDPanel ?? makeRecordingHUDPanel()
         recordingHUDPanel = panel
         let shouldAnimate = !panel.isVisible
         if let view = recordingHUDView {
+            view.mode = mode
             view.level = level
             view.phase = recordingHUDPhase
-            view.showsCancelHint = settings.triggerMode == .toggle
+            view.showsCancelHint = mode == .recording && settings.triggerMode == .toggle
         }
         if shouldAnimate {
             animateRecordingHUDIn(panel)
@@ -2524,13 +2578,17 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func updateRecordingHUD(level: Float) {
+    private func updateRecordingHUD(mode: RecordingHUDMode, level: Float) {
+        recordingHUDView?.mode = mode
         recordingHUDView?.level = level
         recordingHUDView?.phase = recordingHUDPhase
-        recordingHUDView?.showsCancelHint = settings.triggerMode == .toggle
+        recordingHUDView?.showsCancelHint = mode == .recording && settings.triggerMode == .toggle
     }
 
     private func hideRecordingHUD() {
+        delayedBusyHUDWorkItem?.cancel()
+        delayedBusyHUDWorkItem = nil
+        recordingHUDView?.mode = .recording
         recordingHUDView?.level = 0
         recordingHUDView?.phase = 0
         recordingHUDView?.showsCancelHint = false
@@ -2616,6 +2674,23 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         preconditionFailure("NSScreen.screens unexpectedly empty")
     }
 
+    private func scheduleDelayedBusyHUD() {
+        delayedBusyHUDWorkItem?.cancel()
+        guard settings.showRecordingWaveform else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isBusy, !self.isRecording, !self.isTerminating else { return }
+            self.showRecordingHUD(mode: .transcribing, level: 0)
+        }
+        delayedBusyHUDWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + RECORDING_HUD_BUSY_DELAY_SECONDS, execute: work)
+    }
+
+    private func finishBusyHUD() {
+        delayedBusyHUDWorkItem?.cancel()
+        delayedBusyHUDWorkItem = nil
+        hideRecordingHUD()
+    }
+
     // MARK: - Recording loop
 
     private func handlePress() {
@@ -2661,6 +2736,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         }
         isBusy = true
         setMenuBarState(.busy)
+        scheduleDelayedBusyHUD()
         rebuildMenu()
         log("release: \(String(format: "%.2f", dur)) s captured, transcribing")
 
@@ -2672,6 +2748,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 if !isTerminating {
                     let missing = missingPermissions()
                     guard missing.isEmpty else {
+                        isBusy = false
+                        finishBusyHUD()
                         enterPermissionBlockedState(missing: missing, reason: "transcription complete")
                         return
                     }
@@ -2684,6 +2762,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                     if !corrected.text.isEmpty {
                         let missing = missingPermissions()
                         guard missing.isEmpty else {
+                            isBusy = false
+                            finishBusyHUD()
                             enterPermissionBlockedState(missing: missing, reason: "paste")
                             return
                         }
@@ -2698,6 +2778,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                 log("transcribe failed: \(error)")
             }
             isBusy = false
+            finishBusyHUD()
             setMenuBarState(.idle)
             rebuildMenu()
             runDeferredAudioRouteRefreshIfNeeded()
@@ -3041,6 +3122,32 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
             ? "None reported"
             : devices.map(\.name).joined(separator: ", ")
         let pendingUpdateText = pendingUpdate.map { "v\($0.version)" } ?? "none"
+        let memoryText: String
+        if let memory = currentAppMemoryUsage() {
+            memoryText = """
+            Memory:
+            - Resident: \(formattedByteCount(memory.residentBytes))
+            - Physical footprint: \(formattedByteCount(memory.physicalFootprintBytes))
+            """
+        } else {
+            memoryText = """
+            Memory:
+            - Unavailable
+            """
+        }
+        let launchAtLoginText: String
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            launchAtLoginText = "enabled"
+        case .requiresApproval:
+            launchAtLoginText = "requires approval"
+        case .notRegistered:
+            launchAtLoginText = "disabled"
+        case .notFound:
+            launchAtLoginText = "not found"
+        @unknown default:
+            launchAtLoginText = "unknown"
+        }
 
         return """
         Parakey diagnostics
@@ -3058,6 +3165,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         Recording active: \(isRecording)
         Transcribing: \(isBusy)
 
+        \(memoryText)
+
         Permissions:
         \(permissions)
 
@@ -3070,6 +3179,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         - Mute while recording: \(settings.muteWhileRecording)
         - Feedback sounds: \(settings.playFeedbackSounds)
         - Show in Dock: \(settings.showInDock)
+        - Launch at Login: \(launchAtLoginText)
         - Automatic update checks: \(settings.checkForUpdates)
         - Manual update check active: \(isCheckingForUpdates)
         - Pending update: \(pendingUpdateText)
@@ -3141,7 +3251,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         let sub = NSMenu()
         sub.autoenablesItems = false
 
-        // Hotkey submenu.
+        // Input + capture preferences.
         let hkParent = NSMenuItem(title: "Hotkey", action: nil, keyEquivalent: "")
         let hkSub = NSMenu()
         hkSub.autoenablesItems = false
@@ -3157,8 +3267,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         hkParent.submenu = hkSub
         sub.addItem(hkParent)
 
-        // Trigger mode submenu.
-        let tmParent = NSMenuItem(title: "Trigger mode", action: nil, keyEquivalent: "")
+        let tmParent = NSMenuItem(title: "Trigger", action: nil, keyEquivalent: "")
         let tmSub = NSMenu()
         tmSub.autoenablesItems = false
         for mode in [TriggerMode.hold, .toggle] {
@@ -3173,8 +3282,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         tmParent.submenu = tmSub
         sub.addItem(tmParent)
 
-        // Paste behavior submenu.
-        let pasteParent = NSMenuItem(title: "Paste Behavior", action: nil, keyEquivalent: "")
+        sub.addItem(buildInputDeviceItem())
+
+        sub.addItem(.separator())
+
+        // Text handling preferences.
+        let pasteParent = NSMenuItem(title: "After Pasting", action: nil, keyEquivalent: "")
         let pasteSub = NSMenu()
         pasteSub.autoenablesItems = false
         for suffix in [PasteSuffix.appendSpace, .none, .appendNewline] {
@@ -3189,7 +3302,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         pasteParent.submenu = pasteSub
         sub.addItem(pasteParent)
 
-        // Recent transcript history submenu.
         let recentParent = NSMenuItem(title: "Recent Transcripts", action: nil, keyEquivalent: "")
         let recentSub = NSMenu()
         recentSub.autoenablesItems = false
@@ -3205,11 +3317,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         recentParent.submenu = recentSub
         sub.addItem(recentParent)
 
-        sub.addItem(buildInputDeviceItem())
-
         sub.addItem(buildCorrectionsItem())
 
-        // Recording waveform toggle.
+        sub.addItem(.separator())
+
+        // App behavior toggles.
         let waveform = NSMenuItem(title: "Show recording waveform",
                                   action: #selector(toggleRecordingWaveform(_:)),
                                   keyEquivalent: "")
@@ -3241,6 +3353,23 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         dock.state = settings.showInDock ? .on : .off
         sub.addItem(dock)
 
+        let launchAtLogin = NSMenuItem(title: "Launch at Login",
+                                       action: #selector(toggleLaunchAtLogin(_:)),
+                                       keyEquivalent: "")
+        launchAtLogin.target = self
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            launchAtLogin.state = .on
+        case .requiresApproval:
+            launchAtLogin.state = .mixed
+            launchAtLogin.toolTip = "Approve Parakey in System Settings → General → Login Items."
+        default:
+            launchAtLogin.state = .off
+        }
+        sub.addItem(launchAtLogin)
+
+        sub.addItem(.separator())
+
         // Periodic-check toggle. Manual checks live at top level so
         // users can force a fresh GitHub lookup without changing the
         // background polling preference.
@@ -3256,15 +3385,18 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func buildInputDeviceItem() -> NSMenuItem {
-        let parent = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        sub.autoenablesItems = false
-
         let devices = availableAudioInputDevices()
         let rawSavedPreference = settings.inputDevice.trimmingCharacters(in: .whitespacesAndNewlines)
         let savedPreference = isDefaultAggregateAudioInputPreference(rawSavedPreference) ? "" : rawSavedPreference
         let selectedDevice = audioInputDevice(matching: savedPreference, in: devices)
         let canSwitch = !isRecording && !isBusy && !isTerminating
+        let parent = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
+        if !savedPreference.isEmpty && selectedDevice == nil {
+            parent.toolTip = savedPreference
+        }
+
+        let sub = NSMenu()
+        sub.autoenablesItems = false
 
         let system = NSMenuItem(title: "System default",
                                 action: #selector(selectInputDevice(_:)),
@@ -3386,11 +3518,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func buildCorrectionsItem() -> NSMenuItem {
-        let parent = NSMenuItem(title: "Text Corrections", action: nil, keyEquivalent: "")
+        let corrections = settings.transcriptCorrections
+        let title = corrections.isEmpty ? "Text Corrections" : "Text Corrections (\(corrections.count))"
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let sub = NSMenu()
         sub.autoenablesItems = false
-
-        let corrections = settings.transcriptCorrections
 
         let add = NSMenuItem(title: "Add Correction…",
                              action: #selector(addCorrectionClicked(_:)),
@@ -3528,6 +3660,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     @objc private func removeAllCorrectionsClicked(_ sender: NSMenuItem) {
         guard !settings.transcriptCorrections.isEmpty else { return }
+        showAppForModal()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Remove All Text Corrections?"
@@ -3647,6 +3780,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func showAppForModal() {
+        NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -3671,6 +3805,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func createCorrectionsSyncFile() {
+        showAppForModal()
         let panel = NSSavePanel()
         panel.title = "Create Text Correction Sync File"
         panel.message = "Choose where Parakey should keep the sync file. A folder synced by iCloud Drive or another provider works best."
@@ -3691,6 +3826,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func useExistingCorrectionsSyncFile() {
+        showAppForModal()
         let panel = NSOpenPanel()
         panel.title = "Choose Text Correction Sync File"
         panel.message = "Choose an existing Parakey corrections file."
@@ -3732,6 +3868,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
                                             sourceName: String,
                                             allowsEmptyReplace: Bool) -> CorrectionImportChoice? {
         let imported = normalizedTranscriptCorrections(imported)
+        showAppForModal()
         if imported.isEmpty {
             let alert = NSAlert()
             alert.messageText = "No Text Corrections Found"
@@ -3966,6 +4103,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func showCorrectionTransferError(title: String, message: String) {
+        showAppForModal()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title
@@ -3976,6 +4114,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private func showCorrectionEditor(existing: TranscriptCorrection?,
                                       prefillSource: String = "") -> TranscriptCorrection? {
+        showAppForModal()
         let alert = NSAlert()
         alert.messageText = existing == nil ? "Add Text Correction" : "Edit Text Correction"
         alert.informativeText = "Add the incorrect text Parakey typed, then the text it should paste instead."
@@ -4025,6 +4164,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func showCorrectionValidationError() {
+        showAppForModal()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Correction Not Saved"
@@ -4089,7 +4229,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         settings.showRecordingWaveform.toggle()
         sender.state = settings.showRecordingWaveform ? .on : .off
         if settings.showRecordingWaveform, isRecording {
-            showRecordingHUD(level: recordingVisualLevel)
+            showRecordingHUD(mode: .recording, level: recordingVisualLevel)
         } else {
             hideRecordingHUD()
         }
@@ -4111,6 +4251,32 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
     }
 
+    @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
+        do {
+            switch SMAppService.mainApp.status {
+            case .enabled, .requiresApproval:
+                try SMAppService.mainApp.unregister()
+                log("launch at login disabled")
+            default:
+                try SMAppService.mainApp.register()
+                log("launch at login enabled")
+            }
+        } catch {
+            showLaunchAtLoginError(error)
+        }
+        rebuildMenu()
+    }
+
+    private func showLaunchAtLoginError(_ error: Error) {
+        showAppForModal()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Launch at Login couldn't be changed"
+        alert.informativeText = "\(error)"
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     @objc private func toggleCheckForUpdates(_ sender: NSMenuItem) {
         settings.checkForUpdates.toggle()
         sender.state = settings.checkForUpdates ? .on : .off
@@ -4119,6 +4285,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     // MARK: - About dialog
 
     @objc private func showAboutClicked(_ sender: NSMenuItem) {
+        showAppForModal()
         let alert = NSAlert()
         alert.messageText = "Parakey \(currentBundleVersion())"
         alert.informativeText = """
@@ -4207,6 +4374,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func showReleaseNotes(for release: GitHubRelease) {
+        showAppForModal()
         let alert = NSAlert()
         alert.messageText = "Parakey v\(release.version)"
         var body = release.body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4281,6 +4449,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func showUpdateAvailableAlert(for release: GitHubRelease, currentVersion: String) {
+        showAppForModal()
         let alert = NSAlert()
         alert.messageText = "Parakey v\(release.version) is available"
         alert.informativeText = "You're running v\(currentVersion)."
@@ -4296,6 +4465,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func showUpToDateAlert(currentVersion: String) {
+        showAppForModal()
         let alert = NSAlert()
         alert.messageText = "Parakey is up to date"
         alert.informativeText = "You're running v\(currentVersion)."
@@ -4304,6 +4474,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
     }
 
     private func showUpdateCheckFailedAlert() {
+        showAppForModal()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Couldn't check for updates"
@@ -4329,6 +4500,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private func showManualUpdateRequired(for release: GitHubRelease, reason: String) {
         log("update click: manual update required: \(reason)")
+        showAppForModal()
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Manual update needed"
@@ -4350,6 +4522,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate {
 
     private func showUpdateCouldNotStart(detail: String) {
         log("update: could not start helper: \(detail)")
+        showAppForModal()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Update couldn't start"
