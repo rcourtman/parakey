@@ -50,8 +50,15 @@ jobs:
           '
       - name: Docs syntax
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/sync-docs.py")
+          compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          PY
           python3 -m json.tool docs/benchmarks/results.json >/dev/null
           python3 -m json.tool docs/privacy/network-calls.json >/dev/null
+          python3 -m json.tool docs/site-metadata.json >/dev/null
           python3 -m json.tool marketing/demo/package.json >/dev/null
           python3 - <<'PY'
           from html.parser import HTMLParser
@@ -67,3 +74,5 @@ jobs:
               if "<title>" not in text or "</main>" not in text:
                   raise SystemExit(f"{path}: missing title or main")
           PY
+      - name: Docs freshness
+        run: python3 scripts/sync-docs.py --check

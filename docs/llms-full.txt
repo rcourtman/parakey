@@ -24,6 +24,8 @@ open /Applications/Parakey.app
 
 First launch downloads the Parakeet TDT v3 model weights, about 600 MB, into `~/Library/Application Support/FluidAudio/`.
 
+Use Setup Checklist from the Parakey menu bar item to finish the speech model, Microphone, Accessibility, Input Monitoring, and hotkey readiness checks.
+
 ## Usage
 
 The default hotkey is Right Option. Hold it, speak, and release. Parakey transcribes locally and pastes the text at the cursor with a trailing space. Trigger mode can be changed to press-to-toggle from the menu.

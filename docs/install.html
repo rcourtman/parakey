@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Install Parakey - Homebrew Cask and Permissions</title>
-    <meta name="description" content="Install Parakey with Homebrew, launch the notarised app, grant macOS Microphone, Accessibility, and Input Monitoring permissions, and start push-to-talk dictation.">
+    <title>Install Parakey - Homebrew Cask and Setup Checklist</title>
+    <meta name="description" content="Install Parakey with Homebrew, launch the notarised app, use Setup Checklist to finish the local model, permissions, and hotkey readiness, then start push-to-talk dictation.">
     <link rel="canonical" href="https://rcourtman.github.io/parakey/install.html">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <meta name="theme-color" content="#0d7f5f">
@@ -29,7 +29,7 @@
       <div class="wrap page-title">
         <span class="section-eyebrow">Install</span>
         <h1>Install Parakey</h1>
-        <p>The canonical install path is the notarised Homebrew Cask. The app then guides the three required macOS privacy grants from its menu.</p>
+        <p>The canonical install path is the notarised Homebrew Cask. The app then guides model loading, macOS privacy grants, and hotkey readiness from Setup Checklist.</p>
         <div class="install-line" aria-label="Install command">
           <span class="prompt" aria-hidden="true">$</span>
           <code>brew install --cask rcourtman/parakey/parakey</code>
@@ -55,7 +55,7 @@
           <h2>Install and launch</h2>
           <pre><code>brew install --cask rcourtman/parakey/parakey
 open /Applications/Parakey.app</code></pre>
-          <p>The Parakey icon appears in the menu bar. On first launch, allow 1-5 minutes for the model download before trying the hotkey.</p>
+          <p>The Parakey icon appears in the menu bar. On first launch, allow 1-5 minutes for the model download before trying the hotkey. If setup is not complete, Parakey opens Setup Checklist; you can reopen it from the menu at any time.</p>
         </div>
       </section>
 
@@ -63,7 +63,7 @@ open /Applications/Parakey.app</code></pre>
         <div class="wrap">
           <span class="section-eyebrow">Three grants</span>
           <h2>Permissions</h2>
-          <p>Parakey needs Microphone, Accessibility, and Input Monitoring. Until all three are granted, the menu shows clickable rows for each missing permission.</p>
+          <p>Parakey needs Microphone, Accessibility, and Input Monitoring. Setup Checklist shows each grant, explains why it is needed, and opens the relevant macOS prompt or Settings pane.</p>
           <div class="table-scroll">
             <table>
               <thead>
@@ -88,7 +88,7 @@ open /Applications/Parakey.app</code></pre>
               </tbody>
             </table>
           </div>
-          <p>Click each warning row in the menu. Parakey triggers the OS prompt and opens the relevant Settings pane as a fallback. Rows turn into checkmarks as macOS reflects the grants.</p>
+          <p>Use the Grant buttons in Setup Checklist. The main menu also shows clickable permission rows while anything is missing, so setup can continue even after the checklist window is closed.</p>
         </div>
       </section>
 
@@ -114,8 +114,8 @@ open /Applications/Parakey.app</code></pre>
               <p><code>open /Applications/Parakey.app</code>. First launch downloads the speech model (~600 MB, 1-5 minutes).</p>
             </li>
             <li>
-              <strong>Grant the three permissions</strong>
-              <p>Open the Parakey menu and click each warning row. macOS prompts for Microphone, Accessibility, and Input Monitoring.</p>
+              <strong>Finish Setup Checklist</strong>
+              <p>Open the Parakey menu and choose <strong>Setup Checklist…</strong>. Use it to finish the speech model, permissions, and hotkey check.</p>
             </li>
             <li>
               <strong>Hold Right Option, speak, release</strong>
@@ -134,19 +134,15 @@ open /Applications/Parakey.app</code></pre>
 
 Parakey is distributed as a notarised Homebrew Cask. Use the Cask path, not a source build.
 
-1. Confirm this Mac is Apple Silicon:
-   uname -m
-   It must print arm64. If it does not, stop.
-2. Confirm macOS is version 26 or later:
-   sw_vers -productVersion
-3. Install Homebrew if it is missing.
-4. Install Parakey:
-   brew install --cask rcourtman/parakey/parakey
-5. Launch it:
-   open /Applications/Parakey.app
-6. Explain that first launch downloads a one-time ~600 MB speech model from Hugging Face and may take 1-5 minutes.
-7. Ask the user to open the Parakey menu-bar icon and grant Microphone, Accessibility, and Input Monitoring from the warning rows.
-8. After all permission rows disappear, tell the user to hold Right Option, speak, and release. The transcript should paste at the cursor.</code></pre>
+Run:
+  uname -m
+  sw_vers -productVersion
+  brew install --cask rcourtman/parakey/parakey
+  open /Applications/Parakey.app
+
+Stop if the Mac is not Apple Silicon (arm64) or macOS is older than 26. If Homebrew is missing, install it first or tell the user.
+
+After launch, explain that Parakey downloads a one-time ~600 MB local speech model. Open Setup Checklist from the Parakey menu bar item and use it to finish the model, permissions, and hotkey readiness. The default dictation key is Right Option.</code></pre>
           <p>Plain Markdown version: <a href="install/agents.md">install/agents.md</a>.</p>
         </div>
       </section>

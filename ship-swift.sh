@@ -23,10 +23,10 @@
 #   - sibling Homebrew tap at ../homebrew-parakey (override with
 #     PARAKEY_HOMEBREW_TAP=/path/to/tap)
 #
-# Recovery: if anything after the build fails, swift/Info.plist is
-# the only locally-mutated file. Reset with `git checkout
-# swift/Info.plist` and try again. Built artefacts in swift/dist/
-# are safe to delete.
+# Recovery: if anything after the build fails, swift/Info.plist and
+# synced docs metadata may be locally mutated. Reset with `git checkout
+# swift/Info.plist README.md docs/` and try again. Built artefacts in
+# swift/dist/ are safe to delete.
 
 set -euo pipefail
 
@@ -40,6 +40,17 @@ NOTARY_PROFILE="parakey-notary"
 CASK_TAP="${PARAKEY_HOMEBREW_TAP:-$PROJECT_DIR/../homebrew-parakey}"
 CASK_FILE="$CASK_TAP/Casks/parakey.rb"
 CASK_TOKEN="rcourtman/parakey/parakey"
+DOC_SYNC_PATHS=(
+    README.md
+    docs/index.html
+    docs/install.html
+    docs/install/agents.md
+    docs/faq.html
+    docs/llms.txt
+    docs/llms-full.txt
+    docs/sitemap.xml
+    docs/site-metadata.json
+)
 
 # ---- 0. CLI ---------------------------------------------------------------
 BUMP=patch
@@ -212,20 +223,24 @@ ZIP_SHA="$(shasum -a 256 "$ZIP_OUT" | awk '{print $1}')"
 ZIP_SIZE="$(du -h "$ZIP_OUT" | cut -f1)"
 say "Built $ZIP_OUT ($ZIP_SIZE, sha256 $ZIP_SHA)"
 
+say "Syncing release docs metadata"
+/usr/bin/python3 "$PROJECT_DIR/scripts/sync-docs.py" --release-zip "$ZIP_OUT" \
+    || die "docs metadata sync failed"
+
 # Tidy up the unzipped .app so Spotlight / Launch Services don't
 # accidentally favour it over /Applications/Parakey.app.
 rm -rf "$APP"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-    say "Dry run -- stopping before git/tag/release/cask. Reverting Info.plist."
-    git -C "$PROJECT_DIR" checkout -- "$INFO_PLIST"
+    say "Dry run -- stopping before git/tag/release/cask. Reverting Info.plist and synced docs."
+    git -C "$PROJECT_DIR" checkout -- "$INFO_PLIST" "${DOC_SYNC_PATHS[@]}"
     say "Done (dry run)."
     exit 0
 fi
 
 # ---- 9. Commit, tag, push -------------------------------------------------
 say "Committing version bump"
-git -C "$PROJECT_DIR" add "$INFO_PLIST"
+git -C "$PROJECT_DIR" add "$INFO_PLIST" "${DOC_SYNC_PATHS[@]}"
 git -C "$PROJECT_DIR" commit -m "Release v$new_version"
 git -C "$PROJECT_DIR" tag "v$new_version"
 
