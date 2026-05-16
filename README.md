@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon/hero.svg" alt="Parakey — Hold a key. Speak. Text appears." width="900">
+  <img src="icon/hero.svg" alt="Parakey — fast, lightweight local dictation for Apple Silicon." width="900">
 </p>
 
 <p align="center">
