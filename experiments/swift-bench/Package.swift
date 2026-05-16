@@ -39,6 +39,20 @@ let package = Package(
             name: "parakey-bench",
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
+            ],
+            // Embed Info.plist into the CLI executable. Speech.framework's
+            // DictationTranscriber traps (exit 133 / SIGTRAP) during prepare
+            // when NSSpeechRecognitionUsageDescription / CFBundleIdentifier
+            // are missing from the binary — SwiftPM-built executables don't
+            // get an Info.plist by default. The `__TEXT,__info_plist`
+            // section is the canonical way to ship one inside a CLI binary.
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Info.plist",
+                ])
             ]
         ),
     ]

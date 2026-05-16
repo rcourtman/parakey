@@ -83,28 +83,71 @@ Mac mini M4, 10 cores, 16 GB, macOS 26.4.1, Xcode/Swift 6.3.
 | `disfluent` | "So, um, I was going to send, like, maybe a quick note about the thing we discussed earlier, you know." | ✓ exact, fillers preserved |
 | `longer-technical` | "When you press the dictation key, the audio buffer is captured at sixteen kilohertz, run through Parakeet's encoder on the neural engine, and the resulting tokens are pasted at the cursor location." | "16 kHz" (correctly normalised), `fluid` lowercases "parakeet", `parakey-mlx` capitalises |
 
-## Known limitations
+### Re-run post-v0.14.5 FluidAudio pin + Apple SpeechAnalyzer unblock
 
-### Apple `SpeechAnalyzer` backend currently blocked
+Mac mini M4, 10 cores, 16 GB, macOS 26.4.1, Swift 6.3. 5 trials per
+backend per clip, p50 reported below. Apple backend now runs
+end-to-end after embedding a minimal `Info.plist` into the executable
+and using the fresh-analyzer-per-call pattern (see "Apple backend
+notes" below).
 
-The `apple` backend wiring is in `main.swift`, but the bench traps
-inside `Speech.framework` during `DictationTranscriber` preparation
-(exit 133 / SIGTRAP). Most likely cause is missing
-`NSSpeechRecognitionUsageDescription` in Info.plist and/or a
-Speech-Recognition privacy entitlement — SwiftPM-built CLI
-executables don't get an Info.plist by default.
+| Clip | Duration | `fluid` (ANE) | `apple-SpeechAnalyzer` | Apple/Fluid |
+|---|---:|---:|---:|---:|
+| `short-clean` | 2.50 s | **66.7 ms** | 173.8 ms | 2.6x slower |
+| `medium-clean` | 4.29 s | **84.0 ms** | 368.3 ms | 4.4x slower |
+| `disfluent` | 6.53 s | **80.6 ms** | 240.2 ms | 3.0x slower |
+| `longer-technical` | 10.94 s | **119.8 ms** | 408.5 ms | 3.4x slower |
 
-Two ways to fix when we want this data:
+**Key findings (`fluid` vs `apple`):**
 
-1. Embed an Info.plist into the executable via linker flag
-   (`-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist
-   -Xlinker $(realpath Info.plist)`).
-2. Wrap the executable in a minimal `.app` bundle with proper
-   Info.plist + signing.
+- **`fluid` is 2.6-4.4x faster than `apple` on this Mac**, across every
+  clip. The gap widens with clip length.
+- **`apple` drops punctuation** ("So I was going to send like maybe a
+  quick note about the thing we discussed earlier you know") whereas
+  `fluid` produces commas and periods.
+- **Both have minor word-segmentation errors** on "Parakey"
+  ("push-to-tock" for `fluid`, "Para key" for `apple`) and
+  "Macs"->"Max" (TTS artifact, both backends).
+- **Apple's first-time model is also downloaded**, not preinstalled
+  for every user — the "no download" pitch for SpeechAnalyzer applies
+  only on machines where the en-US dictation locale was already
+  fetched for system Dictation. The download is smaller than
+  FluidAudio's 600 MB but non-zero.
 
-Until that's done, we're benchmarking `fluid` vs `parakey-mlx` only.
-Apple's SpeechAnalyzer accuracy / latency numbers on the same audio
-are a missing data point.
+**`apple-SpeechAnalyzer` transcripts:**
+
+| Clip | `apple` transcript |
+|---|---|
+| `short-clean` | "The quick brown fox jumps over the lazy dog" (no trailing period) |
+| `medium-clean` | "Para key is a lightweight push to talk dictation app for Apple Silicon Max" ("Para key", no punctuation) |
+| `disfluent` | "So I was going to send like maybe a quick note about the thing we discussed earlier you know" (fillers preserved, no punctuation) |
+| `longer-technical` | "When you press the dictation key the audio buffer is captured at 16 kHz run through parakeets encoder on the neural engine and the resulting tokens are pasted at the cursor location" (no punctuation) |
+
+## Apple backend notes
+
+Once-blocking gaps that have been resolved:
+
+1. **Info.plist** — Embedded into the executable via a linker
+   `-sectcreate __TEXT __info_plist` flag (see `Package.swift`).
+   `NSSpeechRecognitionUsageDescription` and `CFBundleIdentifier` are
+   what Speech.framework checks; without them
+   `DictationTranscriber.prepare` traps with exit 133 / SIGTRAP.
+2. **Audio format** — `DictationTranscriber` rejects Float32 with
+   "Audio sample data must be 16-bit signed integers". The bench now
+   converts the load-time float buffer to Int16 in `makePCMBuffer`.
+3. **Analyzer lifecycle** — `analyzer.finalizeAndFinishThroughEndOfInput()`
+   puts the analyzer into a terminal state; subsequent transcribe calls
+   on the same instance produce empty output instantly. The bench now
+   recreates analyzer + transcriber per call (matches Parakey's
+   push-to-talk pattern: one utterance, one session).
+4. **Results draining** — Reading `transcriber.results` sequentially
+   after finalize loses events. The bench drains results in a child
+   task started *before* `analyzer.start(...)`, mirroring
+   FluidInference's `swift-scribe` reference app.
+5. **isFinal semantics** — For a single-shot push-to-talk utterance,
+   `DictationTranscriber` emits the entire transcript as a single
+   `isFinal=false` (volatile) event. The "final" text the user sees is
+   therefore `finalized + last-volatile`, not just `finalized`.
 
 ### TTS audio is not real dictation
 

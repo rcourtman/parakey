@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.local.parakey-bench</string>
+	<key>CFBundleName</key>
+	<string>parakey-bench</string>
+	<key>CFBundleExecutable</key>
+	<string>parakey-bench</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Bench-only — the bench reads pre-recorded WAVs and never opens a live microphone, but Speech.framework still expects the key to be present.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Bench runs Apple SpeechAnalyzer / DictationTranscriber against pre-recorded WAVs to compare against FluidAudio's Parakeet TDT v3 backend.</string>
+</dict>
+</plist>

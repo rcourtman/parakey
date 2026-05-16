@@ -116,35 +116,22 @@ protocol ASRBackend {
 @available(macOS 26, *)
 final class AppleBackend: ASRBackend {
     let name = "apple-SpeechAnalyzer"
-    private var transcriber: DictationTranscriber!
-    private var analyzer: SpeechAnalyzer!
+    private var localeInstalled = false
 
     func prepare(warmupSamples: [Float]) async throws {
-        // DictationTranscriber is the dictation-focused module (auto-
-        // punctuation, sentence structure), which matches Parakey's
-        // workload. SpeechTranscriber is the raw-words sibling for
-        // command-recognition use cases — wrong fit here.
-        transcriber = DictationTranscriber(
-            locale: Locale(identifier: "en-US"),
-            contentHints: [.shortForm],
-            transcriptionOptions: [],
-            reportingOptions: [],
-            attributeOptions: []
-        )
-
-        // Apple's per-locale dictation model isn't preinstalled. If
-        // the bundle hasn't been fetched for this locale yet,
-        // AssetInventory hands us a request that wraps an actual
-        // download. Skipping this step makes `transcriber.results`
-        // emit zero events and the program 'succeeds' silently with
-        // an empty transcript.
+        // Apple's per-locale dictation model isn't preinstalled. If the
+        // bundle hasn't been fetched for this locale yet, AssetInventory
+        // hands us a request that wraps an actual download. Skipping
+        // this step makes `transcriber.results` emit zero events and the
+        // program 'succeeds' silently with an empty transcript.
+        let template = makeTranscriber()
         let installed = await DictationTranscriber.installedLocales
         let target = Locale(identifier: "en-US")
         let hasIt = installed.contains { $0.identifier(.bcp47) == target.identifier(.bcp47) }
         if !hasIt {
             log("  DictationTranscriber en-US not installed — requesting download…")
             if let request = try await AssetInventory.assetInstallationRequest(
-                supporting: [transcriber]
+                supporting: [template]
             ) {
                 try await request.downloadAndInstall()
                 log("  download + install complete")
@@ -152,12 +139,10 @@ final class AppleBackend: ASRBackend {
                 log("  no install request returned — assuming locale is available")
             }
         }
+        localeInstalled = true
 
-        analyzer = SpeechAnalyzer(modules: [transcriber])
-
-        // First inference loads the model into the ANE; subsequent
-        // ones are warm. Run a warmup so measured runs reflect
-        // steady-state, matching parakey.py's behavior.
+        // First inference loads the model into the ANE; subsequent ones
+        // are warm. Run a warmup so measured runs reflect steady-state.
         _ = try await transcribe(samples: warmupSamples)
     }
 
@@ -167,11 +152,59 @@ final class AppleBackend: ASRBackend {
         return (text, Date().timeIntervalSince(t0))
     }
 
+    private func makeTranscriber() -> DictationTranscriber {
+        // DictationTranscriber is the dictation-focused module (auto-
+        // punctuation, sentence structure), which matches Parakey's
+        // workload. SpeechTranscriber is the raw-words sibling for
+        // command-recognition use cases — wrong fit here.
+        DictationTranscriber(
+            locale: Locale(identifier: "en-US"),
+            contentHints: [.shortForm],
+            transcriptionOptions: [],
+            reportingOptions: [],
+            attributeOptions: []
+        )
+    }
+
     private func transcribe(samples: [Float]) async throws -> String {
-        // Feed the audio as a single AnalyzerInput, then collect the
-        // final transcript text. Order matters: start the analyzer
-        // first (registers the input sequence), push audio, finish the
-        // stream, then drain the results AsyncSequence to completion.
+        // `SpeechAnalyzer.finalizeAndFinishThroughEndOfInput()` puts the
+        // analyzer (and the modules attached to it) into a terminal
+        // state — you cannot push more audio afterwards. For push-to-
+        // talk style benchmarks (and Parakey's real-world usage) the
+        // canonical pattern is therefore a fresh analyzer+transcriber
+        // per utterance, mirroring `TdtDecoderState()` on the fluid
+        // side.
+        let transcriber = makeTranscriber()
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+
+        // Drain `transcriber.results` in a child task that starts BEFORE
+        // `analyzer.start(...)`. Reading results sequentially after
+        // finalize loses events on at least DictationTranscriber: the
+        // module appears to discard pending results once the analyzer
+        // hits its terminal state, so by the time we'd loop the stream
+        // is empty. swift-scribe uses the same parallel pattern.
+        let collected = Task<String, Error> {
+            // SpeechAnalyzer/DictationTranscriber semantics:
+            //   - `isFinal == true`  → committed text, append to finalized
+            //   - `isFinal == false` → volatile preview, replace
+            // For a single-shot push-to-talk utterance DictationTranscriber
+            // tends to emit the entire transcript in one volatile event and
+            // never marks it final, so the user-visible result is
+            // `finalized + volatile`, not just `finalized`.
+            var finalized = ""
+            var volatileText = ""
+            for try await result in transcriber.results {
+                let chunk = String(result.text.characters)
+                if result.isFinal {
+                    finalized += chunk
+                    volatileText = ""
+                } else {
+                    volatileText = chunk
+                }
+            }
+            return finalized + volatileText
+        }
+
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         try await analyzer.start(inputSequence: stream)
 
@@ -179,26 +212,28 @@ final class AppleBackend: ASRBackend {
         continuation.yield(AnalyzerInput(buffer: buffer))
         continuation.finish()
 
-        var collected = ""
-        for try await result in transcriber.results {
-            if result.isFinal {
-                collected += String(result.text.characters)
-            }
-        }
-        return collected.trimmingCharacters(in: .whitespacesAndNewlines)
+        try await analyzer.finalizeAndFinishThroughEndOfInput()
+
+        return try await collected.value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func makePCMBuffer(samples: [Float]) -> AVAudioPCMBuffer {
+        // Speech.framework's DictationTranscriber rejects Float32 audio
+        // with "Failed precondition: Audio sample data must be 16-bit
+        // signed integers" — convert in [-1, 1] floats to clamped Int16
+        // here so the analyzer gets the format it actually wants.
         let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
+            commonFormat: .pcmFormatInt16,
             sampleRate: 16_000,
             channels: 1,
             interleaved: false
         )!
         let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
         buf.frameLength = AVAudioFrameCount(samples.count)
-        samples.withUnsafeBufferPointer { src in
-            buf.floatChannelData!.pointee.update(from: src.baseAddress!, count: samples.count)
+        let dst = buf.int16ChannelData!.pointee
+        for i in 0..<samples.count {
+            let clamped = max(-1.0, min(1.0, samples[i]))
+            dst[i] = Int16(clamped * 32767.0)
         }
         return buf
     }
