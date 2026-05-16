@@ -46,6 +46,7 @@ let MAX_RECORDING_SECONDS: TimeInterval = 120   // auto-release if held longer
 let UPDATE_CHECK_FIRST_DELAY_SECONDS: TimeInterval = 30
 let UPDATE_CHECK_INTERVAL_SECONDS: TimeInterval = 6 * 3600  // 6h
 let GITHUB_LATEST_RELEASE_URL = URL(string: "https://api.github.com/repos/rcourtman/parakey/releases/latest")!
+let GITHUB_REPOSITORY_PAGE = URL(string: "https://github.com/rcourtman/parakey")!
 let GITHUB_RELEASES_PAGE = URL(string: "https://github.com/rcourtman/parakey/releases/latest")!
 let HOMEBREW_CASK_TAP = "rcourtman/parakey"
 let HOMEBREW_CASK_TOKEN = "rcourtman/parakey/parakey"
@@ -4700,7 +4701,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let icon = NSImage(named: "Parakey") {
             alert.icon = icon
         }
-        alert.runModal()
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "View on GitHub")
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(GITHUB_REPOSITORY_PAGE)
+        }
     }
 
     // MARK: - Update flow
