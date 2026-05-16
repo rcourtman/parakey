@@ -101,11 +101,9 @@ ANE delivers both lower latency *and* lower power draw on battery.
 If you've been looking for a **fully on-device speech recognition**
 app for the Mac that's an alternative to Whisper-on-GPU Mac apps
 (MacWhisper, WhisperKit-based UIs) and to cloud transcription
-services (OpenAI Whisper API, Google Speech-to-Text, Deepgram,
-Apple's built-in dictation that pipes through Siri), Parakey is
-exactly that — Push-to-Talk transcription on the **Apple Neural
-Engine**, with the model running locally on your Mac and no audio
-ever leaving the device.
+services. Parakey is exactly that — Push-to-Talk transcription on the
+**Apple Neural Engine**, with the model running locally on your Mac
+and no audio ever leaving the device.
 
 The Parakeet TDT v3 weights (~600 MB) download once on first launch
 into `~/Library/Application Support/FluidAudio/` and cache there;
@@ -122,56 +120,33 @@ Apple Silicon only. macOS 26 (Tahoe) or later.
 
 ## Install (with an AI assistant)
 
-Paste the prompt below into Claude Code, Cursor, Codex, or any shell-
-capable agent running on the target Mac. It'll handle the Homebrew
-install, walk you through the three permission grants, and explain
-what to expect on first launch.
+Paste this into a shell-capable coding assistant on the target Mac:
 
 <details>
 <summary>Click to expand the AI-assistant install prompt</summary>
 
 ````text
-Install Parakey from https://github.com/rcourtman/parakey on this Mac.
+Install Parakey from https://github.com/rcourtman/parakey.
 
-Parakey is distributed as a notarised Homebrew Cask. Don't clone the
-repo or build from source — `brew install --cask` is the canonical
-end-user install path.
+Use the notarised Homebrew Cask, not a source checkout:
 
-Steps:
-1. Confirm this Mac is Apple Silicon (uname -m == arm64) and macOS 26+.
-   If not, stop and tell me — Parakey is Apple Silicon only and
-   requires macOS 26 (Tahoe).
-2. Install Homebrew if missing (the installer at https://brew.sh).
-3. Run:
-     brew install --cask rcourtman/parakey/parakey
-4. Launch the app:
-     open /Applications/Parakey.app
-5. Tell me the menu bar Parakey icon will appear shortly. First launch
-   downloads a ~600 MB speech model from Hugging Face — this takes
-   1–5 minutes on a typical connection, one-time only. The model is
-   cached locally after that. Don't try the dictation key yet.
-6. Once the icon appears, tell me to click it. Three rows will be
-   visible: "⚠ Grant Microphone permission…", "⚠ Grant Accessibility
-   permission…", "⚠ Grant Input Monitoring permission…". Tell me to
-   click each one. Microphone lets Parakey hear speech; Accessibility
-   lets it paste the transcript at the cursor; Input Monitoring lets
-   it catch the push-to-talk key. Parakey will trigger the macOS prompt
-   and/or open the right Settings pane. I should click Allow on the
-   macOS dialog, or toggle Parakey on in Settings, for each of the
-   three.
-7. Rows turn ✓ as I grant each, and disappear from the menu once
-   all three are granted. Parakey will not start recording until setup
-   is complete.
+    brew install --cask rcourtman/parakey/parakey
+    open /Applications/Parakey.app
 
-Then the menu bar's status row will tell me which key to hold to
-dictate. I can change it from Settings → Hotkey if I'd prefer
-something else.
+Before installing, confirm this is an Apple Silicon Mac running
+macOS 26 or later. Install Homebrew first if it is missing.
 
-To upgrade later: Parakey checks GitHub every few hours and will
-show an "Update to vX.Y.Z…" item at the top of its menu when a new
-release is out — click it, the app handles the upgrade and relaunch.
-The terminal fallback is still `brew upgrade --cask parakey` if I'd
-rather drive it manually.
+After launch, wait for Parakey's menu-bar icon. First launch may spend
+a few minutes downloading the local speech model. Open
+Parakey's **Setup Checklist…** from the menu bar and use it to finish
+Microphone, Accessibility, Input Monitoring, and hotkey readiness.
+
+Once setup is complete, the menu status row tells me which key to use.
+Default: hold Right Option, speak, release.
+
+For future updates, use Parakey's in-menu update item or run:
+
+    brew update && brew upgrade --cask rcourtman/parakey/parakey
 ````
 
 </details>
@@ -185,9 +160,8 @@ open /Applications/Parakey.app
 
 That's it — the cask is signed and notarised, no Gatekeeper warnings.
 First launch downloads the speech model (~600 MB, one-time, cached
-locally). Click the Parakey menu bar icon to grant the three macOS
-privacy permissions when it asks; Parakey stays in setup mode until
-all three are granted.
+locally). Open **Setup Checklist…** from the Parakey menu to grant
+Microphone, Accessibility, and Input Monitoring permissions.
 
 To upgrade: just click **"Update to vX.Y.Z…"** when it appears at
 the top of Parakey's menu — the app polls GitHub for new releases
@@ -228,25 +202,14 @@ run `./ship-swift.sh --dry-run` first to exercise the build, signing,
 entitlement check, and packaging path without notarising or stapling
 (see *Building a release* below).
 
-## First launch
+## First Launch And Permissions
 
-The first time Parakey runs, it downloads the Parakeet TDT v3 model
-(~600 MB) from Hugging Face into
-`~/Library/Application Support/FluidAudio/`. This is a one-time
-download — subsequent launches load the cached CoreML weights and
-are ready in well under a second. During the download the menu bar
-icon shows a loading indicator and the menu status row reports
-checking, downloading, and preparing progress, so allow 1–5 minutes
-on a typical connection.
+On first launch, Parakey downloads the Parakeet TDT v3 model
+(~600 MB) into `~/Library/Application Support/FluidAudio/`. This is
+one-time; later launches use the cached CoreML weights.
 
-After the model is loaded, Parakey still waits for the three macOS
-privacy permissions below before it will record. Dictation only starts
-once setup is complete.
-
-## Permissions
-
-Parakey needs three macOS privacy permissions and stays non-ready until
-all three are granted:
+Parakey also needs three macOS privacy permissions before it will
+record:
 
 - **Microphone** — captures your voice while the push-to-talk key is
   held.
@@ -256,22 +219,10 @@ all three are granted:
   so it behaves like Parakey's push-to-talk trigger instead of leaking
   through to the focused app.
 
-Until they're all granted, the menu bar dropdown shows rows like
-**⚠ Grant Microphone permission…** just below the status row. It also
-offers **Setup Checklist…**, a small first-run window that shows model,
-permission, and hotkey readiness in one place.
-
-For each missing permission:
-
-1. Click the ⚠ row in the menu — Parakey triggers the OS-level
-   request (you may see a native "Parakey wants access" dialog) and
-   opens the relevant Settings pane as a fallback.
-2. Toggle Parakey on in the Settings pane if it isn't already.
-3. The row updates to ✓ as soon as macOS reflects the new state, and
-   once all three are granted the rows collapse out of the menu
-   entirely.
-
-No restart needed.
+Use **Setup Checklist…** in the menu bar to track model readiness,
+grant permissions, and test the hotkey. If you prefer the compact
+path, the menu also shows a clickable ⚠ row for each missing
+permission. No restart needed after granting.
 
 ## Usage
 
@@ -313,10 +264,7 @@ Menu structure:
 - **Status row** — what Parakey is doing right now (idle / recording /
   transcribing / paused / loading).
 - **Permission rows** (only when something's missing) — a clickable
-  ⚠ row per ungranted permission. Click → grant → row turns ✓ →
-  rows disappear once all three are granted.
-- **Setup Checklist…** (only while setup needs attention) — opens a
-  small checklist for model readiness, permissions, and hotkey testing.
+  ⚠ row per ungranted permission.
 - **Recent transcripts** — the most recent one inline (click to copy
   it back to the clipboard); a **Recent** submenu appears once
   you've dictated more than once and holds older entries up to the
@@ -346,6 +294,7 @@ Menu structure:
     start and completion feedback
   - **Show Parakey in Dock** — off by default (menu-bar only)
   - **Launch at Login** — off by default; uses macOS Login Items
+- **Setup Checklist…** — model, permission, and hotkey readiness
 - **About Parakey**
 - **Copy Diagnostics** — copies a transcript-free support summary
   with app version, permission states, selected microphone status,
