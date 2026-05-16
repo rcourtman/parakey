@@ -73,10 +73,15 @@ Useful menu items:
 - **Settings → Hotkey** — choose Right Option, Right Control, Right
   Command, or selected F-keys
 - **Settings → Trigger** — hold-to-talk or press-to-toggle
+- **Settings → Language** — auto-detect (default) or pin to one of 18
+  Latin/Cyrillic-script languages to prevent wrong-script
+  bleed-through
 - **Settings → After Pasting** — append space, append newline, or no
   suffix
 - **Settings → Text Corrections** — local phrase replacements for
   recurring mishearings
+- **Settings → Remove filler words** — opt-in deterministic strip of
+  "um", "uh", "ah", "er", "erm", "hm" (and elongated variants)
 - **Copy Diagnostics** — transcript-free support summary
 
 ## Privacy

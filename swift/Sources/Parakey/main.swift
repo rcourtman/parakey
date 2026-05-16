@@ -121,6 +121,84 @@ let PASTE_SUFFIX_DISPLAY: [PasteSuffix: String] = [
     .appendNewline: "Append newline",
 ]
 
+/// User-visible language choice for the v3 decoder script filter. `.auto`
+/// passes no hint and lets the decoder pick freely — the right default for
+/// almost everyone. Selecting a specific language biases the joint head
+/// toward that script (Latin vs Cyrillic), which prevents the occasional
+/// Cyrillic-character bleed-through that v3 can emit when transcribing
+/// Latin-script speech (FluidAudio v0.14.1 fix). Raw values match
+/// FluidAudio's `Language` BCP-47-ish keys so `fluidLanguage` is a direct
+/// lookup.
+enum DictationLanguage: String, CaseIterable {
+    case auto
+    case english = "en"
+    case spanish = "es"
+    case french = "fr"
+    case german = "de"
+    case italian = "it"
+    case portuguese = "pt"
+    case romanian = "ro"
+    case polish = "pl"
+    case czech = "cs"
+    case slovak = "sk"
+    case slovenian = "sl"
+    case croatian = "hr"
+    case bosnian = "bs"
+    case russian = "ru"
+    case ukrainian = "uk"
+    case belarusian = "be"
+    case bulgarian = "bg"
+    case serbian = "sr"
+
+    /// Map to FluidAudio's `Language` enum. Returns nil for `.auto` so the
+    /// caller passes no hint and the decoder script filter stays off.
+    var fluidLanguage: Language? {
+        switch self {
+        case .auto:        return nil
+        case .english:     return .english
+        case .spanish:     return .spanish
+        case .french:      return .french
+        case .german:      return .german
+        case .italian:     return .italian
+        case .portuguese:  return .portuguese
+        case .romanian:    return .romanian
+        case .polish:      return .polish
+        case .czech:       return .czech
+        case .slovak:      return .slovak
+        case .slovenian:   return .slovenian
+        case .croatian:    return .croatian
+        case .bosnian:     return .bosnian
+        case .russian:     return .russian
+        case .ukrainian:   return .ukrainian
+        case .belarusian:  return .belarusian
+        case .bulgarian:   return .bulgarian
+        case .serbian:     return .serbian
+        }
+    }
+}
+
+let DICTATION_LANGUAGE_DISPLAY: [DictationLanguage: String] = [
+    .auto: "Auto-detect",
+    .english: "English",
+    .spanish: "Spanish",
+    .french: "French",
+    .german: "German",
+    .italian: "Italian",
+    .portuguese: "Portuguese",
+    .romanian: "Romanian",
+    .polish: "Polish",
+    .czech: "Czech",
+    .slovak: "Slovak",
+    .slovenian: "Slovenian",
+    .croatian: "Croatian",
+    .bosnian: "Bosnian",
+    .russian: "Russian",
+    .ukrainian: "Ukrainian",
+    .belarusian: "Belarusian",
+    .bulgarian: "Bulgarian",
+    .serbian: "Serbian",
+]
+
 enum RecentTranscriptLimit: String, CaseIterable {
     case off
     case last1 = "1"
@@ -527,6 +605,8 @@ final class Settings: @unchecked Sendable {
     private static let keySkippedVersions = "skipped_versions"
     private static let keyTranscriptCorrections = "transcript_corrections"
     private static let keyTranscriptCorrectionsSyncFile = "transcript_corrections_sync_file"
+    private static let keyDictationLanguage = "dictation_language"
+    private static let keyRemoveFillerWords = "remove_filler_words"
 
     private let defaults: UserDefaults
 
@@ -668,6 +748,22 @@ final class Settings: @unchecked Sendable {
                 defaults.set(trimmed, forKey: Self.keyTranscriptCorrectionsSyncFile)
             }
         }
+    }
+
+    var dictationLanguage: DictationLanguage {
+        get {
+            if let v = defaults.string(forKey: Self.keyDictationLanguage),
+               let lang = DictationLanguage(rawValue: v) {
+                return lang
+            }
+            return .auto
+        }
+        set { defaults.set(newValue.rawValue, forKey: Self.keyDictationLanguage) }
+    }
+
+    var removeFillerWords: Bool {
+        get { defaults.bool(forKey: Self.keyRemoveFillerWords) }
+        set { defaults.set(newValue, forKey: Self.keyRemoveFillerWords) }
     }
 }
 
@@ -1365,10 +1461,10 @@ actor TranscriptionWorker {
         log("ASR: ready in \(String(format: "%.2f", Date().timeIntervalSince(t0))) s")
     }
 
-    func transcribe(samples: [Float]) async throws -> String {
+    func transcribe(samples: [Float], language: Language? = nil) async throws -> String {
         guard let asr else { throw NSError(domain: "Parakey", code: -2) }
         var state = try TdtDecoderState()
-        let result = try await asr.transcribe(samples, decoderState: &state)
+        let result = try await asr.transcribe(samples, decoderState: &state, language: language)
         return result.text
     }
 }
@@ -1430,6 +1526,72 @@ enum TranscriptCorrector {
             .map { NSRegularExpression.escapedPattern(for: String($0)) }
         guard !parts.isEmpty else { return nil }
         return #"(?<![\p{L}\p{N}_])"# + parts.joined(separator: #"\s+"#) + #"(?![\p{L}\p{N}_])"#
+    }
+}
+
+// MARK: - Filler word removal
+//
+// Deterministic regex pass that strips standalone non-word fillers
+// ("um", "uh", "ah", "er", "erm", "hmm") and cleans up the punctuation
+// artifacts left behind. Intentionally conservative: skips ambiguous
+// fillers ("like", "you know") that have legitimate non-filler uses,
+// and only fires when the user explicitly enables it via Settings →
+// Remove filler words. Applied *after* TranscriptCorrector so explicit
+// user corrections always win over filler stripping.
+
+enum FillerWordRemover {
+    /// Non-word interjections only. "like" and "you know" are excluded
+    /// because they have valid non-filler meanings ("I like cats", "you
+    /// know who"). Each entry is a regex fragment that allows the
+    /// trailing letter to repeat, since real-world fillers stretch out
+    /// ("ummm", "uhhhh", "ahhh", "hmmm") and the word-boundary lookahead
+    /// would otherwise reject them.
+    private static let fillerPatterns = ["um+", "uh+", "ah+", "er", "erm", "hm+"]
+
+    static func apply(to text: String) -> (text: String, removedCount: Int) {
+        guard !text.isEmpty else { return (text, 0) }
+
+        // Word-boundary lookarounds include `'` (so "it's" stays one
+        // token) and `-` (so "uh-huh", "uh-oh" don't get split apart).
+        let alternation = fillerPatterns.joined(separator: "|")
+        let pattern = #"(?i)(?<![\p{L}\p{N}'\-])("# + alternation + #")(?![\p{L}\p{N}'\-])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return (text, 0)
+        }
+
+        let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        let matches = regex.matches(in: text, range: fullRange)
+        guard !matches.isEmpty else { return (text, 0) }
+
+        // Preserve the original first-character casing — if the input
+        // began with a capital (typical sentence start) the result
+        // should too, even if the original capital was on a removed
+        // filler ("Um, hello." → "Hello.", not "hello.").
+        let firstCharWasUpper = text.first?.isUppercase ?? false
+
+        let mutable = NSMutableString(string: text)
+        for match in matches.reversed() {
+            mutable.replaceCharacters(in: match.range, with: "")
+        }
+        var result = mutable as String
+
+        // Clean up artifacts left behind by removal:
+        //   1. Doubled / orphan commas: "x, , y" → "x, y"
+        //   2. Whitespace before punctuation: "x ." → "x."
+        //   3. Multiple consecutive spaces → single space
+        //   4. Leading punctuation / whitespace (".", ",", ";", ":")
+        //   5. Trailing whitespace
+        result = result.replacingOccurrences(of: #"\s*,\s*,"#, with: ",", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"\s+([.,!?;:])"#, with: "$1", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"^[\s,.;:]+"#, with: "", options: .regularExpression)
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if firstCharWasUpper, let first = result.first, first.isLowercase {
+            result = first.uppercased() + result.dropFirst()
+        }
+
+        return (result, matches.count)
     }
 }
 
@@ -2824,7 +2986,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Task { @MainActor in
             do {
                 let t0 = Date()
-                let text = try await asr.transcribe(samples: samples)
+                let text = try await asr.transcribe(samples: samples,
+                                                    language: settings.dictationLanguage.fluidLanguage)
                 let dt = Date().timeIntervalSince(t0)
                 if !isTerminating {
                     let missing = missingPermissions()
@@ -2839,8 +3002,23 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     if corrected.appliedCount > 0 {
                         log("transcript corrections applied: \(corrected.appliedCount)")
                     }
-                    log("\(String(format: "%.2f", dur)) s audio → \(String(format: "%.2f", dt)) s → \(corrected.text.count) chars")
-                    if !corrected.text.isEmpty {
+                    // Filler removal runs *after* corrections so the
+                    // user's explicit replacements always win — if a
+                    // correction maps "uhh" to something on purpose, it
+                    // gets applied first and the filler pass never sees
+                    // the literal "uhh".
+                    let cleaned: String
+                    if settings.removeFillerWords {
+                        let stripped = FillerWordRemover.apply(to: corrected.text)
+                        if stripped.removedCount > 0 {
+                            log("filler words removed: \(stripped.removedCount)")
+                        }
+                        cleaned = stripped.text
+                    } else {
+                        cleaned = corrected.text
+                    }
+                    log("\(String(format: "%.2f", dur)) s audio → \(String(format: "%.2f", dt)) s → \(cleaned.count) chars")
+                    if !cleaned.isEmpty {
                         let missing = missingPermissions()
                         guard missing.isEmpty else {
                             isBusy = false
@@ -2848,11 +3026,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             enterPermissionBlockedState(missing: missing, reason: "paste")
                             return
                         }
-                        TextInserter.insert(pastedText(from: corrected.text, suffix: settings.pasteSuffix))
+                        TextInserter.insert(pastedText(from: cleaned, suffix: settings.pasteSuffix))
                         if settings.playFeedbackSounds {
                             Sounds.playDone()
                         }
-                        addToHistory(corrected.text)
+                        addToHistory(cleaned)
                     }
                 }
             } catch {
@@ -3261,7 +3439,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Settings:
         - Hotkey: \(hotkey.hotkey.name)
         - Trigger mode: \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)
+        - Language: \(DICTATION_LANGUAGE_DISPLAY[settings.dictationLanguage] ?? settings.dictationLanguage.rawValue)
         - Paste behavior: \(PASTE_SUFFIX_DISPLAY[settings.pasteSuffix] ?? settings.pasteSuffix.rawValue)
+        - Remove filler words: \(settings.removeFillerWords)
         - Recent transcripts: \(RECENT_TRANSCRIPT_LIMIT_DISPLAY[settings.recentTranscriptLimit] ?? settings.recentTranscriptLimit.rawValue)
         - Text insertion: \(TextInserter.defaultStrategy.displayName)
         - Recording waveform: \(settings.showRecordingWaveform)
@@ -3674,6 +3854,27 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         tmParent.submenu = tmSub
         sub.addItem(tmParent)
 
+        let langParent = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
+        let langSub = NSMenu()
+        langSub.autoenablesItems = false
+        for lang in DictationLanguage.allCases {
+            let item = NSMenuItem(title: DICTATION_LANGUAGE_DISPLAY[lang] ?? lang.rawValue,
+                                  action: #selector(selectDictationLanguage(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.state = (lang == settings.dictationLanguage) ? .on : .off
+            item.representedObject = lang.rawValue
+            langSub.addItem(item)
+            // Auto-detect is the right default for almost everyone; only
+            // pin a specific language if you see wrong-script bleed-through
+            // (e.g. Cyrillic letters in Polish output).
+            if lang == .auto {
+                langSub.addItem(.separator())
+            }
+        }
+        langParent.submenu = langSub
+        sub.addItem(langParent)
+
         sub.addItem(buildInputDeviceItem())
 
         sub.addItem(.separator())
@@ -3710,6 +3911,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sub.addItem(recentParent)
 
         sub.addItem(buildCorrectionsItem())
+
+        // Filler-word removal sits with the other text-processing
+        // settings (After Pasting, Manage Corrections) rather than the
+        // behaviour toggles below — it transforms the transcript.
+        let filler = NSMenuItem(title: "Remove filler words (um, uh, ah, er, hmm)",
+                                action: #selector(toggleRemoveFillerWords(_:)),
+                                keyEquivalent: "")
+        filler.target = self
+        filler.state = settings.removeFillerWords ? .on : .off
+        sub.addItem(filler)
 
         sub.addItem(.separator())
 
@@ -4609,6 +4820,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         rebuildMenu()
     }
 
+    @objc private func selectDictationLanguage(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let lang = DictationLanguage(rawValue: raw) else { return }
+        settings.dictationLanguage = lang
+        rebuildMenu()
+    }
+
     @objc private func selectRecentTranscriptLimit(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let limit = RecentTranscriptLimit(rawValue: raw) else { return }
@@ -4630,6 +4848,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func toggleMute(_ sender: NSMenuItem) {
         settings.muteWhileRecording.toggle()
         sender.state = settings.muteWhileRecording ? .on : .off
+    }
+
+    @objc private func toggleRemoveFillerWords(_ sender: NSMenuItem) {
+        settings.removeFillerWords.toggle()
+        sender.state = settings.removeFillerWords ? .on : .off
     }
 
     @objc private func toggleFeedbackSounds(_ sender: NSMenuItem) {
@@ -5042,6 +5265,8 @@ private enum ParakeySelfTest {
             return runSuite("history", testRecentTranscriptLimit)
         case "corrections":
             return runSuite("corrections", testTranscriptCorrections)
+        case "fillers":
+            return runSuite("fillers", testFillerWordRemoval)
         case "audio-level":
             return runSuite("audio-level", testAudioLevelMetering)
         case "update":
@@ -5075,6 +5300,7 @@ private enum ParakeySelfTest {
         try testPasteSuffixFormatting()
         try testRecentTranscriptLimit()
         try testTranscriptCorrections()
+        try testFillerWordRemoval()
         try testAudioLevelMetering()
         try testAudioInputDeviceFiltering()
         try testSpeechModelStartupStatus()
@@ -5331,6 +5557,85 @@ private enum ParakeySelfTest {
                                                         conflictingSources: ["same source"]),
             "sync merge should report same-source edits that changed differently on both sides"
         )
+    }
+
+    private static func testFillerWordRemoval() throws {
+        // Mid-sentence filler with surrounding commas → orphan comma
+        // gets collapsed.
+        let mid = FillerWordRemover.apply(to: "So, um, I was going.")
+        try expect(mid.text, equals: "So, I was going.", "mid-sentence filler should leave a single comma")
+        try expect(mid.removedCount, equals: 1, "mid-sentence filler removal count")
+
+        // Sentence-initial filler with leading-comma cleanup AND
+        // capitalisation restored (the original 'U' was uppercase).
+        let initial = FillerWordRemover.apply(to: "Um, hello.")
+        try expect(initial.text, equals: "Hello.", "sentence-initial filler should re-capitalise the next word")
+        try expect(initial.removedCount, equals: 1, "sentence-initial filler removal count")
+
+        // Bare filler with adjacent punctuation collapses to empty.
+        let bare = FillerWordRemover.apply(to: "Um.")
+        try expect(bare.text, equals: "", "bare filler with trailing punctuation should leave empty string")
+        try expect(bare.removedCount, equals: 1, "bare filler removal count")
+
+        // Filler with no surrounding punctuation just leaves a space
+        // that gets collapsed away.
+        let inline = FillerWordRemover.apply(to: "I'm uh going to the store.")
+        try expect(inline.text, equals: "I'm going to the store.", "inline filler should collapse the leftover whitespace")
+        try expect(inline.removedCount, equals: 1, "inline filler removal count")
+
+        // Compound interjection "uh-huh" must NOT match — the hyphen is
+        // part of the boundary class.
+        let uhHuh = FillerWordRemover.apply(to: "Yeah, uh-huh.")
+        try expect(uhHuh.text, equals: "Yeah, uh-huh.", "uh-huh must not be stripped")
+        try expect(uhHuh.removedCount, equals: 0, "uh-huh removal count")
+
+        // Words that *contain* a filler substring must not match. "her"
+        // contains "er", "sum" contains "um", "exercise" contains "er".
+        let contains = FillerWordRemover.apply(to: "Her sum exercise is harder.")
+        try expect(contains.text, equals: "Her sum exercise is harder.", "filler substrings inside larger words must be preserved")
+        try expect(contains.removedCount, equals: 0, "no removals when fillers are embedded in real words")
+
+        // Multiple fillers in one utterance all get stripped.
+        let multi = FillerWordRemover.apply(to: "Um, ah, I uh think so.")
+        try expect(multi.text, equals: "I think so.", "multiple fillers should all be removed and artifacts cleaned up")
+        try expect(multi.removedCount, equals: 3, "multi-filler removal count")
+
+        // Empty input should be a no-op.
+        let empty = FillerWordRemover.apply(to: "")
+        try expect(empty.text, equals: "", "empty input passes through unchanged")
+        try expect(empty.removedCount, equals: 0, "empty input has zero removals")
+
+        // No fillers present → identical text, zero removals.
+        let clean = FillerWordRemover.apply(to: "Hello world.")
+        try expect(clean.text, equals: "Hello world.", "filler-free input passes through unchanged")
+        try expect(clean.removedCount, equals: 0, "filler-free input has zero removals")
+
+        // Elongated fillers — common in real dictation. The word-
+        // boundary lookahead would have rejected these without the
+        // per-pattern trailing-repeat allowance.
+        let elongatedUm = FillerWordRemover.apply(to: "Ummm, hello.")
+        try expect(elongatedUm.text, equals: "Hello.", "ummm should be stripped like um")
+        try expect(elongatedUm.removedCount, equals: 1, "elongated um removal count")
+
+        let elongatedUh = FillerWordRemover.apply(to: "Uhhh I think so.")
+        try expect(elongatedUh.text, equals: "I think so.", "uhhh should be stripped like uh")
+        try expect(elongatedUh.removedCount, equals: 1, "elongated uh removal count")
+
+        let elongatedAh = FillerWordRemover.apply(to: "Ahhh, that makes sense.")
+        try expect(elongatedAh.text, equals: "That makes sense.", "ahhh should be stripped like ah")
+        try expect(elongatedAh.removedCount, equals: 1, "elongated ah removal count")
+
+        // `hm+` covers both "hm" (single m) and "hmmm" (extended). The
+        // earlier fixed-list "hmm" entry rejected the single-m form.
+        let shortHm = FillerWordRemover.apply(to: "Hm, interesting.")
+        try expect(shortHm.text, equals: "Interesting.", "short hm should be stripped like hmm")
+        try expect(shortHm.removedCount, equals: 1, "short hm removal count")
+
+        // Words containing the new repeat-friendly patterns must still
+        // pass through. "ohm" embeds "hm" but has a leading letter.
+        let embedded = FillerWordRemover.apply(to: "An ohm is a unit.")
+        try expect(embedded.text, equals: "An ohm is a unit.", "ohm must not match hm")
+        try expect(embedded.removedCount, equals: 0, "ohm should produce zero removals")
     }
 
     private static func testAudioInputDeviceFiltering() throws {
