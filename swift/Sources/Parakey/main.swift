@@ -839,8 +839,13 @@ final class Permissions {
     static func request(_ p: Permission) {
         switch p {
         case .microphone:
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
-                log("Microphone request: granted=\(granted)")
+            let status = AVCaptureDevice.authorizationStatus(for: .audio)
+            if status == .denied {
+                openSettingsPane("Privacy_Microphone")
+            } else {
+                AVCaptureDevice.requestAccess(for: .audio) { granted in
+                    log("Microphone request: granted=\(granted)")
+                }
             }
         case .accessibility:
             // The AX-trust-with-prompt API shows a native dialog
@@ -860,6 +865,7 @@ final class Permissions {
             // the app in the Input Monitoring list and shows a
             // prompt OR opens Settings as appropriate.
             _ = CGRequestListenEventAccess()
+            openSettingsPane("Privacy_ListenEvent")
         }
     }
 
@@ -3551,6 +3557,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let subtitle = setupLabel("Finish these checks before dictating. Parakey keeps this setup local to your Mac.",
                                   font: .systemFont(ofSize: 13),
                                   color: .secondaryLabelColor)
+        subtitle.preferredMaxLayoutWidth = 476
         root.addArrangedSubview(title)
         root.addArrangedSubview(subtitle)
         root.addArrangedSubview(setupSeparator())
@@ -3562,6 +3569,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         root.addArrangedSubview(makeHotkeySetupRow())
+
+        if !setupChecklistIsComplete {
+            let tip = setupLabel("Tip: If clicking 'Grant' doesn't show a prompt, click 'Try Again' to reset stuck macOS settings.",
+                                 font: .systemFont(ofSize: 11),
+                                 color: .secondaryLabelColor)
+            tip.preferredMaxLayoutWidth = 476
+            root.addArrangedSubview(tip)
+        }
 
         let footer = NSStackView()
         footer.orientation = .horizontal
@@ -3673,11 +3688,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setupDetail(for permission: Permission) -> String {
         switch permission {
         case .microphone:
-            return "Lets Parakey capture audio while you dictate."
+            return "Captures your voice. Click 'Grant' and select 'OK' in the prompt."
         case .accessibility:
-            return "Lets Parakey insert the transcript at the cursor."
+            return "Pastes text at the cursor. Click 'Grant', then turn 'Parakey' ON in System Settings."
         case .inputMonitoring:
-            return "Lets Parakey catch and suppress the push-to-talk key."
+            return "Suppresses the hotkey while dictating. Click 'Grant', then turn 'Parakey' ON in System Settings."
         }
     }
 
@@ -3699,9 +3714,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         textStack.spacing = 2
 
         textStack.addArrangedSubview(setupLabel(title, font: .systemFont(ofSize: 13, weight: .semibold)))
-        textStack.addArrangedSubview(setupLabel(detail,
-                                                font: .systemFont(ofSize: 12),
-                                                color: .secondaryLabelColor))
+        
+        let detailLabel = setupLabel(detail, font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
+        detailLabel.preferredMaxLayoutWidth = (buttonTitle != nil) ? 310 : 380
+        textStack.addArrangedSubview(detailLabel)
 
         let statusLabel = setupLabel(status,
                                      font: .systemFont(ofSize: 12, weight: .medium),
