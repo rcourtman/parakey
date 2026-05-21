@@ -351,6 +351,50 @@ func validateCorrectionSyncPath(_ url: URL) throws {
     }
 }
 
+// MARK: - Model registry hardening
+//
+// FluidAudio reads REGISTRY_URL and MODEL_REGISTRY_URL from the process
+// environment to override the speech-model download base URL. Parakey
+// does not document either as a feature, so a value here means either
+// (a) a developer is debugging a mirror — uncommon — or (b) a process
+// or LaunchAgent has injected one to redirect first-launch model
+// downloads to an attacker-controlled host. An attacker who can plant
+// `~/Library/LaunchAgents/*.plist` with `EnvironmentVariables` gets
+// this persistence channel for free on every GUI app launch. Treat
+// any value as adversarial: log it, present a blocking alert, refuse
+// to start. The user fixes the env source and relaunches.
+//
+// We do not block HF_TOKEN etc. — those are auth headers FluidAudio
+// sends to the (unchanged) huggingface.co host; a user with HF_TOKEN
+// set for unrelated tooling shouldn't be punished.
+
+let HOSTILE_REGISTRY_ENV_VARS = ["REGISTRY_URL", "MODEL_REGISTRY_URL"]
+
+func detectedHostileRegistryEnvVars(in env: [String: String]) -> [String] {
+    HOSTILE_REGISTRY_ENV_VARS.filter { env[$0] != nil }.sorted()
+}
+
+@MainActor
+func refuseHostileRegistryEnvironmentAndExit() {
+    let detected = detectedHostileRegistryEnvVars(in: ProcessInfo.processInfo.environment)
+    guard !detected.isEmpty else { return }
+    let names = detected.joined(separator: ", ")
+    log("refusing to start: registry override env var(s) set: \(names)")
+    let alert = NSAlert()
+    alert.alertStyle = .critical
+    alert.messageText = "Parakey refused to start"
+    alert.informativeText = """
+        These environment variable(s) are set in Parakey's process: \(names).
+
+        FluidAudio uses them to override the speech-model download URL. Parakey does not support this and treats it as a sign that the launch environment has been tampered with.
+
+        Check ~/Library/LaunchAgents/, your shell rc files, and any parent process. Once the variables are gone, launch Parakey again.
+        """
+    alert.addButton(withTitle: "Quit")
+    alert.runModal()
+    exit(EXIT_FAILURE)
+}
+
 func normalizedTranscriptCorrectionSource(_ source: String) -> String {
     source
         .split(whereSeparator: { $0.isWhitespace })
@@ -3580,6 +3624,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func makeSetupChecklistView() -> NSView {
         let root = NSStackView()
         root.orientation = .vertical
+        // NSStackView on macOS uses NSLayoutConstraint.Attribute for
+        // alignment and has no `.fill` case (UIKit-only). With
+        // `.leading` every child hugged its own content, so the
+        // right-edge Status / Grant column drifted between rows and
+        // the NSBox separators — which have no intrinsic width —
+        // collapsed to zero. After assembly we explicitly constrain
+        // each arranged subview to the inner content width so
+        // everything lines up at the same right edge.
         root.alignment = .leading
         root.spacing = 14
         root.edgeInsets = NSEdgeInsets(top: 20, left: 22, bottom: 18, right: 22)
@@ -3603,7 +3655,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         root.addArrangedSubview(makeHotkeySetupRow())
 
         if !setupChecklistIsComplete {
-            let tip = setupLabel("Tip: If clicking 'Grant' doesn't show a prompt, click 'Try Again' to reset stuck macOS settings.",
+            let tip = setupLabel("Tip: If clicking 'Grant' doesn't open a prompt or show Parakey in System Settings, click 'Try Again' — Parakey will reset its TCC permission entry and re-request, which clears stuck macOS state.",
                                  font: .systemFont(ofSize: 11),
                                  color: .secondaryLabelColor)
             tip.preferredMaxLayoutWidth = 476
@@ -3630,6 +3682,17 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         footer.setHuggingPriority(.defaultLow, for: .horizontal)
         root.addArrangedSubview(setupSeparator())
         root.addArrangedSubview(footer)
+
+        // Force every arranged subview to fill the inner content width
+        // (root width minus left + right insets). Without this the row
+        // NSStackViews hug their content and the right-aligned Status /
+        // Grant column drifts between rows; the NSBox separators have
+        // no intrinsic width and collapse entirely.
+        let innerWidthInset = -(root.edgeInsets.left + root.edgeInsets.right)
+        for view in root.arrangedSubviews {
+            view.widthAnchor.constraint(equalTo: root.widthAnchor,
+                                        constant: innerWidthInset).isActive = true
+        }
 
         let container = NSView()
         container.addSubview(root)
@@ -3720,11 +3783,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setupDetail(for permission: Permission) -> String {
         switch permission {
         case .microphone:
-            return "Captures your voice. Click 'Grant' and select 'OK' in the prompt."
+            return "Captures your voice while dictating. Click 'Grant', then click 'OK' in the macOS prompt."
         case .accessibility:
-            return "Pastes text at the cursor. Click 'Grant', then turn 'Parakey' ON in System Settings."
+            return "Pastes the transcript at your cursor. Click 'Grant' to open System Settings → Privacy & Security → Accessibility, then enable the toggle next to 'Parakey'."
         case .inputMonitoring:
-            return "Suppresses the hotkey while dictating. Click 'Grant', then turn 'Parakey' ON in System Settings."
+            return "Lets Parakey detect the dictation hotkey. Click 'Grant' to open System Settings → Privacy & Security → Input Monitoring, then enable the toggle next to 'Parakey'."
         }
     }
 
@@ -6047,4 +6110,9 @@ if let status = ParakeySelfTest.run(arguments: Array(CommandLine.arguments.dropF
 let app = NSApplication.shared
 let delegate = ParakeyApp()
 app.delegate = delegate
+// Refuse to start under a tampered launch environment that would
+// redirect FluidAudio's model download to an attacker-controlled host.
+// Runs after NSApplication.shared is initialised so NSAlert.runModal
+// has its event loop.
+refuseHostileRegistryEnvironmentAndExit()
 app.run()
