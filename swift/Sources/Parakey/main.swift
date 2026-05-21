@@ -319,6 +319,38 @@ enum TranscriptCorrectionsTransfer {
     }
 }
 
+// MARK: - Correction sync path safety
+//
+// The corrections sync-file path is persisted in UserDefaults and used
+// by the periodic timer to read and write without further user
+// confirmation. If an attacker can plant a leaf symlink at that path
+// (e.g. via prior local code execution), each subsequent sync would
+// follow it and either read or overwrite an unrelated file. Reject
+// leaf-symlinks at the boundary. Parent-directory symlinks are not
+// blocked — those are legitimate sync-provider layouts the user has
+// already chosen.
+
+enum TranscriptCorrectionsSyncPathError: LocalizedError {
+    case isSymbolicLink
+
+    var errorDescription: String? {
+        switch self {
+        case .isSymbolicLink:
+            return "The text correction sync file is a symbolic link. Parakey refuses to sync through symlinks. Reconnect Parakey to a regular file."
+        }
+    }
+}
+
+func validateCorrectionSyncPath(_ url: URL) throws {
+    var st = stat()
+    // lstat (not stat) so we inspect the link itself rather than its
+    // target. Missing files are fine — first-time writes are allowed.
+    guard lstat(url.path, &st) == 0 else { return }
+    if (st.st_mode & S_IFMT) == S_IFLNK {
+        throw TranscriptCorrectionsSyncPathError.isSymbolicLink
+    }
+}
+
 func normalizedTranscriptCorrectionSource(_ source: String) -> String {
     source
         .split(whereSeparator: { $0.isWhitespace })
@@ -4619,6 +4651,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @discardableResult
     private func refreshCorrectionSyncFromDisk(force: Bool, presentErrors: Bool) -> Bool {
         guard let url = correctionSyncFileURL() else { return false }
+        do {
+            try validateCorrectionSyncPath(url)
+        } catch {
+            log("correction sync rejected path: \(error)")
+            if presentErrors {
+                showCorrectionTransferError(title: "Sync Failed", error: error)
+            }
+            return false
+        }
         guard let fingerprint = correctionSyncFingerprint(for: url) else {
             if presentErrors {
                 showCorrectionTransferError(title: "Sync Failed",
@@ -4651,6 +4692,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @discardableResult
     private func writeCorrectionsToSyncFile(presentErrors: Bool) -> Bool {
         guard let url = correctionSyncFileURL() else { return true }
+        do {
+            try validateCorrectionSyncPath(url)
+        } catch {
+            log("correction sync rejected path: \(error)")
+            if presentErrors {
+                showCorrectionTransferError(title: "Sync Failed", error: error)
+            }
+            return false
+        }
         do {
             var correctionsToWrite = normalizedTranscriptCorrections(settings.transcriptCorrections)
             if let knownFingerprint = correctionSyncFileFingerprint,
@@ -5582,6 +5632,34 @@ private enum ParakeySelfTest {
                                                         conflictingSources: ["same source"]),
             "sync merge should report same-source edits that changed differently on both sides"
         )
+
+        // Reject leaf-symlinks at the sync path so an attacker who can
+        // plant a symlink at the persisted sync-file location cannot use
+        // the periodic auto-write to overwrite an unrelated file.
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        let fm = FileManager.default
+        let nonexistent = tmpDir.appendingPathComponent("parakey-sync-test-missing-\(UUID().uuidString).json")
+        try validateCorrectionSyncPath(nonexistent) // missing files are allowed (first-time write)
+
+        let regular = tmpDir.appendingPathComponent("parakey-sync-test-regular-\(UUID().uuidString).json")
+        try Data("{}".utf8).write(to: regular)
+        defer { try? fm.removeItem(at: regular) }
+        try validateCorrectionSyncPath(regular)
+
+        let target = tmpDir.appendingPathComponent("parakey-sync-test-target-\(UUID().uuidString).json")
+        try Data("{}".utf8).write(to: target)
+        defer { try? fm.removeItem(at: target) }
+        let link = tmpDir.appendingPathComponent("parakey-sync-test-link-\(UUID().uuidString).json")
+        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+        defer { try? fm.removeItem(at: link) }
+        var rejected = false
+        do {
+            try validateCorrectionSyncPath(link)
+        } catch is TranscriptCorrectionsSyncPathError {
+            rejected = true
+        }
+        try expect(rejected, equals: true,
+                   "validateCorrectionSyncPath should reject a leaf symlink")
     }
 
     private static func testFillerWordRemoval() throws {
