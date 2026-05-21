@@ -5444,6 +5444,7 @@ private enum ParakeySelfTest {
         try testSpeechModelStartupStatus()
         try testAudioRouteChangeDecision()
         try testUpdateHelperScript()
+        try testHostileRegistryEnvDetection()
     }
 
     private static func testHotkey() throws {
@@ -5910,6 +5911,36 @@ private enum ParakeySelfTest {
         guard proc.terminationStatus == 0 else {
             throw SelfTestFailure.failed("update helper script should pass bash -n")
         }
+    }
+
+    private static func testHostileRegistryEnvDetection() throws {
+        try expect(
+            detectedHostileRegistryEnvVars(in: [:]),
+            equals: [],
+            "empty environment should not flag any registry override"
+        )
+        try expect(
+            detectedHostileRegistryEnvVars(in: ["HF_TOKEN": "redacted",
+                                                "PATH": "/usr/bin"]),
+            equals: [],
+            "unrelated env vars (incl. HF_TOKEN) must not flag as hostile"
+        )
+        try expect(
+            detectedHostileRegistryEnvVars(in: ["REGISTRY_URL": "https://evil.example/"]),
+            equals: ["REGISTRY_URL"],
+            "REGISTRY_URL must be flagged"
+        )
+        try expect(
+            detectedHostileRegistryEnvVars(in: ["MODEL_REGISTRY_URL": "https://evil.example/"]),
+            equals: ["MODEL_REGISTRY_URL"],
+            "MODEL_REGISTRY_URL must be flagged"
+        )
+        try expect(
+            detectedHostileRegistryEnvVars(in: ["REGISTRY_URL": "",
+                                                "MODEL_REGISTRY_URL": ""]),
+            equals: ["MODEL_REGISTRY_URL", "REGISTRY_URL"],
+            "an empty-string value still represents a tampered launch env"
+        )
     }
 
     private static func testAudioRouteChangeDecision() throws {
