@@ -5206,12 +5206,21 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let script = updateHelperScript(pid: getpid(),
                                         brewPath: brewPath,
                                         targetVersion: targetVersion)
-        let helperPath = "/tmp/parakey-update-\(UUID().uuidString.prefix(8)).sh"
-        do {
-            try script.write(toFile: helperPath, atomically: true, encoding: .utf8)
-            _ = chmod(helperPath, 0o755)
-        } catch {
-            log("update: writing helper failed: \(error)")
+        // Use NSTemporaryDirectory() (per-user, typically /var/folders/…/T/
+        // which is mode 0700) instead of /tmp, and create the file 0600 in a
+        // single step so there is no window where another local user can read
+        // the script. bash is invoked as `/bin/bash <path>` so the execute bit
+        // is not required.
+        let helperDir = NSTemporaryDirectory()
+        let helperPath = (helperDir as NSString)
+            .appendingPathComponent("parakey-update-\(UUID().uuidString.prefix(8)).sh")
+        let created = FileManager.default.createFile(
+            atPath: helperPath,
+            contents: Data(script.utf8),
+            attributes: [.posixPermissions: NSNumber(value: 0o600)]
+        )
+        guard created else {
+            log("update: writing helper failed at \(helperPath)")
             showUpdateCouldNotStart(detail: "Parakey couldn't write the update helper script.")
             return
         }
