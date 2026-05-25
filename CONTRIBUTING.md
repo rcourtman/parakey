@@ -8,7 +8,7 @@ wrapper, and the goal is to keep it that way.
 
 Open an issue with:
 
-- macOS version (`sw_vers`). Parakey requires **macOS 26 (Tahoe)** or
+- macOS version (`sw_vers`). Parakey requires **macOS 14 (Sonoma)** or
   later.
 - Mac model (M1/M2/M3/M4 etc.)
 - The last ~30 lines of `~/Library/Logs/Parakey.log`
@@ -44,8 +44,8 @@ hardened runtime + the production entitlements (so TCC permissions
 carry over from the Cask install — no manual re-grants), kills any
 prior dev instance, and relaunches via `open`.
 
-Requirements: Xcode 16+ (or the Swift 6.3+ toolchain), macOS 26
-(Tahoe) or later, and a Developer ID Application certificate in your
+Requirements: Xcode 16+ (or the Swift 6.3+ toolchain), macOS 14
+(Sonoma) or later, and a Developer ID Application certificate in your
 keychain.
 
 After editing `Sources/Parakey/main.swift`:
@@ -84,7 +84,7 @@ tail -f ~/Library/Logs/Parakey.log
   (`Settings`, `HotkeyListener`, `AudioCapture`, `TranscriptionWorker`,
   `UpdateCheck`, etc.).
 - `swift/Package.swift` — SwiftPM manifest, single FluidAudio
-  dependency, macOS 26 platform target.
+  dependency, macOS 14 platform target.
 - `swift/Info.plist` — canonical Info.plist used by both
   `dev-run.sh` and `ship-swift.sh` so dev and release builds share
   bundle id / minimum macOS / usage descriptions.

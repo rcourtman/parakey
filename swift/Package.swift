@@ -12,7 +12,7 @@ import PackageDescription
 let package = Package(
     name: "Parakey",
     platforms: [
-        .macOS("26.0"),
+        .macOS("14.0"),
     ],
     products: [
         .executable(name: "Parakey", targets: ["Parakey"]),

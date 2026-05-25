@@ -4,7 +4,7 @@ Parakey is a free MIT-licensed menu-bar app for push-to-talk dictation on Apple 
 
 Core facts:
 - Category: local Mac dictation, speech-to-text, push-to-talk transcription.
-- Platform: Apple Silicon Macs only, macOS 26 Tahoe or later.
+- Platform: Apple Silicon Macs only, macOS 14 Sonoma or later.
 - Engine: Parakeet TDT v3 through FluidAudio, CoreML, and the Apple Neural Engine.
 - Install: `brew install --cask rcourtman/parakey/parakey`.
 - Setup: use Setup Checklist from the menu bar to finish the model, permissions, and hotkey readiness.

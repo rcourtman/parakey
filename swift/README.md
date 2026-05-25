@@ -12,7 +12,7 @@ menu-bar dictation tool for Apple Silicon. The whole app lives in
 
 Builds `Sources/Parakey/main.swift`, wraps it in a signed
 `/tmp/Parakey-dev.app`, kills any prior instance, and relaunches.
-Requires Xcode 16+, macOS 26 (Tahoe), and a Developer ID Application
+Requires Xcode 16+, macOS 14 (Sonoma) or later, and a Developer ID Application
 certificate in your keychain.
 
 Logs land in `~/Library/Logs/Parakey.log` — same path the production

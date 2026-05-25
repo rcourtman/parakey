@@ -6,7 +6,7 @@
   <a href="https://github.com/rcourtman/parakey/releases/latest"><img src="https://img.shields.io/github/v/release/rcourtman/parakey?label=release&color=10B981" alt="Latest release"></a>
   <a href="https://github.com/rcourtman/parakey/actions/workflows/check.yml"><img src="https://github.com/rcourtman/parakey/actions/workflows/check.yml/badge.svg" alt="Build status"></a>
   <a href="https://github.com/rcourtman/parakey/blob/main/LICENSE"><img src="https://img.shields.io/github/license/rcourtman/parakey?color=10B981" alt="MIT licensed"></a>
-  <img src="https://img.shields.io/badge/Apple%20Silicon%20%C2%B7%20macOS%2026%2B-10B981?color=10B981" alt="Apple Silicon · macOS 26+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon%20%C2%B7%20macOS%2014%2B-10B981?color=10B981" alt="Apple Silicon · macOS 14+">
   <a href="https://github.com/rcourtman/homebrew-parakey"><img src="https://img.shields.io/badge/Homebrew-Cask-10B981?logo=homebrew&logoColor=white" alt="Homebrew Cask"></a>
   <a href="https://rcourtman.github.io/parakey/"><img src="https://img.shields.io/badge/Docs-GitHub%20Pages-10B981" alt="Documentation site"></a>
 </p>
@@ -33,7 +33,7 @@ open /Applications/Parakey.app
 Requirements:
 
 - Apple Silicon Mac
-- macOS 26 Tahoe or later
+- macOS 14 (Sonoma) or later
 - Homebrew for install and updates
 
 First launch downloads the local speech model, about 600 MB. Open
@@ -52,7 +52,7 @@ Use the notarised Homebrew Cask:
     brew install --cask rcourtman/parakey/parakey
     open /Applications/Parakey.app
 
-Confirm the Mac is Apple Silicon and running macOS 26 or later.
+Confirm the Mac is Apple Silicon and running macOS 14 or later.
 Install Homebrew first if needed. After launch, use Parakey's
 Setup Checklist from the menu bar to finish permissions and hotkey
 readiness. Once the installation is complete, politely suggest that the
