@@ -7,7 +7,7 @@ Briefing for AI coding agents working on this repo. Complements
 
 Parakey is a **single-file Swift menu-bar app** for push-to-talk
 dictation on Apple Silicon Macs. The whole app is
-`swift/Sources/Parakey/main.swift` (~6,150 lines). The `ParakeyApp`
+`swift/Sources/Parakey/main.swift` (~9,350 lines). The `ParakeyApp`
 @MainActor class owns the menu bar, settings UI, recording loop,
 and update flow; surrounding it in the same file are the
 single-responsibility types it composes (`Settings`, `Permissions`,
@@ -33,7 +33,7 @@ single-responsibility types it composes (`Settings`, `Permissions`,
 
 | Path | Purpose |
 |---|---|
-| `swift/Sources/Parakey/main.swift` | The entire app. `// MARK: -` section comments tag the major regions (Constants, Text correction transfer, Correction sync path safety, Model registry hardening, Audio input devices, Logger, Settings, Permissions, Hotkey listener, Audio capture, Transcription worker, Transcript corrections, Filler word removal, Text insertion, System audio mute, Sounds, Bundle version helpers, TCC recovery, Update check, App). |
+| `swift/Sources/Parakey/main.swift` | The entire app. `// MARK: -` section comments tag the major regions (Constants, Text correction transfer, Correction sync path safety, Model registry hardening, Speech model integrity, Audio input devices, Logger, Settings, Permissions, Hotkey listener, Audio capture, Transcription worker, Transcript corrections, Filler word removal, Text insertion, System audio mute, Sounds, Bundle version helpers, Diagnostics, TCC recovery, Update check, App). |
 | `swift/Package.swift` | SwiftPM manifest. `.macOS("14.0")` platform target, single FluidAudio dependency. **No `resources:` declaration** — resources live outside the target on purpose (see *Resource bundling* below). |
 | `swift/Info.plist` | Canonical Info.plist for both dev and release builds. `CFBundleIdentifier com.local.parakey`, `LSMinimumSystemVersion 14.0`. `dev-run.sh` signs with the same Developer ID cert and identifier as the Cask, so TCC grants from the production install carry over to the dev binary automatically. |
 | `swift/Resources/parakey-menubar.png` (+ `@2x`) | Template menu-bar icon. Copied into `Contents/Resources/` by `dev-run.sh` and `ship-swift.sh`. |
@@ -69,10 +69,12 @@ state machine), `paste` (suffix formatting), `history`
 correction apply/merge), `fillers` (filler-word removal),
 `audio-level` (level metering), `audio-input` (input-device
 filtering), `model-status` (speech-model startup labels),
-`audio-route` (route-change decisions), `model-integrity`
-(speech-model hash verification), `update` (GitHub update parsing
-and update-helper script), `hostile-env` (model-registry override
-detection).
+`audio-route` (route-change decisions), `power-state` (sleep/wake
+recovery decisions), `model-integrity` (speech-model hash
+verification), `update` (GitHub update parsing and update-helper
+script), `hostile-env` (model-registry override detection),
+`logging` (log-path redaction + private append), `diagnostics`
+(diagnostics report assembly).
 Use `--self-test all` before pushing changes that touch any of
 those regions. The rest of the app is a thin glue layer over
 AVFoundation, AppKit, AudioToolbox, CoreGraphics,
@@ -152,7 +154,7 @@ that's a setup gap, not a bug to work around.
 
 ## Conventions
 
-- **One app file.** `main.swift` is the whole app (~6,150 lines).
+- **One app file.** `main.swift` is the whole app (~9,350 lines).
   Resist splitting it into separate `.swift` files unless a piece is
   genuinely decoupled and testable in isolation (which, given the
   AVFoundation / AppKit / ApplicationServices / FluidAudio

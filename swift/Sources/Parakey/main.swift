@@ -68,6 +68,7 @@ let RECORDING_HUD_COLLAPSED_SIZE = NSSize(width: 58, height: 42)
 let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
 let RECORDING_HUD_ANIMATE_OUT_SECONDS: TimeInterval = 0.08
 let RECORDING_HUD_BUSY_DELAY_SECONDS: TimeInterval = 0.25
+let DICTATION_ERROR_FLASH_SECONDS: TimeInterval = 1.5  // how long the menu-bar icon flags a dropped dictation before returning to idle
 
 let SETTINGS_SUITE = "com.local.parakey"
 let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
@@ -2686,16 +2687,18 @@ enum SystemAudio {
 // MARK: - Sounds
 //
 // Short system sounds: Tink on recording start, Pop after a
-// successful paste. Loaded from /System/Library/Sounds so we don't
-// have to bundle audio resources.
+// successful paste, Basso when a dictation is dropped. Loaded from
+// /System/Library/Sounds so we don't have to bundle audio resources.
 
 @MainActor
 enum Sounds {
-    private static let start: NSSound? = NSSound(contentsOfFile: "/System/Library/Sounds/Tink.aiff", byReference: true)
-    private static let done:  NSSound? = NSSound(contentsOfFile: "/System/Library/Sounds/Pop.aiff",  byReference: true)
+    private static let start: NSSound? = NSSound(contentsOfFile: "/System/Library/Sounds/Tink.aiff",  byReference: true)
+    private static let done:  NSSound? = NSSound(contentsOfFile: "/System/Library/Sounds/Pop.aiff",   byReference: true)
+    private static let error: NSSound? = NSSound(contentsOfFile: "/System/Library/Sounds/Basso.aiff", byReference: true)
 
     static func playStart() { start?.stop(); start?.play() }
     static func playDone()  { done?.stop();  done?.play() }
+    static func playError() { error?.stop(); error?.play() }
 }
 
 // MARK: - Bundle version helpers
@@ -3859,6 +3862,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var recordingHUDView: RecordingHUDView?
     private var recordingHUDAnimationToken = 0
     private var delayedBusyHUDWorkItem: DispatchWorkItem?
+    private var errorFlashWorkItem: DispatchWorkItem?
 
     /// Last N transcripts, newest first. Shown in the History submenu.
     private var history: [String] = []
@@ -4680,6 +4684,36 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hideRecordingHUD()
     }
 
+    // Visible + audible cue that a press produced no pasted text — the
+    // transcription threw, or the paste itself failed. Without it the menu
+    // bar just slips back to idle and the user can't tell their speech was
+    // dropped from "pasted somewhere I wasn't looking." The sound honours
+    // the feedback-sounds toggle; the icon flash always fires since it's the
+    // only signal for users who run silent.
+    private func signalDictationFailure() {
+        if settings.playFeedbackSounds {
+            Sounds.playError()
+        }
+        flashErrorMenuBarIcon()
+    }
+
+    private func flashErrorMenuBarIcon() {
+        errorFlashWorkItem?.cancel()
+        setMenuBarState(.error)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.errorFlashWorkItem = nil
+            // Only clear if nothing else has claimed the icon meanwhile — a
+            // new recording, an in-flight transcription, a real (non-transient)
+            // error state, or termination all own it and must not be stomped.
+            guard self.isReady, !self.isRecording, !self.isBusy, !self.isTerminating else { return }
+            self.setMenuBarState(.idle)
+            self.rebuildMenu()
+        }
+        errorFlashWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + DICTATION_ERROR_FLASH_SECONDS, execute: work)
+    }
+
     // MARK: - Recording loop
 
     private func handlePress() {
@@ -4734,6 +4768,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         log("release: \(String(format: "%.2f", dur)) s captured, transcribing")
 
         Task { @MainActor in
+            var dictationFailed = false
             do {
                 let t0 = Date()
                 let text = try await asr.transcribe(samples: samples,
@@ -4777,20 +4812,28 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             return
                         }
                         let inserted = TextInserter.insert(pastedText(from: cleaned, suffix: settings.pasteSuffix))
-                        if inserted, settings.playFeedbackSounds {
-                            Sounds.playDone()
-                        } else if !inserted {
+                        if inserted {
+                            if settings.playFeedbackSounds {
+                                Sounds.playDone()
+                            }
+                        } else {
                             log("text insertion failed")
+                            dictationFailed = true
                         }
                         addToHistory(cleaned)
                     }
                 }
             } catch {
                 log("transcribe failed: \(error)")
+                dictationFailed = true
             }
             isBusy = false
             finishBusyHUD()
-            setMenuBarState(.idle)
+            if dictationFailed && !isTerminating {
+                signalDictationFailure()
+            } else {
+                setMenuBarState(.idle)
+            }
             rebuildMenu()
             runDeferredAudioRouteRefreshIfNeeded()
             recoverRuntimeAfterWakeIfNeeded(reason: "transcription finished after wake")
