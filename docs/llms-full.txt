@@ -32,7 +32,7 @@ The default hotkey is Right Option. Hold it, speak, and release. Parakey transcr
 
 ## Engine
 
-Parakey uses FluidAudio's Swift SDK and NVIDIA Parakeet TDT v3. The model is compiled for CoreML and runs on the Apple Neural Engine. The app itself is native Swift and uses AVFoundation, CoreGraphics event taps, AppKit menu APIs, CoreML, NSPasteboard, and a synthetic Cmd+V paste event.
+Parakey uses FluidAudio's Swift SDK and NVIDIA Parakeet TDT v3. The model is compiled for CoreML and runs on the Apple Neural Engine. The app itself is native Swift and uses AVFoundation, CoreGraphics event taps, AppKit menu APIs, CoreML, NSPasteboard, a synthetic Cmd+V paste event, and direct Unicode key events as a fallback when clipboard paste setup fails.
 
 ## Privacy
 

@@ -2380,12 +2380,14 @@ enum FillerWordRemover {
 
 // MARK: - Text insertion
 //
-// Default path: write to general pasteboard, post Cmd+V. We
-// deliberately don't preserve and restore the user's previous
-// clipboard contents — trying to round-trip it racily fights with
-// paste-managers and other clipboard observers, and most users find a
-// clipboard that silently reverts itself more surprising than one that
-// ends up holding whatever they last dictated.
+// Default path: write to general pasteboard, post Cmd+V. If that setup
+// fails, fall back to direct Unicode events so a pasteboard problem
+// does not automatically lose the transcript. We deliberately don't
+// preserve and restore the user's previous clipboard contents — trying
+// to round-trip it racily fights with paste-managers and other
+// clipboard observers, and most users find a clipboard that silently
+// reverts itself more surprising than one that ends up holding whatever
+// they last dictated.
 
 func pastedText(from correctedTranscript: String, suffix: PasteSuffix) -> String {
     switch suffix {
@@ -2424,12 +2426,73 @@ enum TextInsertionStrategy: String {
     }
 }
 
+func textInsertionStrategyChain(primary: TextInsertionStrategy) -> [TextInsertionStrategy] {
+    switch primary {
+    case .clipboardPaste:
+        return [.clipboardPaste, .directUnicode]
+    case .directUnicode:
+        return [.directUnicode]
+    }
+}
+
+func textInsertionStrategyDescription(primary: TextInsertionStrategy) -> String {
+    let strategies = textInsertionStrategyChain(primary: primary).map(\.displayName)
+    guard let first = strategies.first else { return "Unavailable" }
+    guard strategies.count > 1 else { return first }
+    return "\(first) with \(strategies.dropFirst().joined(separator: ", ")) fallback"
+}
+
+func unicodeInsertionChunks(for text: String, maxUTF16UnitsPerEvent maxUnits: Int) -> [[UInt16]] {
+    guard maxUnits > 0 else { return [] }
+    var chunks: [[UInt16]] = []
+    var current: [UInt16] = []
+
+    for character in text {
+        let units = Array(String(character).utf16)
+        if units.count > maxUnits {
+            if !current.isEmpty {
+                chunks.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+            chunks.append(units)
+            continue
+        }
+        if !current.isEmpty, current.count + units.count > maxUnits {
+            chunks.append(current)
+            current.removeAll(keepingCapacity: true)
+        }
+        current.append(contentsOf: units)
+    }
+
+    if !current.isEmpty {
+        chunks.append(current)
+    }
+    return chunks
+}
+
 @MainActor
 enum TextInserter {
     nonisolated static let defaultStrategy = TextInsertionStrategy.clipboardPaste
 
+    nonisolated static var defaultStrategyDescription: String {
+        textInsertionStrategyDescription(primary: defaultStrategy)
+    }
+
     @discardableResult
     static func insert(_ text: String, strategy: TextInsertionStrategy = defaultStrategy) -> Bool {
+        for candidate in textInsertionStrategyChain(primary: strategy) {
+            if insert(text, using: candidate) {
+                if candidate != strategy {
+                    log("text insertion fallback succeeded: \(candidate.displayName)")
+                }
+                return true
+            }
+            log("text insertion attempt failed: \(candidate.displayName)")
+        }
+        return false
+    }
+
+    private static func insert(_ text: String, using strategy: TextInsertionStrategy) -> Bool {
         switch strategy {
         case .clipboardPaste:
             return ClipboardPasteInserter.insert(text)
@@ -2476,19 +2539,9 @@ private enum DirectUnicodeInserter {
 
     static func insert(_ text: String) -> Bool {
         let source = CGEventSource(stateID: .combinedSessionState)
-        var chunk: [UInt16] = []
         var didPostAll = true
 
-        for character in text {
-            let units = Array(String(character).utf16)
-            if !chunk.isEmpty && chunk.count + units.count > maxUTF16UnitsPerEvent {
-                didPostAll = post(chunk, source: source) && didPostAll
-                chunk.removeAll(keepingCapacity: true)
-            }
-            chunk.append(contentsOf: units)
-        }
-
-        if !chunk.isEmpty {
+        for chunk in unicodeInsertionChunks(for: text, maxUTF16UnitsPerEvent: maxUTF16UnitsPerEvent) {
             didPostAll = post(chunk, source: source) && didPostAll
         }
         return didPostAll
@@ -4767,7 +4820,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 "Recent transcripts: \(RECENT_TRANSCRIPT_LIMIT_DISPLAY[settings.recentTranscriptLimit] ?? settings.recentTranscriptLimit.rawValue) (\(history.count) in memory)",
                 "Text corrections: \(settings.transcriptCorrections.count) configured",
                 "Text correction sync: \(settings.transcriptCorrectionsSyncFile.isEmpty ? "off" : "configured")",
-                "Text insertion: \(TextInserter.defaultStrategy.displayName)",
+                "Text insertion: \(TextInserter.defaultStrategyDescription)",
                 "Recording waveform: \(settings.showRecordingWaveform)",
                 "Mute while recording: \(settings.muteWhileRecording)",
                 "Feedback sounds: \(settings.playFeedbackSounds)",
@@ -7118,6 +7171,33 @@ private enum ParakeySelfTest {
             TextInserter.defaultStrategy,
             equals: .clipboardPaste,
             "clipboard paste should remain the default insertion strategy"
+        )
+        try expect(
+            textInsertionStrategyChain(primary: .clipboardPaste),
+            equals: [.clipboardPaste, .directUnicode],
+            "clipboard paste should fall back to direct Unicode insertion"
+        )
+        try expect(
+            textInsertionStrategyChain(primary: .directUnicode),
+            equals: [.directUnicode],
+            "direct Unicode insertion should not loop back to clipboard paste"
+        )
+        try expect(
+            TextInserter.defaultStrategyDescription,
+            equals: "Clipboard paste with Direct Unicode typing fallback",
+            "diagnostics should describe the insertion fallback chain"
+        )
+        let unicodeChunks = unicodeInsertionChunks(for: "ab👩‍💻cd", maxUTF16UnitsPerEvent: 4)
+            .map { String(decoding: $0, as: UTF16.self) }
+        try expect(
+            unicodeChunks,
+            equals: ["ab", "👩‍💻", "cd"],
+            "direct Unicode insertion should keep extended grapheme clusters together while chunking"
+        )
+        try expect(
+            unicodeInsertionChunks(for: "abc", maxUTF16UnitsPerEvent: 0),
+            equals: [],
+            "direct Unicode chunking should reject invalid chunk sizes"
         )
 
         let pasteboardProbe = MainActor.assumeIsolated {
