@@ -1441,6 +1441,122 @@ private func audioRouteChangeAction(isTerminating: Bool,
     return .restartNow
 }
 
+private enum StartupFailureStage {
+    case speechModel
+    case audioInput
+    case hotkeyListener
+
+    var statusTitle: String {
+        switch self {
+        case .speechModel: return "Speech model failed to load"
+        case .audioInput: return "Audio input failed to start"
+        case .hotkeyListener: return "Hotkey listener failed to start"
+        }
+    }
+
+    var retryTitle: String {
+        switch self {
+        case .speechModel: return "Retry Loading Speech Model"
+        case .audioInput: return "Retry Audio Startup"
+        case .hotkeyListener: return "Retry Hotkey Startup"
+        }
+    }
+}
+
+private struct StartupFailure {
+    let stage: StartupFailureStage
+    let detail: String
+
+    var statusTitle: String { stage.statusTitle }
+    var retryTitle: String { stage.retryTitle }
+}
+
+private struct SetupChecklistRowState: Equatable {
+    let detail: String
+    let status: String
+    let buttonTitle: String?
+}
+
+private func speechModelSetupRowState(isSpeechModelReady: Bool,
+                                      isStartupInProgress: Bool,
+                                      startupStatusTitle: String,
+                                      failure: StartupFailure?) -> SetupChecklistRowState {
+    if let failure, failure.stage == .speechModel {
+        return SetupChecklistRowState(detail: failure.detail,
+                                      status: "Needs retry",
+                                      buttonTitle: "Retry")
+    }
+    if isSpeechModelReady {
+        return SetupChecklistRowState(detail: "Parakeet TDT v3 is loaded locally.",
+                                      status: "Ready",
+                                      buttonTitle: nil)
+    }
+    if isStartupInProgress {
+        return SetupChecklistRowState(detail: startupStatusTitle,
+                                      status: "Loading",
+                                      buttonTitle: nil)
+    }
+    return SetupChecklistRowState(detail: "The speech model loads before dictation can start.",
+                                  status: "Waiting",
+                                  buttonTitle: nil)
+}
+
+private func audioInputSetupRowState(isSpeechModelReady: Bool,
+                                     isCoreRuntimeReady: Bool,
+                                     isStartupInProgress: Bool,
+                                     failure: StartupFailure?) -> SetupChecklistRowState {
+    if let failure, failure.stage == .audioInput {
+        return SetupChecklistRowState(detail: failure.detail,
+                                      status: "Needs retry",
+                                      buttonTitle: "Retry")
+    }
+    if isCoreRuntimeReady {
+        return SetupChecklistRowState(detail: "Microphone capture is ready.",
+                                      status: "Ready",
+                                      buttonTitle: nil)
+    }
+    if !isSpeechModelReady {
+        return SetupChecklistRowState(detail: "Available after the speech model loads.",
+                                      status: "Waiting",
+                                      buttonTitle: nil)
+    }
+    if isStartupInProgress {
+        return SetupChecklistRowState(detail: "Starting audio input…",
+                                      status: "Starting",
+                                      buttonTitle: nil)
+    }
+    return SetupChecklistRowState(detail: "Audio input starts before dictation can begin.",
+                                  status: "Waiting",
+                                  buttonTitle: nil)
+}
+
+private func hotkeySetupRowState(isReady: Bool,
+                                 hotkeyTestSucceeded: Bool,
+                                 triggerMode: TriggerMode,
+                                 hotkeyName: String,
+                                 failure: StartupFailure?) -> SetupChecklistRowState {
+    if let failure, failure.stage == .hotkeyListener {
+        return SetupChecklistRowState(detail: failure.detail,
+                                      status: "Needs retry",
+                                      buttonTitle: "Retry")
+    }
+
+    let verb = triggerMode == .hold ? "Hold" : "Press"
+    if !isReady {
+        return SetupChecklistRowState(detail: "Available after the model, audio input, and permissions are ready.",
+                                      status: "Waiting",
+                                      buttonTitle: nil)
+    }
+    if hotkeyTestSucceeded {
+        return SetupChecklistRowState(detail: "\(verb) \(hotkeyName) to dictate.",
+                                      status: "Detected",
+                                      buttonTitle: nil)
+    }
+    return SetupChecklistRowState(detail: "\(verb) \(hotkeyName). A quick tap is enough to confirm the hotkey.",
+                                  status: "Ready to test",
+                                  buttonTitle: nil)
+}
+
 @MainActor
 final class Permissions {
     static func isGranted(_ p: Permission) -> Bool {
@@ -3276,36 +3392,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case replace
     }
 
-    private enum StartupFailureStage {
-        case speechModel
-        case audioInput
-        case hotkeyListener
-
-        var statusTitle: String {
-            switch self {
-            case .speechModel: return "Speech model failed to load"
-            case .audioInput: return "Audio input failed to start"
-            case .hotkeyListener: return "Hotkey listener failed to start"
-            }
-        }
-
-        var retryTitle: String {
-            switch self {
-            case .speechModel: return "Retry Loading Speech Model"
-            case .audioInput: return "Retry Audio Startup"
-            case .hotkeyListener: return "Retry Hotkey Startup"
-            }
-        }
-    }
-
-    private struct StartupFailure {
-        let stage: StartupFailureStage
-        let detail: String
-
-        var statusTitle: String { stage.statusTitle }
-        var retryTitle: String { stage.retryTitle }
-    }
-
     private struct CorrectionSyncFileFingerprint: Equatable {
         let modifiedAt: Date?
         let size: Int?
@@ -4540,7 +4626,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 430),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 480),
                               styleMask: [.titled, .closable],
                               backing: .buffered,
                               defer: false)
@@ -4616,6 +4702,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         root.addArrangedSubview(setupSeparator())
 
         root.addArrangedSubview(makeSpeechModelSetupRow())
+        root.addArrangedSubview(makeAudioInputSetupRow())
 
         for permission in Permission.allCases {
             root.addArrangedSubview(makePermissionSetupRow(permission))
@@ -4686,35 +4773,28 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func makeSpeechModelSetupRow() -> NSView {
-        let status: String
-        let detail: String
-        let button: String?
-
-        if let failure = startupFailure {
-            status = failure.stage == .speechModel ? "Needs retry" : "Ready"
-            detail = failure.stage == .speechModel
-                ? failure.detail
-                : "The speech model loaded. \(failure.stage.statusTitle)."
-            button = failure.stage == .speechModel ? "Retry" : nil
-        } else if isSpeechModelReady {
-            status = "Ready"
-            detail = "Parakeet TDT v3 is loaded locally."
-            button = nil
-        } else if startupTask != nil {
-            status = "Loading"
-            detail = startupStatusTitle
-            button = nil
-        } else {
-            status = "Waiting"
-            detail = "The speech model loads before dictation can start."
-            button = nil
-        }
+        let state = speechModelSetupRowState(isSpeechModelReady: isSpeechModelReady,
+                                             isStartupInProgress: startupTask != nil,
+                                             startupStatusTitle: startupStatusTitle,
+                                             failure: startupFailure)
 
         return makeSetupChecklistRow(title: "Speech model",
-                                     detail: detail,
-                                     status: status,
-                                     buttonTitle: button,
-                                     action: button == nil ? nil : #selector(retryStartupFromSetupClicked(_:)))
+                                     detail: state.detail,
+                                     status: state.status,
+                                     buttonTitle: state.buttonTitle,
+                                     action: state.buttonTitle == nil ? nil : #selector(retryStartupFromSetupClicked(_:)))
+    }
+
+    private func makeAudioInputSetupRow() -> NSView {
+        let state = audioInputSetupRowState(isSpeechModelReady: isSpeechModelReady,
+                                            isCoreRuntimeReady: isCoreRuntimeReady,
+                                            isStartupInProgress: startupTask != nil,
+                                            failure: startupFailure)
+        return makeSetupChecklistRow(title: "Audio input",
+                                     detail: state.detail,
+                                     status: state.status,
+                                     buttonTitle: state.buttonTitle,
+                                     action: state.buttonTitle == nil ? nil : #selector(retryStartupFromSetupClicked(_:)))
     }
 
     private func makePermissionSetupRow(_ permission: Permission) -> NSView {
@@ -4729,24 +4809,17 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func makeHotkeySetupRow() -> NSView {
-        let verb = settings.triggerMode == .hold ? "Hold" : "Press"
-        let status: String
-        let detail: String
-
-        if !isReady {
-            status = "Waiting"
-            detail = "Available after the model, audio input, and permissions are ready."
-        } else if hotkeyTestSucceeded {
-            status = "Detected"
-            detail = "\(verb) \(hotkey.hotkey.name) to dictate."
-        } else {
-            status = "Ready to test"
-            detail = "\(verb) \(hotkey.hotkey.name). A quick tap is enough to confirm the hotkey."
-        }
+        let state = hotkeySetupRowState(isReady: isReady,
+                                        hotkeyTestSucceeded: hotkeyTestSucceeded,
+                                        triggerMode: settings.triggerMode,
+                                        hotkeyName: hotkey.hotkey.name,
+                                        failure: startupFailure)
 
         return makeSetupChecklistRow(title: "Hotkey",
-                                     detail: detail,
-                                     status: status)
+                                     detail: state.detail,
+                                     status: state.status,
+                                     buttonTitle: state.buttonTitle,
+                                     action: state.buttonTitle == nil ? nil : #selector(retryStartupFromSetupClicked(_:)))
     }
 
     private func setupDetail(for permission: Permission) -> String {
@@ -6763,6 +6836,69 @@ private enum ParakeySelfTest {
                                 missingPermissions: []),
             equals: .rebuildMenuOnly,
             "ready app with all permissions should remain ready and rebuild only"
+        )
+
+        try expect(
+            speechModelSetupRowState(isSpeechModelReady: false,
+                                     isStartupInProgress: true,
+                                     startupStatusTitle: "Downloading speech model… 50%",
+                                     failure: nil),
+            equals: SetupChecklistRowState(detail: "Downloading speech model… 50%",
+                                           status: "Loading",
+                                           buttonTitle: nil),
+            "setup checklist should show speech model progress"
+        )
+        try expect(
+            speechModelSetupRowState(isSpeechModelReady: false,
+                                     isStartupInProgress: false,
+                                     startupStatusTitle: "Loading speech model…",
+                                     failure: StartupFailure(stage: .speechModel, detail: "download failed")),
+            equals: SetupChecklistRowState(detail: "download failed",
+                                           status: "Needs retry",
+                                           buttonTitle: "Retry"),
+            "setup checklist should offer retry for speech model failures"
+        )
+        try expect(
+            audioInputSetupRowState(isSpeechModelReady: true,
+                                    isCoreRuntimeReady: false,
+                                    isStartupInProgress: false,
+                                    failure: StartupFailure(stage: .audioInput, detail: "no input device")),
+            equals: SetupChecklistRowState(detail: "no input device",
+                                           status: "Needs retry",
+                                           buttonTitle: "Retry"),
+            "setup checklist should offer retry for audio input failures"
+        )
+        try expect(
+            audioInputSetupRowState(isSpeechModelReady: false,
+                                    isCoreRuntimeReady: false,
+                                    isStartupInProgress: true,
+                                    failure: nil),
+            equals: SetupChecklistRowState(detail: "Available after the speech model loads.",
+                                           status: "Waiting",
+                                           buttonTitle: nil),
+            "setup checklist should not start audio before the speech model is ready"
+        )
+        try expect(
+            hotkeySetupRowState(isReady: false,
+                                hotkeyTestSucceeded: false,
+                                triggerMode: .hold,
+                                hotkeyName: "Right Option",
+                                failure: StartupFailure(stage: .hotkeyListener, detail: "event tap failed")),
+            equals: SetupChecklistRowState(detail: "event tap failed",
+                                           status: "Needs retry",
+                                           buttonTitle: "Retry"),
+            "setup checklist should offer retry for hotkey listener failures"
+        )
+        try expect(
+            hotkeySetupRowState(isReady: true,
+                                hotkeyTestSucceeded: true,
+                                triggerMode: .toggle,
+                                hotkeyName: "F5",
+                                failure: nil),
+            equals: SetupChecklistRowState(detail: "Press F5 to dictate.",
+                                           status: "Detected",
+                                           buttonTitle: nil),
+            "setup checklist should show detected hotkey state"
         )
     }
 
