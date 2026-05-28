@@ -484,6 +484,10 @@ func validateCorrectionSyncPath(_ url: URL) throws {
     }
 }
 
+func shouldStopCorrectionSync(afterPathValidationError error: Error) -> Bool {
+    error is TranscriptCorrectionsSyncPathError
+}
+
 // MARK: - Model registry hardening
 //
 // FluidAudio reads REGISTRY_URL and MODEL_REGISTRY_URL from the process
@@ -6066,6 +6070,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         _ = refreshCorrectionSyncFromDisk(force: true, presentErrors: false)
+        guard correctionSyncFileURL() != nil else { return }
         correctionSyncTimer = Timer.scheduledTimer(timeInterval: 4,
                                                    target: self,
                                                    selector: #selector(correctionSyncTimerFired(_:)),
@@ -6084,10 +6089,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             try validateCorrectionSyncPath(url)
         } catch {
-            log("correction sync rejected path: \(error)")
-            if presentErrors {
-                showCorrectionTransferError(title: "Sync Failed", error: error)
-            }
+            handleCorrectionSyncRejectedPath(error, presentErrors: presentErrors)
             return false
         }
         guard let fingerprint = correctionSyncFingerprint(for: url) else {
@@ -6125,10 +6127,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             try validateCorrectionSyncPath(url)
         } catch {
-            log("correction sync rejected path: \(error)")
-            if presentErrors {
-                showCorrectionTransferError(title: "Sync Failed", error: error)
-            }
+            handleCorrectionSyncRejectedPath(error, presentErrors: presentErrors)
             return false
         }
         do {
@@ -6165,6 +6164,18 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    private func handleCorrectionSyncRejectedPath(_ error: Error, presentErrors: Bool) {
+        log("correction sync rejected path: \(error)")
+        guard shouldStopCorrectionSync(afterPathValidationError: error) else {
+            if presentErrors {
+                showCorrectionTransferError(title: "Sync Failed", error: error)
+            }
+            return
+        }
+
+        stopCorrectionSyncAfterRejectedPath(error: error, presentErrors: presentErrors)
+    }
+
     private func stopCorrectionSyncAfterConflict(conflictingSources: [String]) {
         settings.transcriptCorrectionsSyncFile = ""
         correctionSyncTimer?.invalidate()
@@ -6187,6 +6198,27 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             \(examples)\(remainingText)
             """
         )
+    }
+
+    private func stopCorrectionSyncAfterRejectedPath(error: Error, presentErrors: Bool) {
+        settings.transcriptCorrectionsSyncFile = ""
+        correctionSyncTimer?.invalidate()
+        correctionSyncTimer = nil
+        correctionSyncFileFingerprint = nil
+        correctionSyncBaselineCorrections = []
+        log("correction sync stopped after rejected path")
+        rebuildMenu()
+
+        if presentErrors {
+            showCorrectionTransferError(
+                title: "Text Correction Sync Stopped",
+                message: """
+                Parakey stopped syncing because the selected corrections file is no longer safe to use.
+
+                \(error.localizedDescription)
+                """
+            )
+        }
     }
 
     private func showCorrectionTransferError(title: String, error: Error) {
@@ -7640,6 +7672,16 @@ private enum ParakeySelfTest {
         }
         try expect(rejected, equals: true,
                    "validateCorrectionSyncPath should reject a leaf symlink")
+        try expect(
+            shouldStopCorrectionSync(afterPathValidationError: TranscriptCorrectionsSyncPathError.isSymbolicLink),
+            equals: true,
+            "unsafe sync paths should stop configured correction sync"
+        )
+        try expect(
+            shouldStopCorrectionSync(afterPathValidationError: NSError(domain: "ParakeyTest", code: 1)),
+            equals: false,
+            "unrelated sync errors should not clear the configured correction sync path"
+        )
         try expect(
             correctionSyncFingerprint(for: link),
             equals: nil,
