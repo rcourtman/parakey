@@ -57,6 +57,7 @@ let UPDATE_HELPER_LOG_PATH = (NSHomeDirectory() as NSString)
     .appendingPathComponent("Library/Logs/Parakey-update.log")
 let MAX_SKIPPED_UPDATE_VERSIONS = 20
 let MAX_CORRECTION_SYNC_PATH_BYTES = 4096
+let MAX_INPUT_DEVICE_PREFERENCE_BYTES = 512
 let RECORDING_HUD_EXPANDED_SIZE = NSSize(width: 232, height: 54)
 let RECORDING_HUD_COLLAPSED_SIZE = NSSize(width: 58, height: 42)
 let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
@@ -939,6 +940,17 @@ func isDefaultAggregateAudioInputPreference(_ preference: String) -> Bool {
                          options: [.anchored, .caseInsensitive]) != nil
 }
 
+func normalizedInputDevicePreference(_ preference: String) -> String? {
+    let trimmed = preference.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          trimmed.utf8.count <= MAX_INPUT_DEVICE_PREFERENCE_BYTES,
+          !trimmed.unicodeScalars.contains(where: { $0.value == 0 }),
+          !isDefaultAggregateAudioInputPreference(trimmed) else {
+        return nil
+    }
+    return trimmed
+}
+
 func isDefaultAggregateAudioInputDevice(_ device: AudioInputDevice) -> Bool {
     isDefaultAggregateAudioInputPreference(device.uid)
         || isDefaultAggregateAudioInputPreference(device.name)
@@ -972,9 +984,7 @@ func availableAudioInputDevices() -> [AudioInputDevice] {
 
 func audioInputDevice(matching preference: String,
                       in devices: [AudioInputDevice] = availableAudioInputDevices()) -> AudioInputDevice? {
-    let trimmed = preference.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return nil }
-    guard !isDefaultAggregateAudioInputPreference(trimmed) else { return nil }
+    guard let trimmed = normalizedInputDevicePreference(preference) else { return nil }
     return devices.first { $0.uid == trimmed }
         ?? devices.first { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }
 }
@@ -1185,8 +1195,20 @@ final class Settings: @unchecked Sendable {
     }
 
     var inputDevice: String {
-        get { defaults.string(forKey: Self.keyInputDevice) ?? "" }
-        set { defaults.set(newValue, forKey: Self.keyInputDevice) }
+        get {
+            guard let raw = defaults.string(forKey: Self.keyInputDevice),
+                  let normalized = normalizedInputDevicePreference(raw) else {
+                return ""
+            }
+            return normalized
+        }
+        set {
+            if let normalized = normalizedInputDevicePreference(newValue) {
+                defaults.set(normalized, forKey: Self.keyInputDevice)
+            } else {
+                defaults.removeObject(forKey: Self.keyInputDevice)
+            }
+        }
     }
 
     var checkForUpdates: Bool {
@@ -6695,9 +6717,34 @@ private enum ParakeySelfTest {
             "named microphones should remain selectable"
         )
         try expect(
+            normalizedInputDevicePreference(" Yeti Nano\n"),
+            equals: "Yeti Nano",
+            "input device preferences should be trimmed before storing"
+        )
+        try expect(
+            normalizedInputDevicePreference(pseudo.uid),
+            equals: nil,
+            "input device preferences should reject CoreAudio default aggregates"
+        )
+        try expect(
+            normalizedInputDevicePreference("real\u{0}device"),
+            equals: nil,
+            "input device preferences should reject NUL bytes"
+        )
+        try expect(
+            normalizedInputDevicePreference(String(repeating: "x", count: MAX_INPUT_DEVICE_PREFERENCE_BYTES + 1)),
+            equals: nil,
+            "input device preferences should reject oversized values"
+        )
+        try expect(
             audioInputDevice(matching: pseudo.uid, in: [pseudo, real])?.uid,
             equals: nil,
             "CoreAudio default aggregate preferences should fall back to system default"
+        )
+        try expect(
+            audioInputDevice(matching: " real-yeti-nano\n", in: [real])?.uid,
+            equals: "real-yeti-nano",
+            "input device preferences should resolve after trimming"
         )
         try expect(
             audioInputDevice(matching: "Yeti Nano", in: [real])?.uid,
