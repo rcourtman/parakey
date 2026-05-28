@@ -337,6 +337,7 @@ enum TranscriptCorrectionsTransfer {
     static func write(_ corrections: [TranscriptCorrection], to url: URL) throws {
         let data = try encode(corrections)
         try validateTransferSize(data.count)
+        try validateWritablePath(url)
         let parent = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
@@ -358,6 +359,17 @@ enum TranscriptCorrectionsTransfer {
         let data = try Data(contentsOf: url)
         try validateTransferSize(data.count)
         return data
+    }
+
+    private static func validateWritablePath(_ url: URL) throws {
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else {
+            if errno == ENOENT { return }
+            throw currentPOSIXError()
+        }
+        guard (st.st_mode & S_IFMT) == S_IFREG else {
+            throw TranscriptCorrectionsTransferError.notRegularFile
+        }
     }
 }
 
@@ -6373,6 +6385,33 @@ private enum ParakeySelfTest {
         }
         try expect(nonFileRejected, equals: true,
                    "correction transfer should reject non-file paths")
+
+        let writeTarget = transferTmpDir
+            .appendingPathComponent("parakey-corrections-write-target-\(UUID().uuidString).json")
+        try Data("target\n".utf8).write(to: writeTarget)
+        defer { try? transferFileManager.removeItem(at: writeTarget) }
+        let writeLink = transferTmpDir
+            .appendingPathComponent("parakey-corrections-write-link-\(UUID().uuidString).json")
+        try transferFileManager.createSymbolicLink(at: writeLink, withDestinationURL: writeTarget)
+        defer { try? transferFileManager.removeItem(at: writeLink) }
+        var symlinkWriteRejected = false
+        do {
+            try TranscriptCorrectionsTransfer.write(
+                [TranscriptCorrection(source: "source", replacement: "replacement")],
+                to: writeLink
+            )
+        } catch let error as TranscriptCorrectionsTransferError {
+            if case .notRegularFile = error {
+                symlinkWriteRejected = true
+            }
+        }
+        try expect(symlinkWriteRejected, equals: true,
+                   "correction transfer should reject writes through leaf symlinks")
+        try expect(
+            String(data: try Data(contentsOf: writeTarget), encoding: .utf8),
+            equals: "target\n",
+            "correction transfer symlink rejection should leave the target untouched"
+        )
 
         let remoteOnlyChange = mergedTranscriptCorrectionsForSync(
             base: [TranscriptCorrection(source: "old phrase", replacement: "old")],
