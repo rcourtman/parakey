@@ -397,16 +397,35 @@ enum TranscriptCorrectionsTransfer {
     }
 
     private static func readData(from url: URL) throws -> Data {
-        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-        if values.isRegularFile == false {
+        let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else {
+            if errno == ELOOP {
+                throw TranscriptCorrectionsTransferError.notRegularFile
+            }
+            throw currentPOSIXError()
+        }
+        defer { _ = Darwin.close(fd) }
+
+        var st = stat()
+        guard Darwin.fstat(fd, &st) == 0 else {
+            throw currentPOSIXError()
+        }
+        guard (st.st_mode & S_IFMT) == S_IFREG else {
             throw TranscriptCorrectionsTransferError.notRegularFile
         }
-        if let size = values.fileSize {
-            try validateTransferSize(size)
+        if st.st_size > off_t(maxFileBytes) {
+            throw TranscriptCorrectionsTransferError.fileTooLarge(Int(st.st_size), maxFileBytes)
         }
 
-        let data = try Data(contentsOf: url)
-        try validateTransferSize(data.count)
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+        var data = Data()
+        while true {
+            guard let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty else {
+                break
+            }
+            data.append(chunk)
+            try validateTransferSize(data.count)
+        }
         return data
     }
 
@@ -7460,6 +7479,28 @@ private enum ParakeySelfTest {
         }
         try expect(nonFileRejected, equals: true,
                    "correction transfer should reject non-file paths")
+
+        let readTarget = transferTmpDir
+            .appendingPathComponent("parakey-corrections-read-target-\(UUID().uuidString).json")
+        try TranscriptCorrectionsTransfer.write(
+            [TranscriptCorrection(source: "source", replacement: "replacement")],
+            to: readTarget
+        )
+        defer { try? transferFileManager.removeItem(at: readTarget) }
+        let readLink = transferTmpDir
+            .appendingPathComponent("parakey-corrections-read-link-\(UUID().uuidString).json")
+        try transferFileManager.createSymbolicLink(at: readLink, withDestinationURL: readTarget)
+        defer { try? transferFileManager.removeItem(at: readLink) }
+        var symlinkReadRejected = false
+        do {
+            _ = try TranscriptCorrectionsTransfer.read(from: readLink)
+        } catch let error as TranscriptCorrectionsTransferError {
+            if case .notRegularFile = error {
+                symlinkReadRejected = true
+            }
+        }
+        try expect(symlinkReadRejected, equals: true,
+                   "correction transfer should reject reads through leaf symlinks")
 
         let writeTarget = transferTmpDir
             .appendingPathComponent("parakey-corrections-write-target-\(UUID().uuidString).json")
