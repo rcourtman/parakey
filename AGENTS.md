@@ -7,8 +7,13 @@ Briefing for AI coding agents working on this repo. Complements
 
 Parakey is a **single-file Swift menu-bar app** for push-to-talk
 dictation on Apple Silicon Macs. The whole app is
-`swift/Sources/Parakey/main.swift` (~1500 lines, single `ParakeyApp`
-type plus a handful of small support classes). The hot path is:
+`swift/Sources/Parakey/main.swift` (~6,150 lines). The `ParakeyApp`
+@MainActor class owns the menu bar, settings UI, recording loop,
+and update flow; surrounding it in the same file are the
+single-responsibility types it composes (`Settings`, `Permissions`,
+`HotkeyListener`, `AudioCapture`, `TranscriptionWorker` actor,
+`TranscriptCorrector`, `FillerWordRemover`, `TextInserter`,
+`UpdateCheck`, `TCC`, etc.). The hot path is:
 
 1. A Quartz `CGEventTap` (`HotkeyListener`) catches the user's hotkey.
    Modifier keys are diffed in `flagsChanged`; regular keys come in
@@ -28,13 +33,14 @@ type plus a handful of small support classes). The hot path is:
 
 | Path | Purpose |
 |---|---|
-| `swift/Sources/Parakey/main.swift` | The entire app. Section comments tag the major regions (Settings, Permissions, HotkeyListener, AudioCapture, TranscriptionWorker, Paster, SystemAudio, Sounds, TCC, UpdateCheck, ParakeyApp). |
-| `swift/Package.swift` | SwiftPM manifest. `.macOS("26.0")` platform target, single FluidAudio dependency. **No `resources:` declaration** — resources live outside the target on purpose (see *Resource bundling* below). |
-| `swift/Info.plist` | Canonical Info.plist for both dev and release builds. CFBundleIdentifier `com.local.parakey` — `dev-run.sh` signs with the same Developer ID cert and identifier as the Cask, so TCC grants from the production install carry over to the dev binary automatically. |
+| `swift/Sources/Parakey/main.swift` | The entire app. `// MARK: -` section comments tag the major regions (Constants, Text correction transfer, Correction sync path safety, Model registry hardening, Audio input devices, Logger, Settings, Permissions, Hotkey listener, Audio capture, Transcription worker, Transcript corrections, Filler word removal, Text insertion, System audio mute, Sounds, Bundle version helpers, TCC recovery, Update check, App). |
+| `swift/Package.swift` | SwiftPM manifest. `.macOS("14.0")` platform target, single FluidAudio dependency. **No `resources:` declaration** — resources live outside the target on purpose (see *Resource bundling* below). |
+| `swift/Info.plist` | Canonical Info.plist for both dev and release builds. `CFBundleIdentifier com.local.parakey`, `LSMinimumSystemVersion 14.0`. `dev-run.sh` signs with the same Developer ID cert and identifier as the Cask, so TCC grants from the production install carry over to the dev binary automatically. |
 | `swift/Resources/parakey-menubar.png` (+ `@2x`) | Template menu-bar icon. Copied into `Contents/Resources/` by `dev-run.sh` and `ship-swift.sh`. |
 | `swift/dev-run.sh` | Local iteration loop: `swift build` → wrap binary in `/tmp/Parakey-dev.app` → sign with Developer ID + hardened runtime + production entitlements → relaunch. |
-| `entitlements.plist` | Hardened-runtime entitlements. Just two keys: `device.audio-input` (Tahoe 26 requirement) and `device.microphone` (legacy fallback). Anything new expands TCC surface — justify before adding. |
+| `entitlements.plist` | Hardened-runtime entitlements. Just two keys: `device.audio-input` (what Tahoe 26 checks before exposing the app in Privacy & Security → Microphone) and `device.microphone` (legacy sandbox fallback for macOS 14–25). Anything new expands TCC surface — justify before adding. |
 | `ship-swift.sh` | One-command release: version bump in Info.plist → build → sign → notarise → ditto-zip → tag → push → `gh release create` → bump and verify sibling Homebrew Cask. |
+| `scripts/update-model-manifest.py` | Regenerates the pinned SHA-256 manifest for the Parakeet v3 CoreML model files when intentionally updating the upstream model commit. |
 | `icon/` | SVG sources (`hero.svg`, `latency.svg`, `parakey.svg`, etc.), `Parakey.icns`, menu-bar PNGs, `make-icons.sh`. |
 | `experiments/swift-bench/` | Standalone ASR latency benchmark used to validate FluidAudio against alternatives (Apple SpeechAnalyzer, parakey-mlx) on the same audio. Re-run when bumping FluidAudio or evaluating a backend swap. |
 
@@ -45,6 +51,9 @@ type plus a handful of small support classes). The hot path is:
 cd swift
 ./dev-run.sh
 
+# Run the in-binary self-test suite (no UI, exits 0/1)
+swift run Parakey --self-test all
+
 # Release dry-run: build + sign + entitlement check + zip; skips notarise/staple and git/tag/release/cask
 ./ship-swift.sh --dry-run
 
@@ -52,12 +61,27 @@ cd swift
 tail -f ~/Library/Logs/Parakey.log
 ```
 
-There is no Linux-runnable unit test suite. The app is a thin
-glue layer over AVFoundation, AppKit, Carbon, CoreGraphics, and
-FluidAudio — there is nothing meaningful left to mock. CI
-(`.github/workflows/check.yml`) runs repo-hygiene syntax checks for
-shell, plist, XML/SVG, YAML, JSON, and HTML on `macos-26`; the full
-build/notarise path lives in `ship-swift.sh` on the maintainer's Mac.
+There is no separate unit-test target — pure logic instead exposes
+itself through the `--self-test` lane on the same binary. Suites:
+`hotkey` (transition state machine), `readiness` (permission-rollup
+state machine), `paste` (suffix formatting), `history`
+(`RecentTranscriptLimit` slicing), `corrections` (transcript
+correction apply/merge), `fillers` (filler-word removal),
+`audio-level` (level metering), `audio-input` (input-device
+filtering), `model-status` (speech-model startup labels),
+`audio-route` (route-change decisions), `model-integrity`
+(speech-model hash verification), `update` (GitHub update parsing
+and update-helper script), `hostile-env` (model-registry override
+detection).
+Use `--self-test all` before pushing changes that touch any of
+those regions. The rest of the app is a thin glue layer over
+AVFoundation, AppKit, AudioToolbox, CoreGraphics,
+ApplicationServices, IOKit, QuartzCore, and FluidAudio — there is
+nothing meaningful left to mock. CI
+(`.github/workflows/check.yml`) runs the self-test suite plus
+repo-hygiene syntax checks for shell, plist, XML/SVG, YAML, JSON,
+and HTML on `macos-26`; the full build/notarise path lives in
+`ship-swift.sh` on the maintainer's Mac.
 
 If you need to validate ASR latency or correctness, use
 `experiments/swift-bench/` against the WAVs in `test-audio/`.
@@ -128,11 +152,12 @@ that's a setup gap, not a bug to work around.
 
 ## Conventions
 
-- **One app file.** `main.swift` is the whole app (~1500 lines).
+- **One app file.** `main.swift` is the whole app (~6,150 lines).
   Resist splitting it into separate `.swift` files unless a piece is
   genuinely decoupled and testable in isolation (which, given the
-  AVFoundation / AppKit / Carbon dependencies, is rare). One scrollable
-  file with `// MARK: -` regions beats five files of glue any day.
+  AVFoundation / AppKit / ApplicationServices / FluidAudio
+  dependencies, is rare). One scrollable file with `// MARK: -`
+  regions beats five files of glue any day.
 - **Section comments tag major regions.** `// MARK: - Settings`,
   `// MARK: - HotkeyListener`, etc. Cmd+Ctrl+Up in Xcode jumps
   between them; keep them honest.
@@ -162,9 +187,9 @@ that's a setup gap, not a bug to work around.
   Audio never leaves the Mac (one-time exception: the model
   download from Hugging Face on first launch).
 - **Cross-platform.** Heavy macOS dependencies (AVFoundation,
-  AppKit, Carbon, CoreGraphics, NSAppleScript, FluidAudio's CoreML
-  path). Linux/Windows ports belong in separate forks if anyone
-  wants to do them.
+  AppKit, AudioToolbox, ApplicationServices, CoreGraphics, IOKit,
+  NSAppleScript, FluidAudio's CoreML path). Linux/Windows ports
+  belong in separate forks if anyone wants to do them.
 - **AI rewriting / Parakey-operated cloud sync / preference windows.**
   The README's opener positions Parakey as focused push-to-talk
   dictation. Text-correction portability is intentionally limited to
@@ -256,11 +281,14 @@ outside Parakey.
 
 - **Hardened-runtime entitlements** (in `entitlements.plist`) are
   exactly two keys: `com.apple.security.device.audio-input` (the
-  Tahoe 26 Hardened Runtime key — without it the app never appears
-  in System Settings → Microphone) and
-  `com.apple.security.device.microphone` (legacy/sandbox fallback).
-  Anything new expands TCC surface — justify before adding. In
-  particular, **never** add `cs.allow-jit`,
+  Hardened Runtime microphone key — what Tahoe 26 checks before
+  exposing the app in System Settings → Microphone; without it on
+  Tahoe the TCC entry never appears and the prompt silently never
+  fires) and `com.apple.security.device.microphone` (legacy sandbox
+  key, the fallback macOS 14–25 historically accepted). Both ship
+  in the same build so a single notarised binary works across the
+  supported range. Anything new expands TCC surface — justify before
+  adding. In particular, **never** add `cs.allow-jit`,
   `cs.allow-unsigned-executable-memory`, or
   `cs.disable-library-validation`: the only reason to want any of
   those is to embed a runtime interpreter / unsigned dylib in the
@@ -397,8 +425,10 @@ git clone https://github.com/rcourtman/homebrew-parakey ../homebrew-parakey
   click-handler that writes through `Settings.shared.foo = …` and
   updates any live state.
 - **Add a hotkey to the menu**: extend `HOTKEY_CHOICES` near the top
-  of `main.swift` with `(display, keycode, isModifier)`. The menu
-  is built from the list automatically.
+  of `main.swift` with a `HotkeyChoice(name:, keycode:, isModifier:,
+  modifierFlag:)` entry — `modifierFlag` is the `CGEventFlags` mask
+  bit for modifier hotkeys and `nil` for plain keys (e.g. F-keys).
+  The menu is built from the list automatically.
 - **Change the bundled FluidAudio version**: `swift/Package.swift`
   dependency declaration. After bumping, run `swift package update`,
   rebuild, and re-run the bench in `experiments/swift-bench/` to

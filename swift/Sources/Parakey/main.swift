@@ -28,6 +28,7 @@ import AVFoundation
 import AudioToolbox
 import Foundation
 import CoreGraphics
+import CryptoKit
 import Darwin
 import ApplicationServices
 import FluidAudio
@@ -393,6 +394,209 @@ func refuseHostileRegistryEnvironmentAndExit() {
     alert.addButton(withTitle: "Quit")
     alert.runModal()
     exit(EXIT_FAILURE)
+}
+
+// MARK: - Speech model integrity
+//
+// FluidAudio owns the Hugging Face download mechanics, but it does not
+// pin the downloaded CoreML bundle contents. Parakey downloads first,
+// verifies the files that will be loaded by CoreML, and only then asks
+// FluidAudio to compile/load the models. The manifest is intentionally
+// tied to one upstream repo commit; a legitimate upstream model change
+// should arrive as an explicit Parakey update with refreshed hashes.
+
+struct ModelFileDigest: Equatable {
+    let relativePath: String
+    let sha256: String
+}
+
+enum ModelIntegrityError: LocalizedError {
+    case invalidManifestPath(String)
+    case missingFile(String)
+    case unexpectedFile(String)
+    case invalidFileType(String)
+    case digestMismatch(path: String, expected: String, actual: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidManifestPath(let path):
+            return "Speech model integrity manifest contains an unsafe path: \(path)"
+        case .missingFile(let path):
+            return "Speech model integrity check failed: missing file \(path)"
+        case .unexpectedFile(let path):
+            return "Speech model integrity check failed: unexpected file \(path)"
+        case .invalidFileType(let path):
+            return "Speech model integrity check failed: \(path) is not a regular file or directory"
+        case .digestMismatch(let path, let expected, let actual):
+            return "Speech model integrity check failed for \(path): expected \(expected), got \(actual)"
+        }
+    }
+}
+
+enum ModelIntegrity {
+    static let parakeetV3Repository = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
+    static let parakeetV3RepositoryCommit = "aed02740059203c4a87495924f685de3722ae9ce"
+
+    private static let parakeetV3StrictDirectories = [
+        "Decoder.mlmodelc",
+        "Encoder.mlmodelc",
+        "JointDecisionv3.mlmodelc",
+        "Preprocessor.mlmodelc",
+    ]
+
+    private static let parakeetV3Files = [
+        // BEGIN GENERATED PARAKEET_V3_MODEL_MANIFEST
+        ModelFileDigest(relativePath: "Decoder.mlmodelc/analytics/coremldata.bin", sha256: "4238c4e81ecd0dc94bd7dfbb60f7e2cc824107c1ffe0387b8607b72833dba350"),
+        ModelFileDigest(relativePath: "Decoder.mlmodelc/coremldata.bin", sha256: "18647af085d87bd8f3121c8a9b4d4564c1ede038dab63d295b4e745cf2d7fb99"),
+        ModelFileDigest(relativePath: "Decoder.mlmodelc/metadata.json", sha256: "a39e93cd8371b8ded92635c7804fcd0590f0d1dd9415c6d19a0484be073077d9"),
+        ModelFileDigest(relativePath: "Decoder.mlmodelc/model.mil", sha256: "ef2a0a281695398a62fde86ac269c68f73d5b578d7ed3b31f2ba91a2d1ea1f35"),
+        ModelFileDigest(relativePath: "Decoder.mlmodelc/weights/weight.bin", sha256: "48adf0f0d47c406c8253d4f7fef967436a39da14f5a65e66d5a4b407be355d41"),
+        ModelFileDigest(relativePath: "Encoder.mlmodelc/analytics/coremldata.bin", sha256: "42e638870d73f26b332918a3496ce36793fbb413a81cbd3d16ba01328637a105"),
+        ModelFileDigest(relativePath: "Encoder.mlmodelc/coremldata.bin", sha256: "d48034a167a82e88fc3df64f60af963ab3983538271175b8319e7d5720a0fb86"),
+        ModelFileDigest(relativePath: "Encoder.mlmodelc/metadata.json", sha256: "da24da9cca943fb29d7fa8e376d57fca7cb3aa08ca51b956b0b0e56813f087e9"),
+        ModelFileDigest(relativePath: "Encoder.mlmodelc/model.mil", sha256: "ed7b19156ca29fa7dfd6891deb9fda4b0e8893f68597c985d135736546a43808"),
+        ModelFileDigest(relativePath: "Encoder.mlmodelc/weights/weight.bin", sha256: "e2020f323703477a5b21d7c2d282c403e371afb5962e79877e3033e73ba6f421"),
+        ModelFileDigest(relativePath: "JointDecisionv3.mlmodelc/analytics/coremldata.bin", sha256: "26def4bf73dd56d29dee21c8ef97cb8969e62f6120ed1adc91e46828e2737b6c"),
+        ModelFileDigest(relativePath: "JointDecisionv3.mlmodelc/coremldata.bin", sha256: "f5fc08b741400f0088492c9e839418b1e18522f19cba28d361dd030c5f398342"),
+        ModelFileDigest(relativePath: "JointDecisionv3.mlmodelc/metadata.json", sha256: "d9307211b9a37e0f0ac260c7660b1571a3de25841035cfdf9b58fd40425f890f"),
+        ModelFileDigest(relativePath: "JointDecisionv3.mlmodelc/model.mil", sha256: "be60732943389a047175111a83f8839f3eb39d4803adafa828a0871b2f39818d"),
+        ModelFileDigest(relativePath: "JointDecisionv3.mlmodelc/weights/weight.bin", sha256: "4e0e63d840032f7f07ddb1d64446051166281e5491bf22da8a945c41f6eedb3e"),
+        ModelFileDigest(relativePath: "Preprocessor.mlmodelc/analytics/coremldata.bin", sha256: "c9beeb989c8d66f8be11df59bc6df277ec76cee404f6865b46243835ef562f6d"),
+        ModelFileDigest(relativePath: "Preprocessor.mlmodelc/coremldata.bin", sha256: "dbde3f2300842c1fd51ef3ff948a0bcffe65ffd2dca10707f2509f32c1d65b1d"),
+        ModelFileDigest(relativePath: "Preprocessor.mlmodelc/metadata.json", sha256: "2a98699e22d279dd37fa1d238aeb1c6db1df0d6fad687775324157689d8f3acf"),
+        ModelFileDigest(relativePath: "Preprocessor.mlmodelc/model.mil", sha256: "4b8518a956450fec57f06c2a21bdffc26973f7f1fa6842fb38fe917f896b6b93"),
+        ModelFileDigest(relativePath: "Preprocessor.mlmodelc/weights/weight.bin", sha256: "129b76e3aeafa8afa3ea76d995b964b145fe83700d579f6ff42c4c38fa0968ea"),
+        ModelFileDigest(relativePath: "parakeet_vocab.json", sha256: "7ec60e05f1b24480736ec0eed40900f4626bce1fa9a60fd700ec7e2a59198735"),
+        // END GENERATED PARAKEET_V3_MODEL_MANIFEST
+    ]
+
+    static func verifyParakeetV3Model(at directory: URL) throws {
+        try verifyFiles(root: directory,
+                        expectedFiles: parakeetV3Files,
+                        strictDirectories: parakeetV3StrictDirectories)
+        log("ASR: verified \(parakeetV3Files.count) model files from \(parakeetV3Repository) @ \(parakeetV3RepositoryCommit)")
+    }
+
+    static func verifyFiles(root: URL,
+                            expectedFiles: [ModelFileDigest],
+                            strictDirectories: [String]) throws {
+        var expectedByPath: [String: String] = [:]
+        for file in expectedFiles {
+            try validateRelativePath(file.relativePath)
+            if expectedByPath.updateValue(file.sha256.lowercased(),
+                                          forKey: file.relativePath) != nil {
+                throw ModelIntegrityError.invalidManifestPath("duplicate file path: \(file.relativePath)")
+            }
+        }
+        var seenPaths: Set<String> = []
+
+        for file in expectedFiles {
+            let fileURL = root.appendingPathComponent(file.relativePath, isDirectory: false)
+            try requireRegularFile(fileURL, relativePath: file.relativePath)
+
+            let actual = try sha256Hex(of: fileURL)
+            let expected = file.sha256.lowercased()
+            guard actual == expected else {
+                throw ModelIntegrityError.digestMismatch(path: file.relativePath,
+                                                         expected: expected,
+                                                         actual: actual)
+            }
+            seenPaths.insert(file.relativePath)
+        }
+
+        guard seenPaths.count == expectedFiles.count else {
+            throw ModelIntegrityError.invalidManifestPath("duplicate file path")
+        }
+
+        for directory in strictDirectories {
+            try validateRelativePath(directory)
+            let directoryURL = root.appendingPathComponent(directory, isDirectory: true)
+            try requireDirectory(directoryURL, relativePath: directory)
+            guard let enumerator = FileManager.default.enumerator(at: directoryURL,
+                                                                  includingPropertiesForKeys: nil)
+            else { continue }
+
+            for case let itemURL as URL in enumerator {
+                let relativePath = relativePath(of: itemURL, under: root)
+                switch try fileSystemNodeType(itemURL, relativePath: relativePath) {
+                case .directory:
+                    continue
+                case .regularFile:
+                    guard expectedByPath[relativePath] != nil else {
+                        throw ModelIntegrityError.unexpectedFile(relativePath)
+                    }
+                }
+            }
+        }
+    }
+
+    static func sha256Hex(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while true {
+            guard let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty else {
+                break
+            }
+            hasher.update(data: chunk)
+        }
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private enum FileSystemNodeType {
+        case regularFile
+        case directory
+    }
+
+    private static func validateRelativePath(_ path: String) throws {
+        guard !path.isEmpty, !path.hasPrefix("/") else {
+            throw ModelIntegrityError.invalidManifestPath(path)
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !components.contains(".."), !components.contains("") else {
+            throw ModelIntegrityError.invalidManifestPath(path)
+        }
+    }
+
+    private static func requireRegularFile(_ url: URL, relativePath: String) throws {
+        guard try fileSystemNodeType(url, relativePath: relativePath) == .regularFile else {
+            throw ModelIntegrityError.invalidFileType(relativePath)
+        }
+    }
+
+    private static func requireDirectory(_ url: URL, relativePath: String) throws {
+        guard try fileSystemNodeType(url, relativePath: relativePath) == .directory else {
+            throw ModelIntegrityError.invalidFileType(relativePath)
+        }
+    }
+
+    private static func fileSystemNodeType(_ url: URL,
+                                           relativePath: String) throws -> FileSystemNodeType {
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else {
+            if errno == ENOENT { throw ModelIntegrityError.missingFile(relativePath) }
+            throw ModelIntegrityError.invalidFileType(relativePath)
+        }
+
+        switch st.st_mode & S_IFMT {
+        case S_IFREG:
+            return .regularFile
+        case S_IFDIR:
+            return .directory
+        default:
+            throw ModelIntegrityError.invalidFileType(relativePath)
+        }
+    }
+
+    private static func relativePath(of url: URL, under root: URL) -> String {
+        let rootPath = root.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : "\(rootPath)/"
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(prefix) else { return url.lastPathComponent }
+        return String(path.dropFirst(prefix.count))
+    }
 }
 
 func normalizedTranscriptCorrectionSource(_ source: String) -> String {
@@ -1535,9 +1739,22 @@ actor TranscriptionWorker {
             return
         }
 
-        log("ASR: downloading + loading Parakeet TDT v3 CoreML weights…")
+        log("ASR: downloading + verifying + loading Parakeet TDT v3 CoreML weights…")
         let t0 = Date()
-        let models = try await AsrModels.downloadAndLoad(version: .v3, progressHandler: progressHandler)
+        var modelDirectory = try await AsrModels.download(version: .v3,
+                                                          progressHandler: progressHandler)
+        do {
+            try ModelIntegrity.verifyParakeetV3Model(at: modelDirectory)
+        } catch {
+            log("ASR: model integrity check failed; redownloading once: \(error.localizedDescription)")
+            modelDirectory = try await AsrModels.download(force: true,
+                                                          version: .v3,
+                                                          progressHandler: progressHandler)
+            try ModelIntegrity.verifyParakeetV3Model(at: modelDirectory)
+        }
+        let models = try await AsrModels.load(from: modelDirectory,
+                                              version: .v3,
+                                              progressHandler: progressHandler)
         asr = AsrManager(config: .default, models: models)
         ready = true
         log("ASR: ready in \(String(format: "%.2f", Date().timeIntervalSince(t0))) s")
@@ -1548,6 +1765,12 @@ actor TranscriptionWorker {
         var state = try TdtDecoderState()
         let result = try await asr.transcribe(samples, decoderState: &state, language: language)
         return result.text
+    }
+
+    func unload() {
+        asr = nil
+        ready = false
+        log("ASR: unloaded")
     }
 }
 
@@ -1952,11 +2175,23 @@ enum TCC {
 // itself at the top of the menu: What's new / Update now / Skip
 // vX.Y.Z.
 
-struct GitHubRelease: Sendable {
+struct GitHubRelease: Sendable, Equatable {
     let tagName: String      // 'v0.1.7'
     let version: String      // '0.1.7' (no v)
     let body: String         // release notes, raw markdown
     let htmlURL: String
+}
+
+private struct GitHubReleaseResponse: Decodable {
+    let tagName: String
+    let body: String?
+    let htmlURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case body
+        case htmlURL = "html_url"
+    }
 }
 
 enum UpdateCheck {
@@ -1964,21 +2199,38 @@ enum UpdateCheck {
         var req = URLRequest(url: GITHUB_LATEST_RELEASE_URL)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 10
+        let config = URLSessionConfiguration.ephemeral
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.urlCache = nil
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 10
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
+
         do {
-            let (data, _) = try await URLSession.shared.data(for: req)
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = json["tag_name"] as? String, !tag.isEmpty else {
-                return nil
-            }
-            return GitHubRelease(
-                tagName: tag,
-                version: tag.drop(while: { $0 == "v" || $0 == "V" }).description,
-                body: (json["body"] as? String) ?? "",
-                htmlURL: (json["html_url"] as? String) ?? GITHUB_RELEASES_PAGE.absoluteString
-            )
+            let (data, response) = try await session.data(for: req)
+            return parseLatest(data: data, response: response)
         } catch {
             return nil
         }
+    }
+
+    static func parseLatest(data: Data, response: URLResponse) -> GitHubRelease? {
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let payload = try? JSONDecoder().decode(GitHubReleaseResponse.self, from: data) else {
+            return nil
+        }
+
+        let tag = payload.tagName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tag.isEmpty else { return nil }
+
+        return GitHubRelease(
+            tagName: tag,
+            version: tag.drop(while: { $0 == "v" || $0 == "V" }).description,
+            body: payload.body ?? "",
+            htmlURL: payload.htmlURL ?? GITHUB_RELEASES_PAGE.absoluteString
+        )
     }
 }
 
@@ -2296,6 +2548,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var isSpeechModelReady = false
     private var isTerminating = false
     private var didStartUpdateCheckLoop = false
+    private var isResettingSpeechModelCache = false
     private var startupTask: Task<Void, Never>?
     private var startupStatusTitle = "Loading speech model…"
     private var startupFailure: StartupFailure?
@@ -4094,6 +4347,20 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         checkToggle.state = settings.checkForUpdates ? .on : .off
         sub.addItem(checkToggle)
 
+        sub.addItem(.separator())
+
+        let resetModel = NSMenuItem(title: isResettingSpeechModelCache ? "Resetting Speech Model Cache…" : "Reset Speech Model Cache…",
+                                    action: #selector(resetSpeechModelCacheClicked(_:)),
+                                    keyEquivalent: "")
+        resetModel.target = self
+        resetModel.isEnabled = !isRecording
+            && !isBusy
+            && !isTerminating
+            && startupTask == nil
+            && !isResettingSpeechModelCache
+        resetModel.toolTip = "Delete the local speech model cache and download a fresh verified copy."
+        sub.addItem(resetModel)
+
         parent.submenu = sub
         return parent
     }
@@ -5026,6 +5293,69 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sender.state = settings.checkForUpdates ? .on : .off
     }
 
+    @objc private func resetSpeechModelCacheClicked(_ sender: NSMenuItem) {
+        guard !isRecording,
+              !isBusy,
+              startupTask == nil,
+              !isResettingSpeechModelCache,
+              !isTerminating else { return }
+
+        showAppForModal()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Reset Speech Model Cache?"
+        alert.informativeText = """
+            Parakey will delete the local Parakeet TDT v3 model cache, unload the current speech model, and download a fresh verified copy before dictation is available again.
+            """
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        isResettingSpeechModelCache = true
+        isSpeechModelReady = false
+        isCoreRuntimeReady = false
+        isReady = false
+        rebuildMenu()
+
+        Task { @MainActor in
+            await asr.unload()
+            let cacheDir = AsrModels.defaultCacheDirectory(for: .v3)
+            do {
+                let didRemoveCache = try await Task.detached(priority: .userInitiated) {
+                    let fm = FileManager.default
+                    guard fm.fileExists(atPath: cacheDir.path) else {
+                        return false
+                    }
+                    try fm.removeItem(at: cacheDir)
+                    return true
+                }.value
+
+                if didRemoveCache {
+                    log("ASR: removed speech model cache at \(cacheDir.path)")
+                } else {
+                    log("ASR: speech model cache reset requested; cache was already absent")
+                }
+                isResettingSpeechModelCache = false
+                startStartup(reason: "speech model cache reset")
+            } catch {
+                isResettingSpeechModelCache = false
+                log("ASR: speech model cache reset failed: \(error)")
+                showSpeechModelCacheResetError(error)
+                startStartup(reason: "speech model cache reset recovery")
+            }
+        }
+    }
+
+    private func showSpeechModelCacheResetError(_ error: Error) {
+        showAppForModal()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Speech model cache couldn't be reset"
+        alert.informativeText = "\(error)"
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     // MARK: - About dialog
 
     @objc private func showAboutClicked(_ sender: NSMenuItem) {
@@ -5407,8 +5737,18 @@ private enum ParakeySelfTest {
             return runSuite("fillers", testFillerWordRemoval)
         case "audio-level":
             return runSuite("audio-level", testAudioLevelMetering)
+        case "audio-input":
+            return runSuite("audio-input", testAudioInputDeviceFiltering)
+        case "model-status":
+            return runSuite("model-status", testSpeechModelStartupStatus)
+        case "audio-route":
+            return runSuite("audio-route", testAudioRouteChangeDecision)
+        case "model-integrity":
+            return runSuite("model-integrity", testModelIntegrity)
         case "update":
-            return runSuite("update", testUpdateHelperScript)
+            return runSuite("update", testUpdate)
+        case "hostile-env":
+            return runSuite("hostile-env", testHostileRegistryEnvDetection)
         case "all":
             return runSuite("all", testAll)
         default:
@@ -5443,7 +5783,8 @@ private enum ParakeySelfTest {
         try testAudioInputDeviceFiltering()
         try testSpeechModelStartupStatus()
         try testAudioRouteChangeDecision()
-        try testUpdateHelperScript()
+        try testModelIntegrity()
+        try testUpdate()
         try testHostileRegistryEnvDetection()
     }
 
@@ -5859,6 +6200,99 @@ private enum ParakeySelfTest {
                                                 phase: .compiling(modelName: "Encoder.mlmodelc"))),
             equals: "Preparing speech model…",
             "compile phase should be visible without exposing model internals"
+        )
+    }
+
+    private static func testModelIntegrity() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("parakey-model-integrity-\(UUID().uuidString)",
+                                    isDirectory: true)
+        let modelDir = root.appendingPathComponent("Toy.mlmodelc", isDirectory: true)
+        try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let modelFile = modelDir.appendingPathComponent("model.mil")
+        try Data("hello".utf8).write(to: modelFile)
+        let expected = [
+            ModelFileDigest(
+                relativePath: "Toy.mlmodelc/model.mil",
+                sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+            )
+        ]
+        try ModelIntegrity.verifyFiles(root: root,
+                                       expectedFiles: expected,
+                                       strictDirectories: ["Toy.mlmodelc"])
+
+        var rejectedMismatch = false
+        do {
+            try ModelIntegrity.verifyFiles(
+                root: root,
+                expectedFiles: [
+                    ModelFileDigest(relativePath: "Toy.mlmodelc/model.mil",
+                                    sha256: String(repeating: "0", count: 64))
+                ],
+                strictDirectories: ["Toy.mlmodelc"]
+            )
+        } catch is ModelIntegrityError {
+            rejectedMismatch = true
+        }
+        try expect(rejectedMismatch, equals: true,
+                   "model integrity should reject digest mismatches")
+
+        try Data("extra".utf8).write(to: modelDir.appendingPathComponent("extra.bin"))
+        var rejectedUnexpectedFile = false
+        do {
+            try ModelIntegrity.verifyFiles(root: root,
+                                           expectedFiles: expected,
+                                           strictDirectories: ["Toy.mlmodelc"])
+        } catch is ModelIntegrityError {
+            rejectedUnexpectedFile = true
+        }
+        try expect(rejectedUnexpectedFile, equals: true,
+                   "model integrity should reject unpinned files in strict model bundles")
+
+        let localParakeetV3Cache = AsrModels.defaultCacheDirectory(for: .v3)
+        if fm.fileExists(atPath: localParakeetV3Cache.path) {
+            try ModelIntegrity.verifyParakeetV3Model(at: localParakeetV3Cache)
+        }
+    }
+
+    private static func testUpdate() throws {
+        try testUpdateCheckParsing()
+        try testUpdateHelperScript()
+    }
+
+    private static func testUpdateCheckParsing() throws {
+        let ok = HTTPURLResponse(url: GITHUB_LATEST_RELEASE_URL,
+                                 statusCode: 200,
+                                 httpVersion: nil,
+                                 headerFields: nil)!
+        let notFound = HTTPURLResponse(url: GITHUB_LATEST_RELEASE_URL,
+                                       statusCode: 404,
+                                       httpVersion: nil,
+                                       headerFields: nil)!
+        let releaseData = Data(
+            #"{"tag_name":"v9.8.7","body":"Notes","html_url":"https://example.test/v9.8.7"}"#.utf8
+        )
+
+        try expect(
+            UpdateCheck.parseLatest(data: releaseData, response: ok),
+            equals: GitHubRelease(tagName: "v9.8.7",
+                                  version: "9.8.7",
+                                  body: "Notes",
+                                  htmlURL: "https://example.test/v9.8.7"),
+            "update parsing should decode typed GitHub release payloads"
+        )
+        try expect(
+            UpdateCheck.parseLatest(data: releaseData, response: notFound),
+            equals: nil,
+            "update parsing should reject non-2xx HTTP responses"
+        )
+        try expect(
+            UpdateCheck.parseLatest(data: Data(#"{"tag_name":""}"#.utf8), response: ok),
+            equals: nil,
+            "update parsing should reject empty release tags"
         )
     }
 

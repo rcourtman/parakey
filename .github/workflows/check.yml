@@ -17,12 +17,17 @@ jobs:
       - name: Swift self-tests
         working-directory: swift
         run: swift run -c debug Parakey --self-test all
+      - name: Swift release build
+        working-directory: swift
+        run: swift build -c release
       - name: Shell syntax
         run: |
           bash -n ship-swift.sh
           bash -n swift/dev-run.sh
           bash -n icon/make-icons.sh
           bash -n experiments/swift-bench/generate-test-audio.sh
+      - name: Release script self-test
+        run: ./ship-swift.sh --self-test
       - name: Plist + XML syntax
         run: |
           plutil -lint swift/Info.plist entitlements.plist
@@ -53,8 +58,11 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("scripts/sync-docs.py")
-          compile(path.read_text(encoding="utf-8"), str(path), "exec")
+          for path in [
+              Path("scripts/sync-docs.py"),
+              Path("scripts/update-model-manifest.py"),
+          ]:
+              compile(path.read_text(encoding="utf-8"), str(path), "exec")
           PY
           python3 -m json.tool docs/benchmarks/results.json >/dev/null
           python3 -m json.tool docs/privacy/network-calls.json >/dev/null

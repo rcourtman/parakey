@@ -2,11 +2,14 @@
 //
 // Parakey — single-file Swift menu-bar push-to-talk dictation app
 // for macOS Apple Silicon. Native AppKit / AVFoundation, FluidAudio
-// driving Parakeet TDT v3 on the Apple Neural Engine. macOS 26
-// minimum: required for the Hardened Runtime microphone entitlement
-// (`com.apple.security.device.audio-input`) and FluidAudio's CoreML
-// integration; also keeps the door open for SpeechAnalyzer if a
-// future backend swap is wanted.
+// driving Parakeet TDT v3 on the Apple Neural Engine. macOS 14
+// (Sonoma) minimum. The Hardened Runtime microphone entitlement
+// (`com.apple.security.device.audio-input` in `entitlements.plist`)
+// is what Tahoe 26 checks before exposing the app in Privacy &
+// Security → Microphone; on macOS 14–25 the legacy sandbox key
+// (`com.apple.security.device.microphone`) is the fallback. Both
+// ship in the same build so a single notarised binary works
+// across the supported range.
 import PackageDescription
 
 let package = Package(

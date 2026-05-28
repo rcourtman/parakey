@@ -14,6 +14,7 @@
 #   ./ship-swift.sh --version 0.2.5 # explicit
 #   ./ship-swift.sh --dry-run       # build everything, skip git/tag/release/cask
 #   ./ship-swift.sh --no-cask       # ship binary + GitHub release, skip Cask bump
+#   ./ship-swift.sh --self-test     # exercise release helper checks, no build/release
 #
 # Pre-flight requires:
 #   - clean working tree on `main`
@@ -51,12 +52,15 @@ DOC_SYNC_PATHS=(
     docs/sitemap.xml
     docs/site-metadata.json
 )
+NO_ATTRIBUTION_CHECKER="${NO_ATTRIBUTION_CHECKER:-/Users/rcourtman/.codex/skills/github-no-attribution/scripts/check_no_attribution.py}"
+ROLLBACK_RELEASE_MUTATIONS=0
 
 # ---- 0. CLI ---------------------------------------------------------------
 BUMP=patch
 TARGET=""
 DRY_RUN=0
 NO_CASK=0
+SELF_TEST=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --patch)   BUMP=patch; shift ;;
@@ -65,6 +69,7 @@ while [[ $# -gt 0 ]]; do
         --version) TARGET="$2"; BUMP=explicit; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         --no-cask) NO_CASK=1; shift ;;
+        --self-test) SELF_TEST=1; shift ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | sed 's|^# \{0,1\}||'
             exit 0 ;;
@@ -75,6 +80,110 @@ done
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
+
+rollback_release_mutations_on_exit() {
+    local status=$?
+    if [[ "$status" -ne 0 && "$ROLLBACK_RELEASE_MUTATIONS" -eq 1 ]]; then
+        warn "Release failed before commit completed; reverting Info.plist and synced docs."
+        git -C "$PROJECT_DIR" checkout -- "$INFO_PLIST" "${DOC_SYNC_PATHS[@]}" >/dev/null 2>&1 || true
+        rm -rf "$APP"
+    fi
+}
+trap rollback_release_mutations_on_exit EXIT
+
+check_no_attribution_file() {
+    local label="$1"
+    local path="$2"
+    if [[ -f "$NO_ATTRIBUTION_CHECKER" ]]; then
+        /usr/bin/python3 "$NO_ATTRIBUTION_CHECKER" --label "$label" "$path"
+    else
+        /usr/bin/python3 - "$label" "$path" <<'PY'
+import pathlib
+import re
+import sys
+
+label, path = sys.argv[1], pathlib.Path(sys.argv[2])
+text = path.read_text(encoding="utf-8")
+patterns = [
+    r"\b" + "chat" + r"\s*" + "gpt" + r"\b|\b" + "chat" + "gpt" + r"\b",
+    r"\b" + "open" + "ai" + r"\b",
+    r"\b" + "co" + "dex" + r"\b|\[" + "co" + "dex" + r"\]|" + "co" + "dex" + r"/",
+    r"\b" + "ai" + r"[- ]" + "generated" + r"\b",
+    r"\b" + "ai" + r"[- ]" + "assisted" + r"\b",
+    r"\b" + "generated" + r"\s+" + "by" + r"\b",
+    r"\b" + "generated" + r"\s+" + "with" + r"\b",
+    r"\b" + "written" + r"\s+" + "by" + r"\b",
+    r"\b" + "authored" + r"\s+" + "by" + r"\b",
+    r"\b" + "created" + r"\s+" + "with" + r"\b",
+    r"\b" + "powered" + r"\s+" + "by" + r"\b",
+    r"^\s*" + "co" + r"-" + "authored" + r"-" + "by" + r"\s*:",
+]
+for pattern in patterns:
+    if re.search(pattern, text, re.I | re.M):
+        raise SystemExit(f"no-attribution preflight failed for {label}: {path}")
+PY
+    fi
+}
+
+check_no_attribution_text() {
+    local label="$1"
+    local text="$2"
+    if [[ -f "$NO_ATTRIBUTION_CHECKER" ]]; then
+        printf '%s\n' "$text" | /usr/bin/python3 "$NO_ATTRIBUTION_CHECKER" --label "$label"
+    else
+        /usr/bin/python3 - "$label" "$text" <<'PY'
+import re
+import sys
+
+label, text = sys.argv[1], sys.argv[2]
+patterns = [
+    r"\b" + "chat" + r"\s*" + "gpt" + r"\b|\b" + "chat" + "gpt" + r"\b",
+    r"\b" + "open" + "ai" + r"\b",
+    r"\b" + "co" + "dex" + r"\b|\[" + "co" + "dex" + r"\]|" + "co" + "dex" + r"/",
+    r"\b" + "ai" + r"[- ]" + "generated" + r"\b",
+    r"\b" + "ai" + r"[- ]" + "assisted" + r"\b",
+    r"\b" + "generated" + r"\s+" + "by" + r"\b",
+    r"\b" + "generated" + r"\s+" + "with" + r"\b",
+    r"\b" + "written" + r"\s+" + "by" + r"\b",
+    r"\b" + "authored" + r"\s+" + "by" + r"\b",
+    r"\b" + "created" + r"\s+" + "with" + r"\b",
+    r"\b" + "powered" + r"\s+" + "by" + r"\b",
+    r"^\s*" + "co" + r"-" + "authored" + r"-" + "by" + r"\s*:",
+]
+for pattern in patterns:
+    if re.search(pattern, text, re.I | re.M):
+        raise SystemExit(f"no-attribution preflight failed for {label}")
+PY
+    fi
+}
+
+run_release_script_self_test() {
+    say "Release script self-test"
+
+    check_no_attribution_text "self-test clean release message" "Release v9.8.7"
+
+    local banned_sample
+    banned_sample="$(printf '%s%s %s %s%s' "Gen" "erated" "by" "Chat" "GPT")"
+    if check_no_attribution_text "self-test banned release message" "$banned_sample" >/dev/null 2>&1; then
+        die "no-attribution checker accepted banned release text"
+    fi
+
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    local notes_file="$tmpdir/notes.md"
+    printf '%s\n' "Plain release notes" >"$notes_file"
+    check_no_attribution_file "self-test release notes" "$notes_file"
+    rm -rf "$tmpdir"
+
+    check_no_attribution_text "self-test generated notes" "$(printf -- '- Release v9.8.7\n- Improve update checks')"
+
+    say "Release script self-test passed"
+}
+
+if [[ "$SELF_TEST" -eq 1 ]]; then
+    run_release_script_self_test
+    exit 0
+fi
 
 # ---- 1. Pre-flight --------------------------------------------------------
 say "Pre-flight checks"
@@ -140,6 +249,7 @@ BIN="$SWIFT_DIR/.build/release/Parakey"
 
 # ---- 4. Bump Info.plist (before wrapping, so the .app carries new version)
 say "Updating Info.plist version + build numbers"
+ROLLBACK_RELEASE_MUTATIONS=1
 plutil -replace CFBundleShortVersionString -string "$new_version" "$INFO_PLIST"
 plutil -replace CFBundleVersion            -string "$new_build"  "$INFO_PLIST"
 plutil -lint "$INFO_PLIST" >/dev/null || {
@@ -240,8 +350,38 @@ fi
 
 # ---- 9. Commit, tag, push -------------------------------------------------
 say "Committing version bump"
+release_commit_message="Release v$new_version"
+release_title="v$new_version"
+NOTES_FILE="$SWIFT_DIR/release-notes/v$new_version.md"
+USE_NOTES_FILE=0
+notes=""
+
+check_no_attribution_text "release commit message" "$release_commit_message"
+check_no_attribution_text "release title" "$release_title"
+
+# If a hand-written release-notes file exists for this version, use it
+# verbatim — preferable to a list of commit subjects for releases with
+# any narrative content (migration steps, breaking changes, etc.).
+# Otherwise fall back to the exact generated commit-list the GitHub
+# release step will publish. Preflight before pushing the tag so a
+# release-note wording issue does not leave remote state half-published.
+if [[ -f "$NOTES_FILE" ]]; then
+    USE_NOTES_FILE=1
+    check_no_attribution_file "release notes" "$NOTES_FILE"
+else
+    prev_tag="$(git -C "$PROJECT_DIR" describe --tags --abbrev=0 2>/dev/null || true)"
+    if [[ -n "$prev_tag" ]]; then
+        prior_notes="$(git -C "$PROJECT_DIR" log --pretty='- %s' "$prev_tag..HEAD")"
+        notes="$(printf -- '- %s\n%s' "$release_commit_message" "$prior_notes")"
+    else
+        notes="Initial Swift release."
+    fi
+    check_no_attribution_text "generated release notes" "$notes"
+fi
+
 git -C "$PROJECT_DIR" add "$INFO_PLIST" "${DOC_SYNC_PATHS[@]}"
-git -C "$PROJECT_DIR" commit -m "Release v$new_version"
+git -C "$PROJECT_DIR" commit -m "$release_commit_message"
+ROLLBACK_RELEASE_MUTATIONS=0
 git -C "$PROJECT_DIR" tag "v$new_version"
 
 say "Pushing main + tag"
@@ -250,29 +390,17 @@ git -C "$PROJECT_DIR" push origin main --follow-tags
 # ---- 10. GitHub release ---------------------------------------------------
 say "Creating GitHub release v$new_version"
 
-# If a hand-written release-notes file exists for this version, use it
-# verbatim — preferable to a list of commit subjects for releases with
-# any narrative content (migration steps, breaking changes, etc.).
-# Otherwise fall back to a generated commit-list.
-NOTES_FILE="$SWIFT_DIR/release-notes/v$new_version.md"
-if [[ -f "$NOTES_FILE" ]]; then
+if [[ "$USE_NOTES_FILE" -eq 1 ]]; then
     say "Using hand-written release notes from $NOTES_FILE"
     gh release create "v$new_version" "$ZIP_OUT" \
         --repo rcourtman/parakey \
-        --title "v$new_version" \
+        --title "$release_title" \
         --notes-file "$NOTES_FILE" \
         || die "gh release create failed -- tag is pushed; re-run gh release manually"
 else
-    prev_tag="$(git -C "$PROJECT_DIR" describe --tags --abbrev=0 "v$new_version^" 2>/dev/null || true)"
-    if [[ -n "$prev_tag" ]]; then
-        range="$prev_tag..v$new_version"
-        notes="$(git -C "$PROJECT_DIR" log --pretty='- %s' "$range")"
-    else
-        notes="Initial Swift release."
-    fi
     gh release create "v$new_version" "$ZIP_OUT" \
         --repo rcourtman/parakey \
-        --title "v$new_version" \
+        --title "$release_title" \
         --notes "$notes" \
         || die "gh release create failed -- tag is pushed; re-run gh release manually"
 fi
@@ -296,7 +424,9 @@ PY
     grep -q "sha256 \"$ZIP_SHA\""      "$CASK_FILE" || die "cask rewrite failed (sha256)"
 
     git -C "$CASK_TAP" add Casks/parakey.rb
-    git -C "$CASK_TAP" commit -m "parakey $new_version"
+    cask_commit_message="parakey $new_version"
+    check_no_attribution_text "cask commit message" "$cask_commit_message"
+    git -C "$CASK_TAP" commit -m "$cask_commit_message"
     git -C "$CASK_TAP" push origin "$tap_branch"
 
     say "Verifying published Homebrew Cask"

@@ -37,23 +37,26 @@ contact is listed on their GitHub profile.
 Parakey's transcription is local, but the speech-recognition weights
 themselves are downloaded once on first launch. That download is
 handled by the upstream [FluidAudio](https://github.com/FluidInference/FluidAudio)
-library, which fetches the Parakeet TDT v3 CoreML model from
-[`nvidia/parakeet-tdt-0.6b-v3` on Hugging Face](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
-over HTTPS.
+library, which fetches the CoreML conversion from
+[`FluidInference/parakeet-tdt-0.6b-v3-coreml` on Hugging Face](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml).
+That model is derived from NVIDIA's
+[`nvidia/parakeet-tdt-0.6b-v3`](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+The download uses HTTPS.
 
 What that means for trust:
 
 - The download is HTTPS, with standard macOS TLS certificate
   validation. A passive network attacker cannot tamper with the
   payload.
-- FluidAudio does **not** verify a cryptographic checksum or
-  signature of the downloaded model files. An attacker who compromises
-  the NVIDIA Hugging Face repository, the Hugging Face CDN, or the
-  TLS chain could substitute a malicious CoreML graph on a Parakey
-  user's first launch. That graph runs on the Apple Neural Engine
-  in-process; its output goes to the clipboard and is pasted at the
-  cursor, so the realistic abuse channel is attacker-chosen "transcripts"
-  rather than direct code execution.
+- FluidAudio does not verify a cryptographic checksum itself, so
+  Parakey adds its own manifest check around the v3 CoreML files it
+  loads. Startup downloads the model through FluidAudio, verifies the
+  downloaded model bundle and vocabulary against SHA-256 hashes pinned
+  in `swift/Sources/Parakey/main.swift`, and only then asks FluidAudio
+  to compile/load the models. The manifest is tied to a specific
+  `FluidInference/parakeet-tdt-0.6b-v3-coreml` repository commit; a
+  legitimate upstream model change must ship as an explicit Parakey
+  update with refreshed hashes from `scripts/update-model-manifest.py`.
 - FluidAudio reads `REGISTRY_URL` and `MODEL_REGISTRY_URL` from the
   process environment to override the download base URL. Parakey
   refuses to launch if either is set — they are a persistence vector
@@ -63,8 +66,9 @@ What that means for trust:
   LaunchAgents, shell rc files, and any parent process for an
   injected value before relaunching.
 
-Pinning a known-good SHA-256 for each model file is on the wishlist
-but not implemented today. If model integrity is a hard requirement
-for your environment, the safest mitigation is to pre-populate
+If model integrity is a hard requirement for your environment, keep
+Parakey updated so the pinned manifest stays aligned with the
+maintainer-vetted upstream model commit. Pre-populating
 `~/Library/Application Support/FluidAudio/Models/` from a trusted
-machine before Parakey's first launch.
+machine is still supported; Parakey verifies that cache before loading
+it.

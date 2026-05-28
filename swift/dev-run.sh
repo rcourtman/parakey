@@ -25,6 +25,7 @@ say "Building (debug)..."
 ( cd "$HERE" && swift build 2>&1 | grep -vE "^/.*warning:|^[0-9]+ \|" | tail -3 )
 
 say "Wrapping in $APP..."
+rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$HERE/.build/debug/Parakey" "$APP/Contents/MacOS/Parakey"
 # Single canonical Info.plist (swift/Info.plist) — same file
@@ -53,6 +54,19 @@ codesign --force --deep --sign "$CERT_HASH" \
     --entitlements "$REPO/entitlements.plist" \
     --timestamp \
     "$APP" >/dev/null 2>&1
+
+say "Checking signed entitlements..."
+EMBEDDED_ENTITLEMENTS="$(codesign -d --entitlements - "$APP" 2>&1)"
+for key in \
+    "com.apple.security.device.audio-input" \
+    "com.apple.security.device.microphone"
+do
+    if ! grep -q "$key" <<<"$EMBEDDED_ENTITLEMENTS"; then
+        printf '%s\n' "$EMBEDDED_ENTITLEMENTS" >&2
+        echo "missing required entitlement: $key" >&2
+        exit 1
+    fi
+done
 
 say "Stopping any prior dev instance..."
 pkill -f "Parakey-dev.app" 2>/dev/null || true

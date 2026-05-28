@@ -9,5 +9,8 @@ swift/dist/
 *.log
 *.log.[0-9]*
 
+# Python cache files from script syntax checks
+__pycache__/
+
 # macOS cruft
 .DS_Store
