@@ -1169,6 +1169,15 @@ func privacySafeLogPath(_ url: URL) -> String {
     return name.isEmpty || name == "/" ? "<local path>" : name
 }
 
+func privacySafeBundlePath(_ path: String) -> String {
+    switch path {
+    case "/Applications/Parakey.app", "/tmp/Parakey-dev.app":
+        return path
+    default:
+        return privacySafeLogPath(path)
+    }
+}
+
 private let PRIVATE_LOG_FILE_MODE = mode_t(S_IRUSR | S_IWUSR)
 private let PRIVATE_HELPER_FILE_MODE = mode_t(S_IRUSR | S_IWUSR)
 
@@ -4883,7 +4892,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             appBuild: currentBundleBuild(),
             macOS: ProcessInfo.processInfo.operatingSystemVersionString,
             bundleID: Bundle.main.bundleIdentifier ?? "unknown",
-            bundlePath: bundlePath,
+            bundlePath: privacySafeBundlePath(bundlePath),
             installKind: installKind,
             status: menuStatusTitle(),
             startup: startupText,
@@ -6972,6 +6981,16 @@ private enum ParakeySelfTest {
             privacySafeLogPath("/"),
             equals: "<local path>",
             "log path labels should fall back when no filename is available"
+        )
+        try expect(
+            privacySafeBundlePath("/Applications/Parakey.app"),
+            equals: "/Applications/Parakey.app",
+            "bundle path labels should keep the canonical install path"
+        )
+        try expect(
+            privacySafeBundlePath("/Users/example/Downloads/Parakey.app"),
+            equals: "Parakey.app",
+            "bundle path labels should omit parent directories for nonstandard installs"
         )
 
         let fm = FileManager.default
