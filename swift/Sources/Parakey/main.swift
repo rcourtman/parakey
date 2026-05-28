@@ -58,6 +58,9 @@ let UPDATE_HELPER_LOG_PATH = (NSHomeDirectory() as NSString)
 let MAX_SKIPPED_UPDATE_VERSIONS = 20
 let MAX_CORRECTION_SYNC_PATH_BYTES = 4096
 let MAX_INPUT_DEVICE_PREFERENCE_BYTES = 512
+let DIAGNOSTICS_LOG_MAX_BYTES = 128 * 1024
+let DIAGNOSTICS_LOG_MAX_LINES = 40
+let DIAGNOSTICS_LOG_MAX_LINE_CHARACTERS = 4096
 let RECORDING_HUD_EXPANDED_SIZE = NSSize(width: 232, height: 54)
 let RECORDING_HUD_COLLAPSED_SIZE = NSSize(width: 58, height: 42)
 let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
@@ -1059,6 +1062,8 @@ final class Logger: @unchecked Sendable {
     static let shared = Logger()
     private let url: URL
     private let q = DispatchQueue(label: "ParakeyLogger")
+
+    var fileURL: URL { url }
 
     init() {
         let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
@@ -2440,6 +2445,148 @@ func currentAppMemoryUsage() -> AppMemoryUsage? {
 
 func formattedByteCount(_ bytes: UInt64) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+}
+
+// MARK: - Diagnostics
+//
+// User-triggered local diagnostics for GitHub issue triage. Keep the
+// report useful but metadata-only: no transcript text and no text
+// correction contents.
+
+struct DiagnosticsReportSnapshot {
+    let generated: String
+    let appVersion: String
+    let appBuild: String
+    let macOS: String
+    let bundleID: String
+    let bundlePath: String
+    let installKind: String
+    let status: String
+    let startup: String
+    let speechModelReady: Bool
+    let coreRuntimeReady: Bool
+    let readyForDictation: Bool
+    let recordingActive: Bool
+    let transcribing: Bool
+    let memoryLines: [String]
+    let permissionLines: [String]
+    let settingLines: [String]
+    let updateLines: [String]
+    let microphoneLines: [String]
+    let logPath: String
+    let recentLogLines: [String]
+}
+
+private func diagnosticBulletLines(_ lines: [String], emptyText: String) -> String {
+    guard !lines.isEmpty else { return "- \(emptyText)" }
+    return lines.map { "- \($0)" }.joined(separator: "\n")
+}
+
+func diagnosticsReportText(from snapshot: DiagnosticsReportSnapshot) -> String {
+    """
+    Parakey diagnostics
+    Generated: \(snapshot.generated)
+    App version: \(snapshot.appVersion) (\(snapshot.appBuild))
+    macOS: \(snapshot.macOS)
+    Bundle ID: \(snapshot.bundleID)
+    Bundle path: \(snapshot.bundlePath)
+    Install kind: \(snapshot.installKind)
+
+    Status:
+    - Menu: \(snapshot.status)
+    - Startup: \(snapshot.startup)
+    - Speech model ready: \(snapshot.speechModelReady)
+    - Core runtime ready: \(snapshot.coreRuntimeReady)
+    - Ready for dictation: \(snapshot.readyForDictation)
+    - Recording active: \(snapshot.recordingActive)
+    - Transcribing: \(snapshot.transcribing)
+
+    Memory:
+    \(diagnosticBulletLines(snapshot.memoryLines, emptyText: "Unavailable"))
+
+    Permissions:
+    \(diagnosticBulletLines(snapshot.permissionLines, emptyText: "Unavailable"))
+
+    Settings:
+    \(diagnosticBulletLines(snapshot.settingLines, emptyText: "Unavailable"))
+
+    Update:
+    \(diagnosticBulletLines(snapshot.updateLines, emptyText: "Unavailable"))
+
+    Microphone:
+    \(diagnosticBulletLines(snapshot.microphoneLines, emptyText: "Unavailable"))
+
+    Recent log lines:
+    \(diagnosticBulletLines(snapshot.recentLogLines, emptyText: "No recent log lines available"))
+
+    Logs: \(snapshot.logPath)
+    Privacy: transcript text and text-correction contents are not included.
+    """
+}
+
+func recentDiagnosticLogLines(from url: URL = Logger.shared.fileURL,
+                              maxBytes: Int = DIAGNOSTICS_LOG_MAX_BYTES,
+                              maxLines: Int = DIAGNOSTICS_LOG_MAX_LINES) throws -> [String] {
+    guard maxBytes > 0, maxLines > 0 else { return [] }
+
+    let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    guard fd >= 0 else {
+        if errno == ENOENT { return [] }
+        throw currentPOSIXError()
+    }
+    defer { _ = Darwin.close(fd) }
+
+    try validateSingleLinkRegularFileDescriptor(fd)
+
+    var st = stat()
+    guard Darwin.fstat(fd, &st) == 0 else { throw currentPOSIXError() }
+    guard st.st_size > 0 else { return [] }
+
+    let startOffset = max(Int64(0), Int64(st.st_size) - Int64(maxBytes))
+    guard Darwin.lseek(fd, off_t(startOffset), SEEK_SET) >= 0 else {
+        throw currentPOSIXError()
+    }
+
+    var data = Data()
+    data.reserveCapacity(min(maxBytes, Int(st.st_size)))
+    while data.count < maxBytes {
+        let remaining = maxBytes - data.count
+        var buffer = [UInt8](repeating: 0, count: min(8192, remaining))
+        let bytesRead = buffer.withUnsafeMutableBytes { rawBuffer in
+            Darwin.read(fd, rawBuffer.baseAddress, rawBuffer.count)
+        }
+        if bytesRead < 0 {
+            if errno == EINTR { continue }
+            throw currentPOSIXError()
+        }
+        guard bytesRead > 0 else { break }
+        data.append(buffer, count: bytesRead)
+    }
+
+    var text = String(decoding: data, as: UTF8.self)
+    if startOffset > 0, let firstNewline = text.firstIndex(of: "\n") {
+        text = String(text[text.index(after: firstNewline)...])
+    }
+
+    let sanitized = text
+        .components(separatedBy: .newlines)
+        .map(sanitizedDiagnosticLogLine)
+        .filter { !$0.isEmpty }
+    return Array(sanitized.suffix(maxLines))
+}
+
+private func sanitizedDiagnosticLogLine(_ line: String) -> String {
+    var result = String()
+    result.reserveCapacity(min(line.count, DIAGNOSTICS_LOG_MAX_LINE_CHARACTERS))
+    for scalar in line.unicodeScalars {
+        guard result.count < DIAGNOSTICS_LOG_MAX_LINE_CHARACTERS else { break }
+        if scalar == "\t" || (scalar.value >= 0x20 && scalar.value != 0x7f) {
+            result.unicodeScalars.append(scalar)
+        } else {
+            result.append(" ")
+        }
+    }
+    return result.trimmingCharacters(in: .whitespaces)
 }
 
 func parseSemver(_ s: String) -> [Int] {
@@ -4048,6 +4195,36 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         log("diagnostics copied to clipboard")
     }
 
+    @objc private func saveDiagnosticsClicked(_ sender: NSMenuItem) {
+        showAppForModal()
+        let panel = NSSavePanel()
+        panel.title = "Save Diagnostics"
+        panel.message = "Save a privacy-safe diagnostics report for a GitHub issue."
+        panel.prompt = "Save"
+        panel.nameFieldStringValue = "Parakey Diagnostics.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try diagnosticsText().write(to: url, atomically: true, encoding: .utf8)
+            log("diagnostics saved to \(url.path)")
+        } catch {
+            showDiagnosticsSaveError(error)
+        }
+    }
+
+    private func showDiagnosticsSaveError(_ error: Error) {
+        log("diagnostics save failed: \(error.localizedDescription)")
+        showAppForModal()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Diagnostics couldn't be saved"
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     // MARK: - Menu
 
     private func rebuildMenu() {
@@ -4173,6 +4350,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         diagnostics.target = self
         menu.addItem(diagnostics)
 
+        let saveDiagnostics = NSMenuItem(title: "Save Diagnostics…",
+                                         action: #selector(saveDiagnosticsClicked(_:)),
+                                         keyEquivalent: "")
+        saveDiagnostics.target = self
+        menu.addItem(saveDiagnostics)
+
         // Route through our own selector rather than `NSApp.terminate(_:)`
         // directly. macOS auto-decorates items whose action is the
         // system terminate: selector with a destructive-action glyph
@@ -4248,25 +4431,20 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             startupText = isCoreRuntimeReady ? "Runtime ready" : "Runtime not ready"
         }
 
-        let permissions = Permission.allCases
-            .map { "- \($0.rawValue): \(Permissions.isGranted($0) ? "granted" : "missing")" }
-            .joined(separator: "\n")
-        let availableInputs = devices.isEmpty
-            ? "None reported"
-            : devices.map(\.name).joined(separator: ", ")
+        let permissionLines = Permission.allCases
+            .map { "\($0.rawValue): \(Permissions.isGranted($0) ? "granted" : "missing")" }
+        let availableInputLines = devices.isEmpty
+            ? ["Available inputs: none reported"]
+            : ["Available inputs (\(devices.count)):"] + devices.map { "  \($0.name)" }
         let pendingUpdateText = pendingUpdate.map { "v\($0.version)" } ?? "none"
-        let memoryText: String
+        let memoryLines: [String]
         if let memory = currentAppMemoryUsage() {
-            memoryText = """
-            Memory:
-            - Resident: \(formattedByteCount(memory.residentBytes))
-            - Physical footprint: \(formattedByteCount(memory.physicalFootprintBytes))
-            """
+            memoryLines = [
+                "Resident: \(formattedByteCount(memory.residentBytes))",
+                "Physical footprint: \(formattedByteCount(memory.physicalFootprintBytes))",
+            ]
         } else {
-            memoryText = """
-            Memory:
-            - Unavailable
-            """
+            memoryLines = []
         }
         let launchAtLoginText: String
         switch SMAppService.mainApp.status {
@@ -4282,52 +4460,57 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             launchAtLoginText = "unknown"
         }
 
-        return """
-        Parakey diagnostics
-        Generated: \(generated)
-        App version: \(currentBundleVersion()) (\(currentBundleBuild()))
-        macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)
-        Bundle ID: \(Bundle.main.bundleIdentifier ?? "unknown")
-        Bundle path: \(bundlePath)
-        Install kind: \(installKind)
+        let logLines: [String]
+        do {
+            logLines = try recentDiagnosticLogLines()
+        } catch {
+            logLines = ["Unavailable: \(error.localizedDescription)"]
+        }
 
-        Status: \(menuStatusTitle())
-        Startup: \(startupText)
-        Speech model ready: \(isSpeechModelReady)
-        Core runtime ready: \(isCoreRuntimeReady)
-        Ready for dictation: \(isReady)
-        Recording active: \(isRecording)
-        Transcribing: \(isBusy)
-
-        \(memoryText)
-
-        Permissions:
-        \(permissions)
-
-        Settings:
-        - Hotkey: \(hotkey.hotkey.name)
-        - Trigger mode: \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)
-        - Language: \(DICTATION_LANGUAGE_DISPLAY[settings.dictationLanguage] ?? settings.dictationLanguage.rawValue)
-        - Paste behavior: \(PASTE_SUFFIX_DISPLAY[settings.pasteSuffix] ?? settings.pasteSuffix.rawValue)
-        - Remove filler words: \(settings.removeFillerWords)
-        - Recent transcripts: \(RECENT_TRANSCRIPT_LIMIT_DISPLAY[settings.recentTranscriptLimit] ?? settings.recentTranscriptLimit.rawValue)
-        - Text insertion: \(TextInserter.defaultStrategy.displayName)
-        - Recording waveform: \(settings.showRecordingWaveform)
-        - Mute while recording: \(settings.muteWhileRecording)
-        - Feedback sounds: \(settings.playFeedbackSounds)
-        - Show in Dock: \(settings.showInDock)
-        - Launch at Login: \(launchAtLoginText)
-        - Automatic update checks: \(settings.checkForUpdates)
-        - Manual update check active: \(isCheckingForUpdates)
-        - Pending update: \(pendingUpdateText)
-
-        Microphone:
-        - Selected: \(inputLabel)
-        - Available inputs: \(availableInputs)
-
-        Logs: ~/Library/Logs/Parakey.log
-        Privacy: transcript text and text-correction contents are not included.
-        """
+        let snapshot = DiagnosticsReportSnapshot(
+            generated: generated,
+            appVersion: currentBundleVersion(),
+            appBuild: currentBundleBuild(),
+            macOS: ProcessInfo.processInfo.operatingSystemVersionString,
+            bundleID: Bundle.main.bundleIdentifier ?? "unknown",
+            bundlePath: bundlePath,
+            installKind: installKind,
+            status: menuStatusTitle(),
+            startup: startupText,
+            speechModelReady: isSpeechModelReady,
+            coreRuntimeReady: isCoreRuntimeReady,
+            readyForDictation: isReady,
+            recordingActive: isRecording,
+            transcribing: isBusy,
+            memoryLines: memoryLines,
+            permissionLines: permissionLines,
+            settingLines: [
+                "Hotkey: \(hotkey.hotkey.name)",
+                "Trigger mode: \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)",
+                "Language: \(DICTATION_LANGUAGE_DISPLAY[settings.dictationLanguage] ?? settings.dictationLanguage.rawValue)",
+                "Paste behavior: \(PASTE_SUFFIX_DISPLAY[settings.pasteSuffix] ?? settings.pasteSuffix.rawValue)",
+                "Remove filler words: \(settings.removeFillerWords)",
+                "Recent transcripts: \(RECENT_TRANSCRIPT_LIMIT_DISPLAY[settings.recentTranscriptLimit] ?? settings.recentTranscriptLimit.rawValue) (\(history.count) in memory)",
+                "Text corrections: \(settings.transcriptCorrections.count) configured",
+                "Text correction sync: \(settings.transcriptCorrectionsSyncFile.isEmpty ? "off" : "configured")",
+                "Text insertion: \(TextInserter.defaultStrategy.displayName)",
+                "Recording waveform: \(settings.showRecordingWaveform)",
+                "Mute while recording: \(settings.muteWhileRecording)",
+                "Feedback sounds: \(settings.playFeedbackSounds)",
+                "Show in Dock: \(settings.showInDock)",
+                "Launch at Login: \(launchAtLoginText)",
+            ],
+            updateLines: [
+                "Automatic update checks: \(settings.checkForUpdates)",
+                "Manual update check active: \(isCheckingForUpdates)",
+                "Pending update: \(pendingUpdateText)",
+                "Update helper log: \((UPDATE_HELPER_LOG_PATH as NSString).abbreviatingWithTildeInPath)",
+            ],
+            microphoneLines: ["Selected: \(inputLabel)"] + availableInputLines,
+            logPath: (Logger.shared.fileURL.path as NSString).abbreviatingWithTildeInPath,
+            recentLogLines: logLines
+        )
+        return diagnosticsReportText(from: snapshot)
     }
 
     @objc private func retryStartupClicked(_ sender: NSMenuItem) {
@@ -6312,6 +6495,8 @@ private enum ParakeySelfTest {
             return runSuite("hostile-env", testHostileRegistryEnvDetection)
         case "logging":
             return runSuite("logging", testPrivateLogAppend)
+        case "diagnostics":
+            return runSuite("diagnostics", testDiagnostics)
         case "all":
             return runSuite("all", testAll)
         default:
@@ -6350,6 +6535,7 @@ private enum ParakeySelfTest {
         try testUpdate()
         try testHostileRegistryEnvDetection()
         try testPrivateLogAppend()
+        try testDiagnostics()
     }
 
     private static func testPrivateLogAppend() throws {
@@ -6415,6 +6601,93 @@ private enum ParakeySelfTest {
             equals: "hardlink target\n",
             "log hard-link rejection should leave the target untouched"
         )
+    }
+
+    private static func testDiagnostics() throws {
+        let transcriptSecret = "secret dictated phrase 58A03D"
+        let correctionSecret = "private correction replacement 9F42"
+        let report = diagnosticsReportText(
+            from: DiagnosticsReportSnapshot(
+                generated: "2026-05-28T10:00:00Z",
+                appVersion: "9.8.7",
+                appBuild: "123",
+                macOS: "Version 26.0",
+                bundleID: "com.local.parakey",
+                bundlePath: "/Applications/Parakey.app",
+                installKind: "Applications app",
+                status: "Hold Right Option to dictate",
+                startup: "Runtime ready",
+                speechModelReady: true,
+                coreRuntimeReady: true,
+                readyForDictation: true,
+                recordingActive: false,
+                transcribing: false,
+                memoryLines: ["Resident: 100 MB"],
+                permissionLines: ["Microphone: granted", "Accessibility: granted", "Input Monitoring: granted"],
+                settingLines: [
+                    "Recent transcripts: Last 5 (1 in memory)",
+                    "Text corrections: 1 configured",
+                    "Text correction sync: configured",
+                ],
+                updateLines: ["Pending update: none"],
+                microphoneLines: ["Selected: System default", "Available inputs: none reported"],
+                logPath: "~/Library/Logs/Parakey.log",
+                recentLogLines: ["[10:00:00] release: 1.23 s captured, transcribing"]
+            )
+        )
+        try expect(report.contains(transcriptSecret), equals: false,
+                   "diagnostics report should not include transcript contents")
+        try expect(report.contains(correctionSecret), equals: false,
+                   "diagnostics report should not include text correction contents")
+        try expect(report.contains("Text corrections: 1 configured"), equals: true,
+                   "diagnostics report should include correction counts")
+        try expect(report.contains("Recent log lines:"), equals: true,
+                   "diagnostics report should include the recent log section")
+        try expect(report.contains("Privacy: transcript text and text-correction contents are not included."),
+                   equals: true,
+                   "diagnostics report should state the privacy boundary")
+
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("parakey-diagnostics-test-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: root) }
+
+        let logFile = root.appendingPathComponent("Parakey.log")
+        for line in 1...6 {
+            try appendPrivateLogData(Data("[10:00:0\(line)] line \(line)\n".utf8), to: logFile)
+        }
+        try expect(
+            try recentDiagnosticLogLines(from: logFile, maxBytes: 4096, maxLines: 3),
+            equals: ["[10:00:04] line 4", "[10:00:05] line 5", "[10:00:06] line 6"],
+            "diagnostic log tail should return the newest bounded lines"
+        )
+
+        let target = root.appendingPathComponent("target.log")
+        try Data("[10:00:00] target\n".utf8).write(to: target)
+        let symlink = root.appendingPathComponent("symlink.log")
+        try fm.createSymbolicLink(at: symlink, withDestinationURL: target)
+        var symlinkRejected = false
+        do {
+            _ = try recentDiagnosticLogLines(from: symlink, maxBytes: 4096, maxLines: 3)
+        } catch {
+            symlinkRejected = true
+        }
+        try expect(symlinkRejected, equals: true,
+                   "diagnostic log tail should reject leaf symlinks")
+
+        let hardlink = root.appendingPathComponent("hardlink.log")
+        guard Darwin.link(target.path, hardlink.path) == 0 else {
+            throw currentPOSIXError()
+        }
+        var hardlinkRejected = false
+        do {
+            _ = try recentDiagnosticLogLines(from: hardlink, maxBytes: 4096, maxLines: 3)
+        } catch {
+            hardlinkRejected = true
+        }
+        try expect(hardlinkRejected, equals: true,
+                   "diagnostic log tail should reject hard-linked files")
     }
 
     private static func testHotkey() throws {
