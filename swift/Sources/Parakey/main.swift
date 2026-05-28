@@ -2605,6 +2605,38 @@ func shellSingleQuoted(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
 }
 
+private func sanitizedEnvironmentValue(_ value: String?) -> String? {
+    guard let value,
+          !value.isEmpty,
+          !value.utf8.contains(0),
+          !value.contains(where: { $0.isNewline }) else {
+        return nil
+    }
+    return value
+}
+
+private func updateProcessEnvironment(current: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+    var env: [String: String] = [
+        "HOME": NSHomeDirectory(),
+        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "SHELL": "/bin/zsh",
+        "TMPDIR": NSTemporaryDirectory(),
+        "LANG": sanitizedEnvironmentValue(current["LANG"]) ?? "en_US.UTF-8",
+    ]
+
+    if let user = sanitizedEnvironmentValue(current["USER"]) {
+        env["USER"] = user
+    }
+    if let logname = sanitizedEnvironmentValue(current["LOGNAME"]) ?? env["USER"] {
+        env["LOGNAME"] = logname
+    }
+    if let encoding = sanitizedEnvironmentValue(current["__CF_USER_TEXT_ENCODING"]) {
+        env["__CF_USER_TEXT_ENCODING"] = encoding
+    }
+
+    return env
+}
+
 func updateHelperScript(pid: pid_t,
                         brewPath: String,
                         targetVersion: String,
@@ -6096,6 +6128,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: brewPath)
         proc.arguments = ["list", "--cask", "--versions", HOMEBREW_CASK_INSTALLED_TOKEN]
+        proc.environment = updateProcessEnvironment()
         proc.standardOutput = Pipe()
         proc.standardError = Pipe()
         do {
@@ -6140,6 +6173,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
         proc.arguments = [helperPath]
+        proc.environment = updateProcessEnvironment()
         do {
             try proc.run()
         } catch {
@@ -7302,6 +7336,32 @@ private enum ParakeySelfTest {
             equals: (NSHomeDirectory() as NSString).appendingPathComponent("Library/Logs"),
             "update helper log should live in the user's log directory"
         )
+        let updateEnv = updateProcessEnvironment(current: [
+            "LANG": "C\nbad",
+            "USER": "parakey-user",
+            "LOGNAME": "parakey-logname",
+            "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0",
+            "BASH_ENV": "/tmp/pwn.sh",
+            "ENV": "/tmp/pwn.sh",
+            "SHELLOPTS": "xtrace",
+            "RUBYOPT": "-r/tmp/pwn.rb",
+            "HOMEBREW_BOTTLE_DOMAIN": "https://example.test",
+        ])
+        try expect(updateEnv["HOME"], equals: Optional(NSHomeDirectory()),
+                   "update environment should set HOME explicitly")
+        try expect(updateEnv["PATH"],
+                   equals: Optional("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
+                   "update environment should use a deterministic PATH")
+        try expect(updateEnv["LANG"], equals: Optional("en_US.UTF-8"),
+                   "update environment should reject unsafe locale values")
+        try expect(updateEnv["USER"], equals: Optional("parakey-user"),
+                   "update environment should preserve a safe USER value")
+        try expect(updateEnv["LOGNAME"], equals: Optional("parakey-logname"),
+                   "update environment should preserve a safe LOGNAME value")
+        for key in ["BASH_ENV", "ENV", "SHELLOPTS", "RUBYOPT", "HOMEBREW_BOTTLE_DOMAIN"] {
+            try expect(updateEnv[key], equals: String?.none,
+                       "update environment should not inherit \(key)")
+        }
 
         let script = updateHelperScript(pid: 123,
                                         brewPath: "/opt/homebrew/bin/brew",
