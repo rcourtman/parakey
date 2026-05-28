@@ -1160,6 +1160,15 @@ final class Logger: @unchecked Sendable {
 
 func log(_ msg: String) { Logger.shared.log(msg) }
 
+func privacySafeLogPath(_ path: String) -> String {
+    privacySafeLogPath(URL(fileURLWithPath: path))
+}
+
+func privacySafeLogPath(_ url: URL) -> String {
+    let name = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty || name == "/" ? "<local path>" : name
+}
+
 private let PRIVATE_LOG_FILE_MODE = mode_t(S_IRUSR | S_IWUSR)
 private let PRIVATE_HELPER_FILE_MODE = mode_t(S_IRUSR | S_IWUSR)
 
@@ -4609,7 +4618,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         do {
             try diagnosticsText().write(to: url, atomically: true, encoding: .utf8)
-            log("diagnostics saved to \(url.path)")
+            log("diagnostics saved to \(privacySafeLogPath(url))")
         } catch {
             showDiagnosticsSaveError(error)
         }
@@ -6473,7 +6482,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }.value
 
                 if didRemoveCache {
-                    log("ASR: removed speech model cache at \(cacheDir.path)")
+                    log("ASR: removed speech model cache \(privacySafeLogPath(cacheDir))")
                 } else {
                     log("ASR: speech model cache reset requested; cache was already absent")
                 }
@@ -6832,7 +6841,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             showUpdateCouldNotStart(detail: "Parakey couldn't launch the update helper.")
             return
         }
-        log("update helper spawned at \(helperPath), logging to \(helperLog.path); quitting for upgrade")
+        log("update helper spawned \(privacySafeLogPath(helperPath)), logging to \(privacySafeLogPath(helperLog.path)); quitting for upgrade")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             NSApp.terminate(nil)
         }
@@ -6954,6 +6963,17 @@ private enum ParakeySelfTest {
     }
 
     private static func testPrivateLogAppend() throws {
+        try expect(
+            privacySafeLogPath("/Users/example/Documents/Parakey Diagnostics.txt"),
+            equals: "Parakey Diagnostics.txt",
+            "log path labels should omit parent directories"
+        )
+        try expect(
+            privacySafeLogPath("/"),
+            equals: "<local path>",
+            "log path labels should fall back when no filename is available"
+        )
+
         let fm = FileManager.default
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("parakey-log-test-\(UUID().uuidString)", isDirectory: true)
