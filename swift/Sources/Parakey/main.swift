@@ -2274,10 +2274,16 @@ func parseSemver(_ s: String) -> [Int] {
     let trimmed = s.trimmingCharacters(in: .whitespaces)
         .drop(while: { $0 == "v" || $0 == "V" })
     return trimmed.split(separator: ".").map { chunk in
-        var n = 0; var seen = false
+        var n = 0
+        var seen = false
         for c in chunk {
-            if let d = c.wholeNumberValue { n = n * 10 + d; seen = true }
-            else { break }
+            guard let d = c.wholeNumberValue else { break }
+            let multiplied = n.multipliedReportingOverflow(by: 10)
+            if multiplied.overflow { return Int.max }
+            let added = multiplied.partialValue.addingReportingOverflow(d)
+            if added.overflow { return Int.max }
+            n = added.partialValue
+            seen = true
         }
         return seen ? n : 0
     }
@@ -2416,7 +2422,8 @@ enum UpdateCheck {
         for part in parts {
             guard !part.isEmpty,
                   part.allSatisfy({ ("0"..."9").contains($0) }),
-                  part == "0" || !part.hasPrefix("0") else {
+                  part == "0" || !part.hasPrefix("0"),
+                  Int(part) != nil else {
                 return nil
             }
         }
@@ -6803,6 +6810,19 @@ private enum ParakeySelfTest {
             UpdateCheck.parseLatest(data: Data(#"{"tag_name":"v01.2.3"}"#.utf8), response: ok),
             equals: nil,
             "update parsing should reject non-normal semver tags"
+        )
+        try expect(
+            UpdateCheck.parseLatest(
+                data: Data(#"{"tag_name":"v999999999999999999999999.2.3"}"#.utf8),
+                response: ok
+            ),
+            equals: nil,
+            "update parsing should reject oversized numeric version parts"
+        )
+        try expect(
+            parseSemver("999999999999999999999999.2.3"),
+            equals: [Int.max, 2, 3],
+            "tolerant version parsing should not overflow on oversized components"
         )
         try expect(
             UpdateCheck.parseLatest(
