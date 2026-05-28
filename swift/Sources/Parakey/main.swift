@@ -1441,6 +1441,32 @@ private func audioRouteChangeAction(isTerminating: Bool,
     return .restartNow
 }
 
+private enum WakeRuntimeRecoveryAction: Equatable {
+    case ignore
+    case deferUntilIdle
+    case startAudioRuntime
+    case startFullStartup
+}
+
+private func shouldResumeRuntimeAfterSystemSleep(isTerminating: Bool,
+                                                 isCoreRuntimeReady: Bool,
+                                                 isReady: Bool,
+                                                 isRecording: Bool,
+                                                 audioIsRunning: Bool) -> Bool {
+    guard !isTerminating else { return false }
+    return isCoreRuntimeReady || isReady || isRecording || audioIsRunning
+}
+
+private func wakeRuntimeRecoveryAction(shouldResumeAfterWake: Bool,
+                                       isTerminating: Bool,
+                                       hasStartupTask: Bool,
+                                       isBusy: Bool,
+                                       isSpeechModelReady: Bool) -> WakeRuntimeRecoveryAction {
+    guard shouldResumeAfterWake, !isTerminating else { return .ignore }
+    guard !hasStartupTask, !isBusy else { return .deferUntilIdle }
+    return isSpeechModelReady ? .startAudioRuntime : .startFullStartup
+}
+
 private enum StartupFailureStage {
     case speechModel
     case audioInput
@@ -3353,6 +3379,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var maxDurationWorkItem: DispatchWorkItem?
     private var isRestartingAudioInput = false
     private var pendingAudioRouteRefresh = false
+    private var workspacePowerObservers: [NSObjectProtocol] = []
+    private var shouldResumeRuntimeAfterWake = false
+    private var didLogDeferredWakeRecovery = false
     private var didOfferSetupChecklistThisLaunch = false
     private var setupChecklistWindow: NSWindow?
     private var setupChecklistRefreshTimer: Timer?
@@ -3478,6 +3507,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.handleAudioConfigurationChange()
             }
         }
+        installWorkspacePowerObservers()
 
         // Configure hotkey listener up front so it picks up the user's
         // saved choice the moment the tap goes live.
@@ -3496,11 +3526,41 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         startupTask = nil
         stopPermissionReadinessMonitor()
         stopSetupChecklistRefreshTimer()
+        removeWorkspacePowerObservers()
         correctionSyncTimer?.invalidate()
         correctionSyncTimer = nil
         cleanupPendingSharedCorrections(reason: "terminate")
         audio.onConfigurationChange = nil
         cancelRecordingForTermination()
+    }
+
+    private func installWorkspacePowerObservers() {
+        removeWorkspacePowerObservers()
+        let center = NSWorkspace.shared.notificationCenter
+        workspacePowerObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification,
+                               object: nil,
+                               queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    self?.handleSystemWillSleep()
+                }
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification,
+                               object: nil,
+                               queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    self?.handleSystemDidWake()
+                }
+            },
+        ]
+    }
+
+    private func removeWorkspacePowerObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        for observer in workspacePowerObservers {
+            center.removeObserver(observer)
+        }
+        workspacePowerObservers.removeAll()
     }
 
     private func cleanupPendingSharedCorrections(reason: String) {
@@ -3548,6 +3608,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer {
                 startupTask = nil
                 rebuildMenu()
+                recoverRuntimeAfterWakeIfNeeded(reason: "startup finished after wake")
             }
 
             do {
@@ -3648,6 +3709,128 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         rebuildMenu()
     }
 
+    // MARK: - Sleep/wake runtime recovery
+
+    private func handleSystemWillSleep() {
+        guard !isTerminating else { return }
+
+        if shouldResumeRuntimeAfterSystemSleep(isTerminating: isTerminating,
+                                               isCoreRuntimeReady: isCoreRuntimeReady,
+                                               isReady: isReady,
+                                               isRecording: isRecording,
+                                               audioIsRunning: audio.isRunning) {
+            shouldResumeRuntimeAfterWake = true
+            didLogDeferredWakeRecovery = false
+        }
+
+        if isRecording || audio.isRunning {
+            cancelActiveRecording(reason: "system sleep", runDeferredRefresh: false)
+        }
+
+        guard isCoreRuntimeReady || isReady else {
+            rebuildMenu()
+            return
+        }
+
+        pauseAudioRuntimeForSystemSleep()
+    }
+
+    private func handleSystemDidWake() {
+        guard !isTerminating else { return }
+        guard shouldResumeRuntimeAfterWake else { return }
+        log("system wake detected")
+        recoverRuntimeAfterWakeIfNeeded(reason: "system wake")
+    }
+
+    private func pauseAudioRuntimeForSystemSleep() {
+        cancelMaxDurationAutoRelease()
+        stopRecordingLevelMeter()
+        unmuteIfWeMuted()
+
+        isReady = false
+        isCoreRuntimeReady = false
+        isRecording = false
+        pendingAudioRouteRefresh = false
+        hotkey.onPress = nil
+        hotkey.onRelease = nil
+        hotkey.onCancel = nil
+        hotkey.isRecordingActive = nil
+        hotkey.resetToggleState()
+        hotkey.stop()
+        audio.stopEngine()
+
+        startupFailure = nil
+        startupStatusTitle = "Waiting for system wake…"
+        setMenuBarState(isBusy ? .busy : .loading)
+        log("system sleep: audio runtime paused")
+        rebuildMenu()
+    }
+
+    private func recoverRuntimeAfterWakeIfNeeded(reason: String) {
+        switch wakeRuntimeRecoveryAction(shouldResumeAfterWake: shouldResumeRuntimeAfterWake,
+                                         isTerminating: isTerminating,
+                                         hasStartupTask: startupTask != nil,
+                                         isBusy: isBusy,
+                                         isSpeechModelReady: isSpeechModelReady) {
+        case .ignore:
+            return
+        case .deferUntilIdle:
+            if !didLogDeferredWakeRecovery {
+                didLogDeferredWakeRecovery = true
+                log("system wake recovery deferred until idle")
+            }
+            rebuildMenu()
+        case .startAudioRuntime:
+            shouldResumeRuntimeAfterWake = false
+            didLogDeferredWakeRecovery = false
+            startAudioRuntimeAfterWake(reason: reason)
+        case .startFullStartup:
+            shouldResumeRuntimeAfterWake = false
+            didLogDeferredWakeRecovery = false
+            startStartup(reason: reason)
+        }
+    }
+
+    private func startAudioRuntimeAfterWake(reason: String) {
+        guard startupTask == nil, !isBusy, !isTerminating else {
+            shouldResumeRuntimeAfterWake = true
+            recoverRuntimeAfterWakeIfNeeded(reason: reason)
+            return
+        }
+
+        isReady = false
+        isCoreRuntimeReady = false
+        isRecording = false
+        pendingAudioRouteRefresh = false
+        startupFailure = nil
+        startupStatusTitle = "Restarting audio input…"
+        hotkey.onPress = nil
+        hotkey.onRelease = nil
+        hotkey.onCancel = nil
+        hotkey.isRecordingActive = nil
+        hotkey.resetToggleState()
+        hotkey.stop()
+        audio.stopEngine()
+        setMenuBarState(.loading)
+        rebuildMenu()
+
+        Task { @MainActor in
+            do {
+                didTouchAudioEngine = true
+                try audio.startEngine(inputDevicePreference: settings.inputDevice)
+                guard !isTerminating else { return }
+                isCoreRuntimeReady = true
+                startupStatusTitle = "Finishing setup…"
+                completeReadinessIfPossible(reason: reason)
+            } catch {
+                guard !isTerminating else { return }
+                recordStartupFailure(stage: .audioInput, error: error, reason: reason)
+            }
+        }
+    }
+
+    // MARK: - Permission readiness
+
     private func enterPermissionBlockedState(missing: [Permission]? = nil, reason: String) {
         let missing = missing ?? missingPermissions()
         guard !missing.isEmpty else {
@@ -3740,6 +3923,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         completeReadinessIfPossible(reason: "permission monitor")
     }
+
+    // MARK: - File imports
 
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
         var didImport = false
@@ -4142,10 +4327,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             setMenuBarState(.idle)
             rebuildMenu()
             runDeferredAudioRouteRefreshIfNeeded()
+            recoverRuntimeAfterWakeIfNeeded(reason: "transcription finished after wake")
         }
     }
 
-    private func cancelActiveRecording(reason: String) {
+    private func cancelActiveRecording(reason: String, runDeferredRefresh: Bool = true) {
         guard isRecording || audio.isRunning else {
             hotkey.resetToggleState()
             return
@@ -4160,7 +4346,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setMenuBarState(.idle)
         rebuildMenu()
         log("recording canceled (\(reason))")
-        runDeferredAudioRouteRefreshIfNeeded()
+        if runDeferredRefresh {
+            runDeferredAudioRouteRefreshIfNeeded()
+        }
     }
 
     // Quit cancels any in-flight recording instead of releasing it:
@@ -6560,6 +6748,8 @@ private enum ParakeySelfTest {
             return runSuite("model-status", testSpeechModelStartupStatus)
         case "audio-route":
             return runSuite("audio-route", testAudioRouteChangeDecision)
+        case "power-state":
+            return runSuite("power-state", testPowerStateRecoveryDecision)
         case "model-integrity":
             return runSuite("model-integrity", testModelIntegrity)
         case "update":
@@ -6604,6 +6794,7 @@ private enum ParakeySelfTest {
         try testAudioInputDeviceFiltering()
         try testSpeechModelStartupStatus()
         try testAudioRouteChangeDecision()
+        try testPowerStateRecoveryDecision()
         try testModelIntegrity()
         try testUpdate()
         try testHostileRegistryEnvDetection()
@@ -8106,6 +8297,81 @@ private enum ParakeySelfTest {
                                    hasStartupTask: false),
             equals: .restartNow,
             "idle ready route changes should restart audio immediately"
+        )
+    }
+
+    private static func testPowerStateRecoveryDecision() throws {
+        try expect(
+            shouldResumeRuntimeAfterSystemSleep(isTerminating: true,
+                                                isCoreRuntimeReady: true,
+                                                isReady: true,
+                                                isRecording: true,
+                                                audioIsRunning: true),
+            equals: false,
+            "sleep during termination should not schedule wake recovery"
+        )
+        try expect(
+            shouldResumeRuntimeAfterSystemSleep(isTerminating: false,
+                                                isCoreRuntimeReady: false,
+                                                isReady: false,
+                                                isRecording: false,
+                                                audioIsRunning: false),
+            equals: false,
+            "sleep before runtime startup should not schedule wake recovery"
+        )
+        try expect(
+            shouldResumeRuntimeAfterSystemSleep(isTerminating: false,
+                                                isCoreRuntimeReady: false,
+                                                isReady: false,
+                                                isRecording: true,
+                                                audioIsRunning: true),
+            equals: true,
+            "active recording should schedule wake recovery even if readiness is already down"
+        )
+        try expect(
+            wakeRuntimeRecoveryAction(shouldResumeAfterWake: false,
+                                      isTerminating: false,
+                                      hasStartupTask: false,
+                                      isBusy: false,
+                                      isSpeechModelReady: true),
+            equals: .ignore,
+            "wake without a sleep-paused runtime should do nothing"
+        )
+        try expect(
+            wakeRuntimeRecoveryAction(shouldResumeAfterWake: true,
+                                      isTerminating: false,
+                                      hasStartupTask: false,
+                                      isBusy: true,
+                                      isSpeechModelReady: true),
+            equals: .deferUntilIdle,
+            "wake during transcription should defer runtime recovery"
+        )
+        try expect(
+            wakeRuntimeRecoveryAction(shouldResumeAfterWake: true,
+                                      isTerminating: false,
+                                      hasStartupTask: true,
+                                      isBusy: false,
+                                      isSpeechModelReady: true),
+            equals: .deferUntilIdle,
+            "wake during startup should defer runtime recovery"
+        )
+        try expect(
+            wakeRuntimeRecoveryAction(shouldResumeAfterWake: true,
+                                      isTerminating: false,
+                                      hasStartupTask: false,
+                                      isBusy: false,
+                                      isSpeechModelReady: true),
+            equals: .startAudioRuntime,
+            "wake after a loaded model should restart audio without reloading the model"
+        )
+        try expect(
+            wakeRuntimeRecoveryAction(shouldResumeAfterWake: true,
+                                      isTerminating: false,
+                                      hasStartupTask: false,
+                                      isBusy: false,
+                                      isSpeechModelReady: false),
+            equals: .startFullStartup,
+            "wake without a loaded model should fall back to full startup"
         )
     }
 
