@@ -2277,6 +2277,7 @@ func updateHelperScript(pid: pid_t,
     #!/bin/bash
     set -u
 
+    SCRIPT_PATH="$0"
     LOG=\#(shellSingleQuoted(logPath))
     BREW=\#(shellSingleQuoted(brewPath))
     TARGET_VERSION=\#(shellSingleQuoted(targetVersion))
@@ -2288,6 +2289,13 @@ func updateHelperScript(pid: pid_t,
     CASK_INSTALLED_TOKEN=\#(shellSingleQuoted(HOMEBREW_CASK_INSTALLED_TOKEN))
     INFO_PLIST="$APP_PATH/Contents/Info.plist"
     APP_DIR="$(/usr/bin/dirname "$APP_PATH")"
+
+    cleanup() {
+        if [ -n "${SCRIPT_PATH:-}" ]; then
+            /bin/rm -f "$SCRIPT_PATH" 2>/dev/null || true
+        fi
+    }
+    trap cleanup EXIT
 
     timestamp() {
         /bin/date -u '+%Y-%m-%dT%H:%M:%SZ'
@@ -5702,6 +5710,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             try proc.run()
         } catch {
+            try? FileManager.default.removeItem(atPath: helperPath)
             showUpdateCouldNotStart(detail: "Parakey couldn't launch the update helper.")
             return
         }
@@ -6389,6 +6398,9 @@ private enum ParakeySelfTest {
         for fragment in [
             "TARGET_VERSION='9.8.7'",
             "PARAKEY_PID=123",
+            "SCRIPT_PATH=\"$0\"",
+            "trap cleanup EXIT",
+            "/bin/rm -f \"$SCRIPT_PATH\"",
             "CASK_TAP='rcourtman/parakey'",
             "CASK_TOKEN='rcourtman/parakey/parakey'",
             "CASK_INSTALLED_TOKEN='parakey'",
