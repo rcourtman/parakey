@@ -35,8 +35,11 @@ for entry in "${CLIPS[@]}"; do
     say -v "$VOICE" -o "$aiff" "$text"
     afconvert -f WAVE -d LEF32@16000 "$aiff" "$wav"
     rm -f "$aiff"
+    # Sidecar ground-truth transcript: the TTS input IS the reference, so
+    # parakey-bench picks up "<stem>.txt" automatically for WER.
+    printf '%s\n' "$text" > "$OUTDIR/$name.txt"
 done
 
 echo
 echo "Generated:"
-ls -la "$OUTDIR"/*.wav
+ls -la "$OUTDIR"/*.wav "$OUTDIR"/*.txt

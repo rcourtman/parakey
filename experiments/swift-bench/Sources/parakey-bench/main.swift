@@ -6,7 +6,7 @@
 // all three backends can be cross-referenced in one table.
 //
 // Usage:
-//   parakey-bench --file path/to/audio.wav [--trials 5] [--backend apple|fluid|both]
+//   parakey-bench --file path/to/audio.wav [--trials 5] [--backend apple|v3|110m|fluid|both]
 //
 // Audio must be 16 kHz mono Float32 (or convertible to that —
 // AVAudioFile + AVAudioPCMBuffer handles the conversion).
@@ -21,14 +21,22 @@ import FluidAudio
 struct CLIArgs {
     var file: URL
     var trials: Int = 5
-    var backend: String = "both"   // "apple" | "fluid" | "both"
+    // "apple" | "v3" | "110m" | "fluid" (= v3 + 110m) | "both" (= all three).
+    // Defaults to "v3": it's the production model and the only Fluid backend
+    // that loads today (110m is broken upstream — see note at construction).
+    var backend: String = "v3"
+    // Ground-truth transcript for WER. If nil, falls back to a sibling
+    // "<file-stem>.txt" (written by generate-test-audio.sh); if neither
+    // exists, WER is skipped.
+    var ref: String? = nil
 }
 
 func parseArgs() -> CLIArgs {
     var iter = CommandLine.arguments.dropFirst().makeIterator()
     var file: URL? = nil
     var trials: Int = 5
-    var backend: String = "both"
+    var backend: String = "v3"
+    var ref: String? = nil
     while let arg = iter.next() {
         switch arg {
         case "--file":
@@ -37,9 +45,23 @@ func parseArgs() -> CLIArgs {
             if let v = iter.next(), let n = Int(v) { trials = n }
         case "--backend":
             if let v = iter.next() { backend = v }
+        case "--ref":
+            if let v = iter.next() { ref = v }
         case "-h", "--help":
             print("""
-            usage: parakey-bench --file <wav> [--trials N] [--backend apple|fluid|both]
+            usage: parakey-bench --file <wav> [--trials N] [--backend apple|v3|110m|fluid|both] [--ref "text"]
+
+              --backend  v3    FluidAudio Parakeet TDT v3 — production model (default)
+                         110m  FluidAudio Parakeet TDT-CTC 110M (smaller English model;
+                               currently fails to load — broken upstream)
+                         fluid v3 + 110m head-to-head
+                         apple Apple SpeechAnalyzer (macOS 26+)
+                         both  apple + v3 + 110m
+              --ref      reference transcript for WER; defaults to <file>.txt if present
+
+            For a clean per-model memory number, run one model per process
+            (--backend v3, then --backend 110m) — footprint is cumulative
+            when several backends run in the same process.
             """)
             exit(0)
         default:
@@ -51,7 +73,7 @@ func parseArgs() -> CLIArgs {
         FileHandle.standardError.write(Data("--file is required\n".utf8))
         exit(2)
     }
-    return CLIArgs(file: file, trials: trials, backend: backend)
+    return CLIArgs(file: file, trials: trials, backend: backend, ref: ref)
 }
 
 // MARK: - Audio loading
@@ -239,18 +261,30 @@ final class AppleBackend: ASRBackend {
     }
 }
 
-// ----- FluidAudio (Parakeet TDT v3 → CoreML → ANE) ----------------------
+// ----- FluidAudio (Parakeet → CoreML → ANE) -----------------------------
+//
+// One class, two model versions: TDT v3 (0.6B, 25-language default) and
+// TDT-CTC 110M (smaller English-focused model with a fused
+// preprocessor+encoder). Both load through the same `AsrModels` /
+// `AsrManager` API and both decode through `TdtDecoderState` — 110M is a
+// hybrid TDT-CTC, so the TDT decoder path applies unchanged.
 
 final class FluidBackend: ASRBackend {
-    let name = "fluid-ParakeetTDTv3"
+    let name: String
+    private let version: AsrModelVersion
     private var asr: AsrManager!
 
+    init(name: String, version: AsrModelVersion) {
+        self.name = name
+        self.version = version
+    }
+
     func prepare(warmupSamples: [Float]) async throws {
-        // First call downloads ~600 MB of CoreML weights to
-        // ~/Library/Caches/.../FluidInference unless they're already
-        // cached. `AsrManager.init` takes the loaded models directly;
-        // no separate configure step.
-        let models = try await AsrModels.downloadAndLoad(version: .v3)
+        // First call downloads the CoreML weights to
+        // ~/Library/Application Support/FluidAudio/ unless cached (v3 is
+        // ~600 MB; 110M is smaller). `AsrManager.init` takes the loaded
+        // models directly; no separate configure step.
+        let models = try await AsrModels.downloadAndLoad(version: version)
         asr = AsrManager(config: .default, models: models)
         _ = try await run(samples: warmupSamples)
     }
@@ -266,6 +300,68 @@ final class FluidBackend: ASRBackend {
         return (result.text, Date().timeIntervalSince(t0))
     }
 }
+
+// MARK: - Word error rate
+//
+// Standard word-level WER: edit distance between normalized token
+// streams, divided by reference word count. Normalization lowercases and
+// strips punctuation but does NOT do inverse text normalization, so a
+// model emitting "16" against a reference of "sixteen" counts as an error
+// — fine for a relative v3-vs-110m comparison on the same references, but
+// keep it in mind when reading absolute numbers (and note the TTS clips
+// are "too clean" to stand in for real dictation).
+
+func werTokens(_ s: String) -> [String] {
+    let lowered = s.lowercased()
+    let kept = lowered.unicodeScalars.map { scalar -> Character in
+        CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : " "
+    }
+    return String(kept).split(separator: " ").map(String.init)
+}
+
+func wordEditDistance(_ ref: [String], _ hyp: [String]) -> Int {
+    let n = ref.count, m = hyp.count
+    if n == 0 { return m }
+    if m == 0 { return n }
+    var prev = Array(0...m)
+    var curr = [Int](repeating: 0, count: m + 1)
+    for i in 1...n {
+        curr[0] = i
+        for j in 1...m {
+            let cost = ref[i - 1] == hyp[j - 1] ? 0 : 1
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+        }
+        swap(&prev, &curr)
+    }
+    return prev[m]
+}
+
+func werPercent(reference: String, hypothesis: String) -> Double {
+    let ref = werTokens(reference)
+    let hyp = werTokens(hypothesis)
+    guard !ref.isEmpty else { return hyp.isEmpty ? 0 : 100 }
+    return Double(wordEditDistance(ref, hyp)) / Double(ref.count) * 100
+}
+
+// MARK: - Memory
+//
+// `phys_footprint` is what Activity Monitor reports as "Memory" and is the
+// closest single number to a model's resident cost. It does not capture
+// everything the ANE allocates out of process, so treat it as a
+// comparative signal between models, not an absolute RAM ceiling.
+
+func footprintBytes() -> UInt64 {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let kr = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+        }
+    }
+    return kr == KERN_SUCCESS ? info.phys_footprint : 0
+}
+
+func fmtMB(_ bytes: UInt64) -> String { String(format: "%6.1f MB", Double(bytes) / (1024 * 1024)) }
 
 // MARK: - Bench harness
 
@@ -283,30 +379,38 @@ func percentile(_ values: [Double], _ p: Double) -> Double {
 
 func fmtMs(_ s: Double) -> String { String(format: "%7.1f ms", s * 1000) }
 
-func runBackend(_ backend: ASRBackend, samples: [Float], trials: Int) async throws -> [TrialResult] {
+func runBackend(_ backend: ASRBackend, samples: [Float], trials: Int) async throws -> (results: [TrialResult], peak: UInt64) {
     var out: [TrialResult] = []
+    var peak = footprintBytes()
     for i in 0..<trials {
         let (text, t) = try await backend.run(samples: samples)
         out.append(TrialResult(elapsed: t, text: text))
+        peak = max(peak, footprintBytes())
         FileHandle.standardError.write(Data("    \(backend.name) trial \(i+1)/\(trials): \(fmtMs(t))\n".utf8))
     }
-    return out
+    return (out, peak)
 }
 
-func summarize(_ name: String, _ results: [TrialResult]) {
+func summarize(_ name: String, _ results: [TrialResult], reference: String?, baseline: UInt64, peak: UInt64) {
     let times = results.map(\.elapsed)
     let p50 = percentile(times, 0.5)
     let mn = times.min() ?? 0
     let mx = times.max() ?? 0
     let texts = Set(results.map(\.text))
+    let delta = peak >= baseline ? peak - baseline : 0
     print("")
     print("  \(name)")
     print("    latency:  p50=\(fmtMs(p50))  min=\(fmtMs(mn))  max=\(fmtMs(mx))")
+    print("    memory:   peak=\(fmtMB(peak))  Δ-from-start=\(fmtMB(delta))")
+    func werTag(_ text: String) -> String {
+        guard let reference else { return "" }
+        return " [WER \(String(format: "%.1f%%", werPercent(reference: reference, hypothesis: text)))]"
+    }
     if texts.count == 1, let only = texts.first {
-        print("    transcript: \"\(only)\"")
+        print("    transcript:\(werTag(only)) \"\(only)\"")
     } else {
         print("    transcripts (\(texts.count) distinct):")
-        for t in texts.sorted() { print("      • \"\(t)\"") }
+        for t in texts.sorted() { print("      •\(werTag(t)) \"\(t)\"") }
     }
 }
 
@@ -322,10 +426,31 @@ struct ParakeyBench {
         let durSec = Double(samples.count) / 16_000
         log("audio: \(samples.count) samples (~\(String(format: "%.2f", durSec)) s @ 16 kHz mono)")
 
+        // Reference for WER: explicit --ref wins, else a sibling
+        // "<stem>.txt" (written by generate-test-audio.sh).
+        let reference: String? = {
+            if let r = args.ref { return r }
+            let sidecar = args.file.deletingPathExtension().appendingPathExtension("txt")
+            if let text = try? String(contentsOf: sidecar, encoding: .utf8) {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return nil
+        }()
+        if let reference {
+            log("reference: \"\(reference)\"")
+        } else {
+            log("no reference (--ref or <file>.txt) — WER skipped")
+        }
+
         // Use the same audio for warmup — it's the most representative
         // "first inference" for the same shape we'll measure.
         let warmup = samples
 
+        let known = ["apple", "v3", "110m", "fluid", "both"]
+        guard known.contains(args.backend) else {
+            FileHandle.standardError.write(Data("unknown --backend \"\(args.backend)\" (expected \(known.joined(separator: "|")))\n".utf8))
+            exit(2)
+        }
         var backends: [ASRBackend] = []
         if args.backend == "apple" || args.backend == "both" {
             if #available(macOS 26, *) {
@@ -334,8 +459,25 @@ struct ParakeyBench {
                 print("apple backend skipped — requires macOS 26+")
             }
         }
-        if args.backend == "fluid" || args.backend == "both" {
-            backends.append(FluidBackend())
+        if args.backend == "v3" || args.backend == "fluid" || args.backend == "both" {
+            backends.append(FluidBackend(name: "fluid-ParakeetTDTv3", version: .v3))
+        }
+        if args.backend == "110m" || args.backend == "fluid" || args.backend == "both" {
+            // Kept wired up but off the default path: as of FluidAudio main
+            // (2026-05) the 110m CoreML bundle won't load — missing
+            // CtcHead.mlmodelc plus a decoder shape mismatch (2×1×640 vs
+            // 1×1×640). prepare() fails gracefully and the run continues.
+            // Re-test with --backend 110m once it's fixed upstream.
+            backends.append(FluidBackend(name: "fluid-ParakeetTDTCTC110M", version: .tdtCtc110m))
+        }
+
+        // Footprint before any model loads. Δ-from-start is only a clean
+        // per-model cost when one backend runs per process; with several in
+        // one run the earlier models stay resident (see --help).
+        let baseline = footprintBytes()
+        log("baseline footprint: \(fmtMB(baseline))")
+        if backends.count > 1 {
+            log("note: \(backends.count) backends in one process — memory is cumulative; run one --backend per process for clean per-model numbers")
         }
 
         for backend in backends {
@@ -351,8 +493,8 @@ struct ParakeyBench {
             log("  ready in \(fmtMs(prepDt)) (model load + 1 warmup inference)")
 
             do {
-                let results = try await runBackend(backend, samples: samples, trials: args.trials)
-                summarize(backend.name, results)
+                let (results, peak) = try await runBackend(backend, samples: samples, trials: args.trials)
+                summarize(backend.name, results, reference: reference, baseline: baseline, peak: peak)
             } catch {
                 log("  run(\(backend.name)) FAILED: \(error)")
             }
