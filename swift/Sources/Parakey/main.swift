@@ -272,8 +272,26 @@ enum TranscriptCorrectionsDocumentError: LocalizedError {
     }
 }
 
+enum TranscriptCorrectionsTransferError: LocalizedError {
+    case fileTooLarge(Int, Int)
+    case notRegularFile
+
+    var errorDescription: String? {
+        switch self {
+        case .fileTooLarge(let bytes, let limit):
+            let actual = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+            let maximum = ByteCountFormatter.string(fromByteCount: Int64(limit), countStyle: .file)
+            return "This corrections file is \(actual), which is larger than Parakey's \(maximum) import limit."
+        case .notRegularFile:
+            return "The selected corrections path is not a regular file."
+        }
+    }
+}
+
 enum TranscriptCorrectionsTransfer {
     static let schemaVersion = 1
+    static let maxFileBytes = 2 * 1024 * 1024
+
     static var contentType: UTType {
         UTType(filenameExtension: CORRECTIONS_FILE_EXTENSION)
             ?? UTType(exportedAs: CORRECTIONS_FILE_UTI, conformingTo: .json)
@@ -311,13 +329,34 @@ enum TranscriptCorrectionsTransfer {
 
     static func write(_ corrections: [TranscriptCorrection], to url: URL) throws {
         let data = try encode(corrections)
+        try validateTransferSize(data.count)
         let parent = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
     }
 
     static func read(from url: URL) throws -> [TranscriptCorrection] {
-        try decode(try Data(contentsOf: url))
+        try decode(try readData(from: url))
+    }
+
+    private static func readData(from url: URL) throws -> Data {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        if values.isRegularFile == false {
+            throw TranscriptCorrectionsTransferError.notRegularFile
+        }
+        if let size = values.fileSize {
+            try validateTransferSize(size)
+        }
+
+        let data = try Data(contentsOf: url)
+        try validateTransferSize(data.count)
+        return data
+    }
+
+    private static func validateTransferSize(_ bytes: Int) throws {
+        guard bytes <= maxFileBytes else {
+            throw TranscriptCorrectionsTransferError.fileTooLarge(bytes, maxFileBytes)
+        }
     }
 }
 
@@ -6203,6 +6242,39 @@ private enum ParakeySelfTest {
             equals: [TranscriptCorrection(source: "old phrase", replacement: "new phrase")],
             "legacy bare-array correction files should remain importable"
         )
+
+        let transferTmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        let transferFileManager = FileManager.default
+        let oversized = transferTmpDir
+            .appendingPathComponent("parakey-corrections-oversized-\(UUID().uuidString).json")
+        try Data(repeating: 0x20, count: TranscriptCorrectionsTransfer.maxFileBytes + 1)
+            .write(to: oversized)
+        defer { try? transferFileManager.removeItem(at: oversized) }
+        var oversizedRejected = false
+        do {
+            _ = try TranscriptCorrectionsTransfer.read(from: oversized)
+        } catch let error as TranscriptCorrectionsTransferError {
+            if case .fileTooLarge = error {
+                oversizedRejected = true
+            }
+        }
+        try expect(oversizedRejected, equals: true,
+                   "correction transfer should reject oversized files before decoding")
+
+        let nonFile = transferTmpDir
+            .appendingPathComponent("parakey-corrections-directory-\(UUID().uuidString)")
+        try transferFileManager.createDirectory(at: nonFile, withIntermediateDirectories: false)
+        defer { try? transferFileManager.removeItem(at: nonFile) }
+        var nonFileRejected = false
+        do {
+            _ = try TranscriptCorrectionsTransfer.read(from: nonFile)
+        } catch let error as TranscriptCorrectionsTransferError {
+            if case .notRegularFile = error {
+                nonFileRejected = true
+            }
+        }
+        try expect(nonFileRejected, equals: true,
+                   "correction transfer should reject non-file paths")
 
         let remoteOnlyChange = mergedTranscriptCorrectionsForSync(
             base: [TranscriptCorrection(source: "old phrase", replacement: "old")],
