@@ -53,7 +53,8 @@ let HOMEBREW_CASK_TAP = "rcourtman/parakey"
 let HOMEBREW_CASK_TOKEN = "rcourtman/parakey/parakey"
 let HOMEBREW_CASK_INSTALLED_TOKEN = "parakey"
 let INSTALLED_APP_BUNDLE_PATH = "/Applications/Parakey.app"
-let UPDATE_HELPER_LOG_PATH = "/tmp/parakey-update.log"
+let UPDATE_HELPER_LOG_PATH = (NSHomeDirectory() as NSString)
+    .appendingPathComponent("Library/Logs/Parakey-update.log")
 let RECORDING_HUD_EXPANDED_SIZE = NSSize(width: 232, height: 54)
 let RECORDING_HUD_COLLAPSED_SIZE = NSSize(width: 58, height: 42)
 let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
@@ -2385,6 +2386,7 @@ func updateHelperScript(pid: pid_t,
     #"""
     #!/bin/bash
     set -u
+    umask 077
 
     SCRIPT_PATH="$0"
     LOG=\#(shellSingleQuoted(logPath))
@@ -2408,6 +2410,35 @@ func updateHelperScript(pid: pid_t,
 
     timestamp() {
         /bin/date -u '+%Y-%m-%dT%H:%M:%SZ'
+    }
+
+    private_log_path() {
+        local candidate
+        candidate="$(/usr/bin/mktemp -t parakey-update 2>/dev/null)" || return 1
+        /bin/chmod 600 "$candidate" 2>/dev/null || true
+        printf '%s\n' "$candidate"
+    }
+
+    prepare_log() {
+        local dir fallback
+        dir="$(/usr/bin/dirname "$LOG")"
+        if ! /bin/mkdir -p "$dir" 2>/dev/null; then
+            fallback="$(private_log_path)" || exit 1
+            LOG="$fallback"
+            return 0
+        fi
+
+        if [ -L "$LOG" ] || { [ -e "$LOG" ] && [ ! -f "$LOG" ]; }; then
+            fallback="$(private_log_path)" || exit 1
+            LOG="$fallback"
+            return 0
+        fi
+
+        : >"$LOG" || {
+            fallback="$(private_log_path)" || exit 1
+            LOG="$fallback"
+        }
+        /bin/chmod 600 "$LOG" 2>/dev/null || true
     }
 
     log() {
@@ -2475,6 +2506,7 @@ func updateHelperScript(pid: pid_t,
         [ -n "$installed" ] && version_at_least "$installed" "$TARGET_VERSION"
     }
 
+    prepare_log
     {
         echo "[$(timestamp)] Parakey update starting"
         echo "Target version: $TARGET_VERSION"
@@ -6679,19 +6711,31 @@ private enum ParakeySelfTest {
             equals: "'a'\"'\"'b'",
             "shell quoting should preserve embedded single quotes"
         )
+        try expect(
+            (UPDATE_HELPER_LOG_PATH as NSString).deletingLastPathComponent,
+            equals: (NSHomeDirectory() as NSString).appendingPathComponent("Library/Logs"),
+            "update helper log should live in the user's log directory"
+        )
 
         let script = updateHelperScript(pid: 123,
                                         brewPath: "/opt/homebrew/bin/brew",
                                         targetVersion: "9.8.7",
                                         appPath: "/Applications/Parakey.app",
                                         releasesPageURL: "https://example.test/releases",
-                                        logPath: "/tmp/parakey-update.log")
+                                        logPath: (NSHomeDirectory() as NSString)
+                                            .appendingPathComponent("Library/Logs/Parakey-update.log"))
         for fragment in [
+            "umask 077",
             "TARGET_VERSION='9.8.7'",
             "PARAKEY_PID=123",
             "SCRIPT_PATH=\"$0\"",
             "trap cleanup EXIT",
             "/bin/rm -f \"$SCRIPT_PATH\"",
+            "private_log_path()",
+            "/usr/bin/mktemp -t parakey-update",
+            "[ -L \"$LOG\" ]",
+            "/bin/chmod 600 \"$LOG\"",
+            "prepare_log",
             "CASK_TAP='rcourtman/parakey'",
             "CASK_TOKEN='rcourtman/parakey/parakey'",
             "CASK_INSTALLED_TOKEN='parakey'",
