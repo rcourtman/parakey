@@ -947,29 +947,22 @@ func audioInputDevice(matching preference: String,
 final class Logger: @unchecked Sendable {
     static let shared = Logger()
     private let url: URL
-    private let fm = FileManager.default
     private let q = DispatchQueue(label: "ParakeyLogger")
 
     init() {
-        let logs = fm.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+        let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs", isDirectory: true)
-        try? fm.createDirectory(at: logs, withIntermediateDirectories: true)
         url = logs.appendingPathComponent("Parakey.log")
-        if !fm.fileExists(atPath: url.path) {
-            fm.createFile(atPath: url.path, contents: nil)
-        }
     }
 
     func log(_ msg: String) {
         let stamp = ISO8601DateFormatter.timeOnly.string(from: Date())
         let line = "[\(stamp)] \(msg)\n"
-        FileHandle.standardError.write(Data(line.utf8))
+        let data = Data(line.utf8)
+        FileHandle.standardError.write(data)
         q.async { [url] in
             do {
-                let h = try FileHandle(forWritingTo: url)
-                defer { try? h.close() }
-                _ = try h.seekToEnd()
-                try h.write(contentsOf: Data(line.utf8))
+                try appendPrivateLogData(data, to: url)
             } catch {
                 let fallback = "Logger: file write failed: \(error.localizedDescription)\n"
                 FileHandle.standardError.write(Data(fallback.utf8))
@@ -979,6 +972,41 @@ final class Logger: @unchecked Sendable {
 }
 
 func log(_ msg: String) { Logger.shared.log(msg) }
+
+private let PRIVATE_LOG_FILE_MODE = mode_t(S_IRUSR | S_IWUSR)
+
+private func appendPrivateLogData(_ data: Data, to url: URL) throws {
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+    let flags = O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW
+    let fd = Darwin.open(url.path, flags, PRIVATE_LOG_FILE_MODE)
+    guard fd >= 0 else { throw currentPOSIXError() }
+    defer { _ = Darwin.close(fd) }
+
+    guard Darwin.fchmod(fd, PRIVATE_LOG_FILE_MODE) == 0 else {
+        throw currentPOSIXError()
+    }
+
+    try data.withUnsafeBytes { rawBuffer in
+        guard let base = rawBuffer.baseAddress else { return }
+        var offset = 0
+        while offset < rawBuffer.count {
+            let written = Darwin.write(fd,
+                                       base.advanced(by: offset),
+                                       rawBuffer.count - offset)
+            if written < 0 {
+                if errno == EINTR { continue }
+                throw currentPOSIXError()
+            }
+            guard written > 0 else { throw POSIXError(.EIO) }
+            offset += written
+        }
+    }
+}
+
+private func currentPOSIXError() -> POSIXError {
+    POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+}
 
 extension ISO8601DateFormatter {
     static let timeOnly: DateFormatter = {
@@ -5987,6 +6015,8 @@ private enum ParakeySelfTest {
             return runSuite("update", testUpdate)
         case "hostile-env":
             return runSuite("hostile-env", testHostileRegistryEnvDetection)
+        case "logging":
+            return runSuite("logging", testPrivateLogAppend)
         case "all":
             return runSuite("all", testAll)
         default:
@@ -6024,6 +6054,50 @@ private enum ParakeySelfTest {
         try testModelIntegrity()
         try testUpdate()
         try testHostileRegistryEnvDetection()
+        try testPrivateLogAppend()
+    }
+
+    private static func testPrivateLogAppend() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("parakey-log-test-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: root) }
+
+        let logFile = root.appendingPathComponent("Parakey.log")
+        try appendPrivateLogData(Data("one\n".utf8), to: logFile)
+        try appendPrivateLogData(Data("two\n".utf8), to: logFile)
+
+        let attrs = try fm.attributesOfItem(atPath: logFile.path)
+        let permissions = (attrs[.posixPermissions] as? NSNumber)?.intValue ?? -1
+        try expect(permissions & 0o777,
+                   equals: 0o600,
+                   "log file should be private to the current user")
+        try expect(
+            String(data: try Data(contentsOf: logFile), encoding: .utf8),
+            equals: "one\ntwo\n",
+            "log appends should preserve existing content"
+        )
+
+        let target = root.appendingPathComponent("target.log")
+        try Data("target\n".utf8).write(to: target)
+        let link = root.appendingPathComponent("link.log")
+        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+
+        var symlinkRejected = false
+        do {
+            try appendPrivateLogData(Data("bad\n".utf8), to: link)
+        } catch {
+            symlinkRejected = true
+        }
+        try expect(symlinkRejected,
+                   equals: true,
+                   "log appends should reject leaf symlinks")
+        try expect(
+            String(data: try Data(contentsOf: target), encoding: .utf8),
+            equals: "target\n",
+            "log symlink rejection should leave the target untouched"
+        )
     }
 
     private static func testHotkey() throws {
