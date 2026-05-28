@@ -2504,8 +2504,9 @@ enum TCC {
     static func reset(_ p: Permission, bundleID: String) {
         guard let service = serviceName[p] else { return }
         let proc = Process()
-        proc.launchPath = "/usr/bin/tccutil"
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
         proc.arguments = ["reset", service, bundleID]
+        proc.environment = systemToolProcessEnvironment()
         proc.standardOutput = Pipe()
         proc.standardError = Pipe()
         do {
@@ -2638,10 +2639,11 @@ private func sanitizedEnvironmentValue(_ value: String?) -> String? {
     return value
 }
 
-private func updateProcessEnvironment(current: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+private func trustedProcessEnvironment(path: String,
+                                       current: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
     var env: [String: String] = [
         "HOME": NSHomeDirectory(),
-        "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "PATH": path,
         "SHELL": "/bin/zsh",
         "TMPDIR": NSTemporaryDirectory(),
         "LANG": sanitizedEnvironmentValue(current["LANG"]) ?? "en_US.UTF-8",
@@ -2658,6 +2660,15 @@ private func updateProcessEnvironment(current: [String: String] = ProcessInfo.pr
     }
 
     return env
+}
+
+private func systemToolProcessEnvironment(current: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+    trustedProcessEnvironment(path: "/usr/bin:/bin:/usr/sbin:/sbin", current: current)
+}
+
+private func updateProcessEnvironment(current: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+    trustedProcessEnvironment(path: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                              current: current)
 }
 
 func updateHelperScript(pid: pid_t,
@@ -7418,6 +7429,23 @@ private enum ParakeySelfTest {
         for key in ["BASH_ENV", "ENV", "SHELLOPTS", "RUBYOPT", "HOMEBREW_BOTTLE_DOMAIN"] {
             try expect(updateEnv[key], equals: String?.none,
                        "update environment should not inherit \(key)")
+        }
+        let systemEnv = systemToolProcessEnvironment(current: [
+            "LANG": "en_GB.UTF-8",
+            "USER": "parakey-user",
+            "BASH_ENV": "/tmp/pwn.sh",
+            "DYLD_INSERT_LIBRARIES": "/tmp/pwn.dylib",
+            "PATH": "/tmp/bin",
+        ])
+        try expect(systemEnv["PATH"], equals: Optional("/usr/bin:/bin:/usr/sbin:/sbin"),
+                   "system tool environment should not include Homebrew or inherited PATH entries")
+        try expect(systemEnv["LANG"], equals: Optional("en_GB.UTF-8"),
+                   "system tool environment should preserve a safe locale")
+        try expect(systemEnv["USER"], equals: Optional("parakey-user"),
+                   "system tool environment should preserve a safe USER value")
+        for key in ["BASH_ENV", "DYLD_INSERT_LIBRARIES"] {
+            try expect(systemEnv[key], equals: String?.none,
+                       "system tool environment should not inherit \(key)")
         }
 
         let script = updateHelperScript(pid: 123,
