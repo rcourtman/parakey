@@ -436,6 +436,7 @@ enum ModelIntegrityError: LocalizedError {
 enum ModelIntegrity {
     static let parakeetV3Repository = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
     static let parakeetV3RepositoryCommit = "aed02740059203c4a87495924f685de3722ae9ce"
+    private static let sha256Characters = Set("0123456789abcdefABCDEF")
 
     private static let parakeetV3StrictDirectories = [
         "Decoder.mlmodelc",
@@ -481,12 +482,20 @@ enum ModelIntegrity {
                             expectedFiles: [ModelFileDigest],
                             strictDirectories: [String]) throws {
         var expectedByPath: [String: String] = [:]
+        var expectedDirectoryPaths = Set<String>()
+        for directory in strictDirectories {
+            try validateRelativePath(directory)
+            expectedDirectoryPaths.insert(directory)
+        }
+
         for file in expectedFiles {
             try validateRelativePath(file.relativePath)
+            try validateSHA256(file.sha256, relativePath: file.relativePath)
             if expectedByPath.updateValue(file.sha256.lowercased(),
                                           forKey: file.relativePath) != nil {
                 throw ModelIntegrityError.invalidManifestPath("duplicate file path: \(file.relativePath)")
             }
+            expectedDirectoryPaths.formUnion(parentDirectories(of: file.relativePath))
         }
         var seenPaths: Set<String> = []
 
@@ -509,7 +518,6 @@ enum ModelIntegrity {
         }
 
         for directory in strictDirectories {
-            try validateRelativePath(directory)
             let directoryURL = root.appendingPathComponent(directory, isDirectory: true)
             try requireDirectory(directoryURL, relativePath: directory)
             guard let enumerator = FileManager.default.enumerator(at: directoryURL,
@@ -520,7 +528,9 @@ enum ModelIntegrity {
                 let relativePath = relativePath(of: itemURL, under: root)
                 switch try fileSystemNodeType(itemURL, relativePath: relativePath) {
                 case .directory:
-                    continue
+                    guard expectedDirectoryPaths.contains(relativePath) else {
+                        throw ModelIntegrityError.unexpectedFile(relativePath)
+                    }
                 case .regularFile:
                     guard expectedByPath[relativePath] != nil else {
                         throw ModelIntegrityError.unexpectedFile(relativePath)
@@ -558,6 +568,23 @@ enum ModelIntegrity {
         guard !components.contains(".."), !components.contains("") else {
             throw ModelIntegrityError.invalidManifestPath(path)
         }
+    }
+
+    private static func validateSHA256(_ digest: String, relativePath: String) throws {
+        guard digest.count == 64,
+              digest.allSatisfy({ sha256Characters.contains($0) }) else {
+            throw ModelIntegrityError.invalidManifestPath("invalid SHA-256 digest for \(relativePath)")
+        }
+    }
+
+    private static func parentDirectories(of path: String) -> Set<String> {
+        var result = Set<String>()
+        var current = path
+        while let slash = current.lastIndex(of: "/") {
+            current = String(current[..<slash])
+            result.insert(current)
+        }
+        return result
     }
 
     private static func requireRegularFile(_ url: URL, relativePath: String) throws {
@@ -6251,6 +6278,36 @@ private enum ParakeySelfTest {
         }
         try expect(rejectedUnexpectedFile, equals: true,
                    "model integrity should reject unpinned files in strict model bundles")
+
+        try fm.removeItem(at: modelDir.appendingPathComponent("extra.bin"))
+        try fm.createDirectory(at: modelDir.appendingPathComponent("empty-extra", isDirectory: true),
+                               withIntermediateDirectories: true)
+        var rejectedUnexpectedDirectory = false
+        do {
+            try ModelIntegrity.verifyFiles(root: root,
+                                           expectedFiles: expected,
+                                           strictDirectories: ["Toy.mlmodelc"])
+        } catch is ModelIntegrityError {
+            rejectedUnexpectedDirectory = true
+        }
+        try expect(rejectedUnexpectedDirectory, equals: true,
+                   "model integrity should reject unpinned directories in strict model bundles")
+
+        var rejectedBadDigest = false
+        do {
+            try ModelIntegrity.verifyFiles(
+                root: root,
+                expectedFiles: [
+                    ModelFileDigest(relativePath: "Toy.mlmodelc/model.mil",
+                                    sha256: "not-a-sha256")
+                ],
+                strictDirectories: ["Toy.mlmodelc"]
+            )
+        } catch is ModelIntegrityError {
+            rejectedBadDigest = true
+        }
+        try expect(rejectedBadDigest, equals: true,
+                   "model integrity should reject malformed manifest digests")
 
         let localParakeetV3Cache = AsrModels.defaultCacheDirectory(for: .v3)
         if fm.fileExists(atPath: localParakeetV3Cache.path) {
