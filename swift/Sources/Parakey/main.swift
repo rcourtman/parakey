@@ -2038,12 +2038,13 @@ enum TextInsertionStrategy: String {
 enum TextInserter {
     nonisolated static let defaultStrategy = TextInsertionStrategy.clipboardPaste
 
-    static func insert(_ text: String, strategy: TextInsertionStrategy = defaultStrategy) {
+    @discardableResult
+    static func insert(_ text: String, strategy: TextInsertionStrategy = defaultStrategy) -> Bool {
         switch strategy {
         case .clipboardPaste:
-            ClipboardPasteInserter.insert(text)
+            return ClipboardPasteInserter.insert(text)
         case .directUnicode:
-            DirectUnicodeInserter.insert(text)
+            return DirectUnicodeInserter.insert(text)
         }
     }
 }
@@ -2052,20 +2053,30 @@ enum TextInserter {
 private enum ClipboardPasteInserter {
     private static let virtualKeyV: CGKeyCode = 0x09  // ANSI 'v'
 
-    static func insert(_ text: String) {
-        let pb = NSPasteboard.general
+    static func write(_ text: String, to pb: NSPasteboard) -> Bool {
         pb.clearContents()
-        pb.setString(text, forType: .string)
+        return pb.setString(text, forType: .string)
+    }
+
+    static func insert(_ text: String) -> Bool {
+        guard write(text, to: .general) else {
+            log("pasteboard write failed")
+            return false
+        }
 
         let src = CGEventSource(stateID: .combinedSessionState)
         guard
             let down = CGEvent(keyboardEventSource: src, virtualKey: virtualKeyV, keyDown: true),
             let up = CGEvent(keyboardEventSource: src, virtualKey: virtualKeyV, keyDown: false)
-        else { return }
+        else {
+            log("paste event creation failed")
+            return false
+        }
         down.flags = .maskCommand
         up.flags = .maskCommand
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+        return true
     }
 }
 
@@ -2073,33 +2084,36 @@ private enum ClipboardPasteInserter {
 private enum DirectUnicodeInserter {
     private static let maxUTF16UnitsPerEvent = 20
 
-    static func insert(_ text: String) {
+    static func insert(_ text: String) -> Bool {
         let source = CGEventSource(stateID: .combinedSessionState)
         var chunk: [UInt16] = []
+        var didPostAll = true
 
         for character in text {
             let units = Array(String(character).utf16)
             if !chunk.isEmpty && chunk.count + units.count > maxUTF16UnitsPerEvent {
-                post(chunk, source: source)
+                didPostAll = post(chunk, source: source) && didPostAll
                 chunk.removeAll(keepingCapacity: true)
             }
             chunk.append(contentsOf: units)
         }
 
         if !chunk.isEmpty {
-            post(chunk, source: source)
+            didPostAll = post(chunk, source: source) && didPostAll
         }
+        return didPostAll
     }
 
-    private static func post(_ units: [UInt16], source: CGEventSource?) {
+    private static func post(_ units: [UInt16], source: CGEventSource?) -> Bool {
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) else {
-            return
+            return false
         }
         units.withUnsafeBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return }
             event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
         }
         event.post(tap: .cghidEventTap)
+        return true
     }
 }
 
@@ -3493,9 +3507,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                             enterPermissionBlockedState(missing: missing, reason: "paste")
                             return
                         }
-                        TextInserter.insert(pastedText(from: cleaned, suffix: settings.pasteSuffix))
-                        if settings.playFeedbackSounds {
+                        let inserted = TextInserter.insert(pastedText(from: cleaned, suffix: settings.pasteSuffix))
+                        if inserted, settings.playFeedbackSounds {
                             Sounds.playDone()
+                        } else if !inserted {
+                            log("text insertion failed")
                         }
                         addToHistory(cleaned)
                     }
@@ -6011,6 +6027,23 @@ private enum ParakeySelfTest {
             TextInserter.defaultStrategy,
             equals: .clipboardPaste,
             "clipboard paste should remain the default insertion strategy"
+        )
+
+        let pasteboardProbe = MainActor.assumeIsolated {
+            let pasteboardName = NSPasteboard.Name("com.local.parakey.self-test.\(UUID().uuidString)")
+            let pasteboard = NSPasteboard(name: pasteboardName)
+            let wrote = ClipboardPasteInserter.write("pasteboard probe", to: pasteboard)
+            return (wrote: wrote, stored: pasteboard.string(forType: .string))
+        }
+        try expect(
+            pasteboardProbe.wrote,
+            equals: true,
+            "clipboard paste should report pasteboard write success"
+        )
+        try expect(
+            pasteboardProbe.stored,
+            equals: "pasteboard probe",
+            "clipboard paste should write the intended string before posting Cmd+V"
         )
     }
 
