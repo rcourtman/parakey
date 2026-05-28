@@ -55,6 +55,7 @@ let HOMEBREW_CASK_INSTALLED_TOKEN = "parakey"
 let INSTALLED_APP_BUNDLE_PATH = "/Applications/Parakey.app"
 let UPDATE_HELPER_LOG_PATH = (NSHomeDirectory() as NSString)
     .appendingPathComponent("Library/Logs/Parakey-update.log")
+let MAX_SKIPPED_UPDATE_VERSIONS = 20
 let RECORDING_HUD_EXPANDED_SIZE = NSSize(width: 232, height: 54)
 let RECORDING_HUD_COLLAPSED_SIZE = NSSize(width: 58, height: 42)
 let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
@@ -237,6 +238,23 @@ func limitedRecentTranscripts(_ transcripts: [String], limit: RecentTranscriptLi
     guard count > 0 else { return [] }
     guard transcripts.count > count else { return transcripts }
     return Array(transcripts.prefix(count))
+}
+
+func normalizedSkippedUpdateVersions(_ values: [String]) -> [String] {
+    var result: [String] = []
+    var seen = Set<String>()
+
+    for value in values.reversed() {
+        guard let version = UpdateCheck.normalizedReleaseVersion(from: value),
+              !seen.contains(version) else {
+            continue
+        }
+        seen.insert(version)
+        result.append(version)
+        if result.count == MAX_SKIPPED_UPDATE_VERSIONS { break }
+    }
+
+    return result.reversed()
 }
 
 struct AudioInputDevice: Equatable {
@@ -1158,8 +1176,19 @@ final class Settings: @unchecked Sendable {
     }
 
     var skippedVersions: [String] {
-        get { (defaults.array(forKey: Self.keySkippedVersions) as? [String]) ?? [] }
-        set { defaults.set(newValue, forKey: Self.keySkippedVersions) }
+        get {
+            normalizedSkippedUpdateVersions(
+                (defaults.array(forKey: Self.keySkippedVersions) as? [String]) ?? []
+            )
+        }
+        set {
+            let versions = normalizedSkippedUpdateVersions(newValue)
+            if versions.isEmpty {
+                defaults.removeObject(forKey: Self.keySkippedVersions)
+            } else {
+                defaults.set(versions, forKey: Self.keySkippedVersions)
+            }
+        }
     }
 
     var transcriptCorrections: [TranscriptCorrection] {
@@ -6894,6 +6923,23 @@ private enum ParakeySelfTest {
             parseSemver("999999999999999999999999.2.3"),
             equals: [Int.max, 2, 3],
             "tolerant version parsing should not overflow on oversized components"
+        )
+        try expect(
+            normalizedSkippedUpdateVersions([
+                "junk",
+                "v1.2.3",
+                "1.2.3",
+                " V2.0.0\n",
+                "01.2.3",
+                "3.999999999999999999999999.0"
+            ]),
+            equals: ["1.2.3", "2.0.0"],
+            "skipped update versions should normalize valid versions and discard malformed entries"
+        )
+        try expect(
+            normalizedSkippedUpdateVersions((0..<(MAX_SKIPPED_UPDATE_VERSIONS + 3)).map { "1.0.\($0)" }),
+            equals: (3..<(MAX_SKIPPED_UPDATE_VERSIONS + 3)).map { "1.0.\($0)" },
+            "skipped update versions should keep only the most recent bounded entries"
         )
         try expect(
             UpdateCheck.parseLatest(
