@@ -2372,6 +2372,7 @@ private struct GitHubReleaseResponse: Decodable {
 
 enum UpdateCheck {
     private static let githubReleaseURLPathPrefix = "/rcourtman/parakey/releases/tag/"
+    static let maxReleaseResponseBytes = 512 * 1024
 
     static func fetchLatest() async -> GitHubRelease? {
         var req = URLRequest(url: GITHUB_LATEST_RELEASE_URL)
@@ -2396,6 +2397,7 @@ enum UpdateCheck {
     static func parseLatest(data: Data, response: URLResponse) -> GitHubRelease? {
         guard let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),
+              data.count <= maxReleaseResponseBytes,
               let payload = try? JSONDecoder().decode(GitHubReleaseResponse.self, from: data) else {
             return nil
         }
@@ -6795,6 +6797,21 @@ private enum ParakeySelfTest {
             UpdateCheck.parseLatest(data: releaseData, response: notFound),
             equals: nil,
             "update parsing should reject non-2xx HTTP responses"
+        )
+        let oversizedReleaseData = Data(
+            """
+            {"tag_name":"v9.8.7","body":"\(String(repeating: "x", count: UpdateCheck.maxReleaseResponseBytes))","html_url":"https://github.com/rcourtman/parakey/releases/tag/v9.8.7"}
+            """.utf8
+        )
+        try expect(
+            oversizedReleaseData.count > UpdateCheck.maxReleaseResponseBytes,
+            equals: true,
+            "oversized release response fixture should exceed the parser limit"
+        )
+        try expect(
+            UpdateCheck.parseLatest(data: oversizedReleaseData, response: ok),
+            equals: nil,
+            "update parsing should reject oversized release responses before decoding"
         )
         try expect(
             UpdateCheck.parseLatest(data: Data(#"{"tag_name":""}"#.utf8), response: ok),
