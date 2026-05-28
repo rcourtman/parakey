@@ -9,6 +9,7 @@ Core facts:
 - Install: `brew install --cask rcourtman/parakey/parakey`.
 - Setup: use Setup Checklist from the menu bar to finish the model, permissions, and hotkey readiness.
 - Privacy: no cloud transcription, no telemetry, no transcript persistence.
+- Diagnostics: Copy Diagnostics and Save Diagnostics produce a privacy-safe local report with metadata and bounded recent logs, not transcript or correction contents.
 - Network surface: first-launch model download, optional update check, user-triggered update apply.
 - Release size: about 2.4 MB signed zip; model cache is about 600 MB on first launch.
 - Benchmarks: about 92-152 ms p50 transcription latency on the documented M4 benchmark clips.

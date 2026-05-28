@@ -27,6 +27,7 @@ METADATA_PATH = DOCS / "site-metadata.json"
 
 MODEL_CACHE_SIZE = "~600 MB"
 SETUP_CHECKLIST = "Setup Checklist\u2026"
+DIAGNOSTICS_SUMMARY = "privacy-safe diagnostics report with app state, permission state, settings counts, microphone devices, memory, update state, and bounded recent log lines; no transcript text or text-correction contents"
 
 SYNCED_PATHS = [
     ROOT / "README.md",
@@ -125,8 +126,6 @@ def load_metadata() -> dict[str, object]:
 def build_metadata(args: argparse.Namespace) -> dict[str, object]:
     existing = load_metadata()
     zip_path = Path(args.release_zip).resolve() if args.release_zip else None
-    if zip_path is None and not args.check and DEFAULT_RELEASE_ZIP.exists():
-        zip_path = DEFAULT_RELEASE_ZIP
 
     release_zip_bytes = existing.get("release_zip_bytes")
     if zip_path is not None:
@@ -136,7 +135,7 @@ def build_metadata(args: argparse.Namespace) -> dict[str, object]:
     if not isinstance(release_zip_bytes, int):
         raise SyncError(
             f"{METADATA_PATH}: missing release_zip_bytes. "
-            "Run scripts/sync-docs.py --release-zip swift/dist/Parakey.zip once."
+            "Run scripts/sync-docs.py --release-zip swift/dist/Parakey.zip from the release workflow."
         )
 
     if args.date:
@@ -163,12 +162,19 @@ def metadata_text(metadata: dict[str, object]) -> str:
 def sync_readme(path: Path, metadata: dict[str, object]) -> str:
     text = read_text(path)
     size = str(metadata["release_zip_size"])
-    return replace_regex(
+    text = replace_regex(
         text,
         r"\*\*[\d.]+ MB release zip\*\*",
         f"**{size} release zip**",
         path=path,
     )
+    text = replace_regex(
+        text,
+        r'- \*\*(?:Copy Diagnostics|Copy/Save Diagnostics)\*\* — .*',
+        "- **Copy/Save Diagnostics** — privacy-safe support report with app state, settings counts, and bounded recent logs",
+        path=path,
+    )
+    return text
 
 
 def sync_index(path: Path, metadata: dict[str, object]) -> str:
@@ -218,6 +224,12 @@ def sync_index(path: Path, metadata: dict[str, object]) -> str:
 """
     if "Copy Diagnostics" not in text:
         text = replace_literal(text, about_row, about_row + diagnostics_row, path=path)
+    save_diagnostics_row = """              <div class="menu-mock__row">
+                <span>Save Diagnostics\u2026</span>
+              </div>
+"""
+    if "Save Diagnostics" not in text:
+        text = replace_literal(text, diagnostics_row, diagnostics_row + save_diagnostics_row, path=path)
 
     text = text.replace(
         "Lives in the menu bar. No dock icon, no preferences window.",
@@ -293,12 +305,20 @@ def sync_agents_md(path: Path, metadata: dict[str, object]) -> str:
 def sync_faq(path: Path, metadata: dict[str, object]) -> str:
     del metadata
     text = read_text(path)
-    return replace_regex(
+    text = replace_regex(
         text,
         r"<p>Microphone, Accessibility, and Input Monitoring\..*?</p>",
         "<p>Microphone, Accessibility, and Input Monitoring. Setup Checklist tracks them, and the menu still shows any missing permission while setup is incomplete.</p>",
         path=path,
     )
+    diagnostics_card = f"""            <article class="card">
+              <h3>What is in diagnostics?</h3>
+              <p>Copy Diagnostics and Save Diagnostics create a {DIAGNOSTICS_SUMMARY}.</p>
+            </article>
+"""
+    if "What is in diagnostics?" not in text:
+        text = replace_literal(text, "          </div>\n        </div>\n      </section>", diagnostics_card + "          </div>\n        </div>\n      </section>", path=path)
+    return text
 
 
 def sync_llms(path: Path, metadata: dict[str, object]) -> str:
@@ -318,6 +338,14 @@ def sync_llms(path: Path, metadata: dict[str, object]) -> str:
             "- Install: `brew install --cask rcourtman/parakey/parakey`.\n" + setup_line,
             path=path,
         )
+    diagnostics_line = "- Diagnostics: Copy Diagnostics and Save Diagnostics produce a privacy-safe local report with metadata and bounded recent logs, not transcript or correction contents.\n"
+    if diagnostics_line not in text:
+        text = replace_literal(
+            text,
+            "- Privacy: no cloud transcription, no telemetry, no transcript persistence.\n",
+            "- Privacy: no cloud transcription, no telemetry, no transcript persistence.\n" + diagnostics_line,
+            path=path,
+        )
     return text
 
 
@@ -334,6 +362,18 @@ def sync_llms_full(path: Path, metadata: dict[str, object]) -> str:
             "First launch downloads the Parakeet TDT v3 model weights, about 600 MB, into `~/Library/Application Support/FluidAudio/`.\n",
             "First launch downloads the Parakeet TDT v3 model weights, about 600 MB, into `~/Library/Application Support/FluidAudio/`.\n\n"
             + setup_sentence,
+            path=path,
+        )
+    diagnostics_sentence = (
+        "For support, Copy Diagnostics and Save Diagnostics create a privacy-safe local report with "
+        "app state, permission state, settings counts, microphone devices, memory, update state, "
+        "and bounded recent log lines. The report excludes transcript text and text-correction contents.\n"
+    )
+    if diagnostics_sentence not in text:
+        text = replace_literal(
+            text,
+            "Machine-readable network surface:\n",
+            diagnostics_sentence + "\nMachine-readable network surface:\n",
             path=path,
         )
     return text

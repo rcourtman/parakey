@@ -84,7 +84,7 @@ Useful menu items:
   recurring mishearings
 - **Settings → Remove filler words** — opt-in deterministic strip of
   "um", "uh", "ah", "er", "erm", "hm" (and elongated variants)
-- **Copy Diagnostics** — transcript-free support summary
+- **Copy/Save Diagnostics** — privacy-safe support report with app state, settings counts, and bounded recent logs
 
 ## Privacy
 

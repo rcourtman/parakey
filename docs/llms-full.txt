@@ -44,6 +44,8 @@ Documented network calls:
 2. Optional update check to `api.github.com/repos/rcourtman/parakey/releases/latest`.
 3. User-triggered update apply through Homebrew from the GitHub release archive.
 
+For support, Copy Diagnostics and Save Diagnostics create a privacy-safe local report with app state, permission state, settings counts, microphone devices, memory, update state, and bounded recent log lines. The report excludes transcript text and text-correction contents.
+
 Machine-readable network surface:
 https://rcourtman.github.io/parakey/privacy/network-calls.json
 
