@@ -3768,6 +3768,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         isSpeechModelReady = false
         isRecording = false
         isBusy = false
+        pendingAudioRouteRefresh = false
+        shouldResumeRuntimeAfterWake = false
+        didLogDeferredWakeRecovery = false
         startupFailure = nil
         startupStatusTitle = "Loading speech model…"
 
@@ -6396,9 +6399,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         isResettingSpeechModelCache = true
-        isSpeechModelReady = false
-        isCoreRuntimeReady = false
-        isReady = false
+        prepareForStartupAttempt()
+        startupStatusTitle = "Resetting speech model cache…"
+        log("ASR: speech model cache reset started")
         rebuildMenu()
 
         Task { @MainActor in
