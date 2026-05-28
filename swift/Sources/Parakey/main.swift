@@ -565,7 +565,9 @@ enum ModelIntegrity {
             throw ModelIntegrityError.invalidManifestPath(path)
         }
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
-        guard !components.contains(".."), !components.contains("") else {
+        guard !components.contains(".."),
+              !components.contains("."),
+              !components.contains("") else {
             throw ModelIntegrityError.invalidManifestPath(path)
         }
     }
@@ -6308,6 +6310,24 @@ private enum ParakeySelfTest {
         }
         try expect(rejectedBadDigest, equals: true,
                    "model integrity should reject malformed manifest digests")
+
+        var rejectedDotSegment = false
+        do {
+            try ModelIntegrity.verifyFiles(
+                root: root,
+                expectedFiles: [
+                    ModelFileDigest(
+                        relativePath: "Toy.mlmodelc/./model.mil",
+                        sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+                    )
+                ],
+                strictDirectories: ["Toy.mlmodelc"]
+            )
+        } catch is ModelIntegrityError {
+            rejectedDotSegment = true
+        }
+        try expect(rejectedDotSegment, equals: true,
+                   "model integrity should reject dot path segments")
 
         let localParakeetV3Cache = AsrModels.defaultCacheDirectory(for: .v3)
         if fm.fileExists(atPath: localParakeetV3Cache.path) {

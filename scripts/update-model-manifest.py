@@ -36,6 +36,9 @@ DEFAULT_EXTRA_FILES = ["parakeet_vocab.json"]
 BEGIN_MARKER = "// BEGIN GENERATED PARAKEET_V3_MODEL_MANIFEST"
 END_MARKER = "// END GENERATED PARAKEET_V3_MODEL_MANIFEST"
 HEX64 = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+SAFE_MODEL_PATH = re.compile(r"^[A-Za-z0-9._/-]+$")
+SAFE_REPO = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+SAFE_REVISION = re.compile(r"^[A-Za-z0-9._/-]+$")
 SWIFT_REPO_RE = re.compile(r'(static let parakeetV3Repository = ")([^"]+)(")')
 SWIFT_REVISION_RE = re.compile(r'(static let parakeetV3RepositoryCommit = ")([^"]+)(")')
 
@@ -65,6 +68,35 @@ def quoted_path(path: str) -> str:
     return urllib.parse.quote(path, safe="/")
 
 
+def validate_slash_path(value: str, label: str, pattern: re.Pattern[str]) -> None:
+    if not value or value.startswith("/") or not pattern.fullmatch(value):
+        raise ManifestError(f"unsafe {label}: {value!r}")
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ManifestError(f"unsafe {label}: {value!r}")
+
+
+def validate_repo(repo: str) -> None:
+    if not SAFE_REPO.fullmatch(repo):
+        raise ManifestError(f"unsafe Hugging Face repo id: {repo!r}")
+    owner, name = repo.split("/", 1)
+    if owner in {"", ".", ".."} or name in {"", ".", ".."}:
+        raise ManifestError(f"unsafe Hugging Face repo id: {repo!r}")
+
+
+def validate_revision(revision: str) -> None:
+    validate_slash_path(revision, "revision", SAFE_REVISION)
+
+
+def validate_model_path(path: str) -> None:
+    validate_slash_path(path, "model path", SAFE_MODEL_PATH)
+
+
+def validate_sha256(digest: str, path: str) -> None:
+    if not HEX64.fullmatch(digest):
+        raise ManifestError(f"invalid SHA-256 for {path}: {digest!r}")
+
+
 def tree_url(repo: str, revision: str) -> str:
     return f"https://huggingface.co/api/models/{quoted_repo(repo)}/tree/{revision}?recursive=true"
 
@@ -87,6 +119,7 @@ def listed_model_files(repo: str, revision: str, bundles: list[str], extra_files
         if not isinstance(path, str):
             continue
         if path.startswith(bundle_prefixes) or path in extra_files:
+            validate_model_path(path)
             wanted.append(path)
 
     bundle_order = {name: index for index, name in enumerate(bundles)}
@@ -126,12 +159,16 @@ def downloaded_sha256(repo: str, revision: str, path: str) -> str:
 
 
 def digest_for_path(repo: str, revision: str, path: str) -> str:
-    return linked_etag(repo, revision, path) or downloaded_sha256(repo, revision, path)
+    digest = linked_etag(repo, revision, path) or downloaded_sha256(repo, revision, path)
+    validate_sha256(digest, path)
+    return digest
 
 
 def render_manifest(paths: list[str], digests: dict[str, str]) -> str:
     lines = []
     for path in paths:
+        validate_model_path(path)
+        validate_sha256(digests[path], path)
         lines.append(
             f'        ModelFileDigest(relativePath: "{path}", sha256: "{digests[path]}"),'
         )
@@ -183,6 +220,8 @@ def replace_swift_constant(source: str, pattern: re.Pattern[str], label: str, va
 
 
 def update_source(source: str, manifest: str, repo: str, revision: str) -> str:
+    validate_repo(repo)
+    validate_revision(revision)
     source = replace_generated_block(source, manifest)
     source = replace_swift_constant(source, SWIFT_REPO_RE, "repository", repo)
     source = replace_swift_constant(source, SWIFT_REVISION_RE, "repository commit", revision)
@@ -190,6 +229,8 @@ def update_source(source: str, manifest: str, repo: str, revision: str) -> str:
 
 
 def source_matches(source: str, manifest: str, repo: str, revision: str) -> bool:
+    validate_repo(repo)
+    validate_revision(revision)
     return (
         current_generated_block(source) == manifest
         and swift_constant(source, SWIFT_REPO_RE, "repository") == repo
@@ -198,6 +239,8 @@ def source_matches(source: str, manifest: str, repo: str, revision: str) -> bool
 
 
 def build_manifest(args: argparse.Namespace) -> str:
+    validate_repo(args.repo)
+    validate_revision(args.revision)
     paths = listed_model_files(args.repo, args.revision, DEFAULT_BUNDLES, DEFAULT_EXTRA_FILES)
     if not paths:
         raise ManifestError("no model files found")
@@ -209,6 +252,52 @@ def build_manifest(args: argparse.Namespace) -> str:
     return render_manifest(paths, digests)
 
 
+def assert_raises(func, message: str) -> None:
+    try:
+        func()
+    except ManifestError:
+        return
+    raise ManifestError(message)
+
+
+def run_self_test() -> None:
+    digest = "a" * 64
+    manifest = render_manifest(["Toy.mlmodelc/model.mil"], {"Toy.mlmodelc/model.mil": digest})
+    source = """enum ModelIntegrity {
+    static let parakeetV3Repository = "old/repo"
+    static let parakeetV3RepositoryCommit = "oldref"
+
+    private static let parakeetV3Files = [
+        // BEGIN GENERATED PARAKEET_V3_MODEL_MANIFEST
+        ModelFileDigest(relativePath: "Old.mlmodelc/model.mil", sha256: "0000000000000000000000000000000000000000000000000000000000000000"),
+        // END GENERATED PARAKEET_V3_MODEL_MANIFEST
+    ]
+}
+"""
+    updated = update_source(source, manifest, DEFAULT_REPO, DEFAULT_REVISION)
+    if not source_matches(updated, manifest, DEFAULT_REPO, DEFAULT_REVISION):
+        raise ManifestError("self-test source update did not round-trip")
+    if current_generated_block(updated) != manifest:
+        raise ManifestError("self-test manifest block mismatch")
+
+    assert_raises(lambda: validate_model_path("../model.mil"),
+                  "self-test accepted parent traversal in model path")
+    assert_raises(lambda: validate_model_path("Toy.mlmodelc//model.mil"),
+                  "self-test accepted empty model path segment")
+    assert_raises(lambda: validate_model_path("Toy.mlmodelc/./model.mil"),
+                  "self-test accepted dot model path segment")
+    assert_raises(lambda: validate_model_path('Toy.mlmodelc/"model".mil'),
+                  "self-test accepted unsafe model path character")
+    assert_raises(lambda: validate_repo("FluidInference"),
+                  "self-test accepted repo without owner/name")
+    assert_raises(lambda: validate_revision("../main"),
+                  "self-test accepted parent traversal in revision")
+    assert_raises(lambda: validate_sha256("not-a-digest", "Toy.mlmodelc/model.mil"),
+                  "self-test accepted malformed digest")
+    assert_raises(lambda: current_generated_block("missing markers"),
+                  "self-test accepted source without manifest markers")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=DEFAULT_REPO)
@@ -216,10 +305,15 @@ def main() -> int:
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--write", action="store_true", help="rewrite the generated manifest block in main.swift")
     parser.add_argument("--check", action="store_true", help="fail if main.swift is not already up to date")
+    parser.add_argument("--self-test", action="store_true", help="run offline updater self-tests")
     args = parser.parse_args()
 
-    if args.write and args.check:
-        raise ManifestError("--write and --check are mutually exclusive")
+    selected_modes = sum([args.write, args.check, args.self_test])
+    if selected_modes > 1:
+        raise ManifestError("--write, --check, and --self-test are mutually exclusive")
+    if args.self_test:
+        run_self_test()
+        return 0
 
     manifest = build_manifest(args)
 
