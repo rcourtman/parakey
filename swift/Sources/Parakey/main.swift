@@ -1062,6 +1062,7 @@ final class Logger: @unchecked Sendable {
 func log(_ msg: String) { Logger.shared.log(msg) }
 
 private let PRIVATE_LOG_FILE_MODE = mode_t(S_IRUSR | S_IWUSR)
+private let PRIVATE_HELPER_FILE_MODE = mode_t(S_IRUSR | S_IWUSR)
 
 private func appendPrivateLogData(_ data: Data, to url: URL) throws {
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
@@ -1071,6 +1072,16 @@ private func appendPrivateLogData(_ data: Data, to url: URL) throws {
     guard fd >= 0 else { throw currentPOSIXError() }
     defer { _ = Darwin.close(fd) }
 
+    try validateSingleLinkRegularFileDescriptor(fd)
+
+    guard Darwin.fchmod(fd, PRIVATE_LOG_FILE_MODE) == 0 else {
+        throw currentPOSIXError()
+    }
+
+    try writeAllData(data, to: fd)
+}
+
+private func validateSingleLinkRegularFileDescriptor(_ fd: Int32) throws {
     var st = stat()
     guard Darwin.fstat(fd, &st) == 0 else {
         throw currentPOSIXError()
@@ -1081,11 +1092,9 @@ private func appendPrivateLogData(_ data: Data, to url: URL) throws {
     guard st.st_nlink == 1 else {
         throw posixError(EMLINK)
     }
+}
 
-    guard Darwin.fchmod(fd, PRIVATE_LOG_FILE_MODE) == 0 else {
-        throw currentPOSIXError()
-    }
-
+private func writeAllData(_ data: Data, to fd: Int32) throws {
     try data.withUnsafeBytes { rawBuffer in
         guard let base = rawBuffer.baseAddress else { return }
         var offset = 0
@@ -2783,6 +2792,44 @@ func updateHelperScript(pid: pid_t,
     log "Update complete; relaunching Parakey."
     /usr/bin/open "$APP_PATH"
     """#
+}
+
+private func writePrivateUpdateHelperScript(_ script: String,
+                                            directory: String = NSTemporaryDirectory(),
+                                            fileName: String? = nil) throws -> String {
+    guard !directory.isEmpty else { throw posixError(EINVAL) }
+    let leafName = fileName ?? "parakey-update-\(UUID().uuidString).sh"
+    guard !leafName.isEmpty,
+          (leafName as NSString).lastPathComponent == leafName else {
+        throw posixError(EINVAL)
+    }
+
+    let path = (directory as NSString).appendingPathComponent(leafName)
+    let flags = O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW
+    let fd = Darwin.open(path, flags, PRIVATE_HELPER_FILE_MODE)
+    guard fd >= 0 else { throw currentPOSIXError() }
+
+    var closed = false
+    var removeOnFailure = true
+    do {
+        try validateSingleLinkRegularFileDescriptor(fd)
+        guard Darwin.fchmod(fd, PRIVATE_HELPER_FILE_MODE) == 0 else {
+            throw currentPOSIXError()
+        }
+        try writeAllData(Data(script.utf8), to: fd)
+        try validateSingleLinkRegularFileDescriptor(fd)
+
+        let closeStatus = Darwin.close(fd)
+        closed = true
+        guard closeStatus == 0 else { throw currentPOSIXError() }
+
+        removeOnFailure = false
+        return path
+    } catch {
+        if !closed { _ = Darwin.close(fd) }
+        if removeOnFailure { _ = Darwin.unlink(path) }
+        throw error
+    }
 }
 
 // MARK: - App
@@ -6077,26 +6124,21 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let script = updateHelperScript(pid: getpid(),
                                         brewPath: brewPath,
                                         targetVersion: targetVersion)
-        // Use NSTemporaryDirectory() (per-user, typically /var/folders/…/T/
-        // which is mode 0700) instead of /tmp, and create the file 0600 in a
-        // single step so there is no window where another local user can read
-        // the script. bash is invoked as `/bin/bash <path>` so the execute bit
-        // is not required.
-        let helperDir = NSTemporaryDirectory()
-        let helperPath = (helperDir as NSString)
-            .appendingPathComponent("parakey-update-\(UUID().uuidString.prefix(8)).sh")
-        let created = FileManager.default.createFile(
-            atPath: helperPath,
-            contents: Data(script.utf8),
-            attributes: [.posixPermissions: NSNumber(value: 0o600)]
-        )
-        guard created else {
-            log("update: writing helper failed at \(helperPath)")
+        // Use NSTemporaryDirectory() (per-user, typically /var/folders/…/T/)
+        // instead of /tmp, and create the script with O_EXCL/O_NOFOLLOW at
+        // mode 0600 so an existing leaf path is never overwritten or followed.
+        // bash is invoked as `/bin/bash <path>` so the execute bit is not
+        // required.
+        let helperPath: String
+        do {
+            helperPath = try writePrivateUpdateHelperScript(script)
+        } catch {
+            log("update: writing helper failed: \(error.localizedDescription)")
             showUpdateCouldNotStart(detail: "Parakey couldn't write the update helper script.")
             return
         }
         let proc = Process()
-        proc.launchPath = "/bin/bash"
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
         proc.arguments = [helperPath]
         do {
             try proc.run()
@@ -7316,6 +7358,72 @@ private enum ParakeySelfTest {
         guard proc.terminationStatus == 0 else {
             throw SelfTestFailure.failed("update helper script should pass bash -n")
         }
+
+        let fm = FileManager.default
+        let helperRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("parakey-update-helper-test-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: helperRoot, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: helperRoot) }
+
+        let helperPath = try writePrivateUpdateHelperScript(script,
+                                                            directory: helperRoot.path,
+                                                            fileName: "helper.sh")
+        var createdStat = stat()
+        guard lstat(helperPath, &createdStat) == 0 else {
+            throw SelfTestFailure.failed("update helper script file should exist")
+        }
+        try expect((createdStat.st_mode & S_IFMT) == S_IFREG,
+                   equals: true,
+                   "update helper script should be a regular file")
+        try expect(Int(createdStat.st_mode & mode_t(0o777)),
+                   equals: 0o600,
+                   "update helper script should be private to the current user")
+        try expect(Int(createdStat.st_nlink),
+                   equals: 1,
+                   "update helper script should not be hard-linked")
+        try expect(
+            String(data: try Data(contentsOf: URL(fileURLWithPath: helperPath)), encoding: .utf8),
+            equals: script,
+            "update helper script file should contain the generated script"
+        )
+
+        let existing = helperRoot.appendingPathComponent("existing.sh")
+        try Data("existing\n".utf8).write(to: existing)
+        var existingRejected = false
+        do {
+            _ = try writePrivateUpdateHelperScript("bad",
+                                                   directory: helperRoot.path,
+                                                   fileName: "existing.sh")
+        } catch {
+            existingRejected = true
+        }
+        try expect(existingRejected, equals: true,
+                   "update helper script writer should reject existing files")
+        try expect(
+            String(data: try Data(contentsOf: existing), encoding: .utf8),
+            equals: "existing\n",
+            "update helper script writer should leave existing files untouched"
+        )
+
+        let target = helperRoot.appendingPathComponent("target.sh")
+        try Data("target\n".utf8).write(to: target)
+        let link = helperRoot.appendingPathComponent("linked.sh")
+        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+        var symlinkRejected = false
+        do {
+            _ = try writePrivateUpdateHelperScript("bad",
+                                                   directory: helperRoot.path,
+                                                   fileName: "linked.sh")
+        } catch {
+            symlinkRejected = true
+        }
+        try expect(symlinkRejected, equals: true,
+                   "update helper script writer should reject leaf symlinks")
+        try expect(
+            String(data: try Data(contentsOf: target), encoding: .utf8),
+            equals: "target\n",
+            "update helper script writer should leave symlink targets untouched"
+        )
     }
 
     private static func testHostileRegistryEnvDetection() throws {
