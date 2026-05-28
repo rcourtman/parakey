@@ -613,7 +613,7 @@ enum ModelIntegrity {
             let fileURL = root.appendingPathComponent(file.relativePath, isDirectory: false)
             try requireRegularFile(fileURL, relativePath: file.relativePath)
 
-            let actual = try sha256Hex(of: fileURL)
+            let actual = try sha256Hex(of: fileURL, relativePath: file.relativePath)
             let expected = file.sha256.lowercased()
             guard actual == expected else {
                 throw ModelIntegrityError.digestMismatch(path: file.relativePath,
@@ -650,8 +650,8 @@ enum ModelIntegrity {
         }
     }
 
-    static func sha256Hex(of url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
+    static func sha256Hex(of url: URL, relativePath: String) throws -> String {
+        let handle = try openRegularFileForHashing(url, relativePath: relativePath)
         defer { try? handle.close() }
 
         var hasher = SHA256()
@@ -663,6 +663,29 @@ enum ModelIntegrity {
         }
 
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func openRegularFileForHashing(_ url: URL,
+                                                  relativePath: String) throws -> FileHandle {
+        let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else {
+            if errno == ENOENT { throw ModelIntegrityError.missingFile(relativePath) }
+            throw ModelIntegrityError.invalidFileType(relativePath)
+        }
+
+        do {
+            var st = stat()
+            guard Darwin.fstat(fd, &st) == 0 else {
+                throw ModelIntegrityError.invalidFileType(relativePath)
+            }
+            guard (st.st_mode & S_IFMT) == S_IFREG else {
+                throw ModelIntegrityError.invalidFileType(relativePath)
+            }
+            return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        } catch {
+            _ = Darwin.close(fd)
+            throw error
+        }
     }
 
     private enum FileSystemNodeType {
@@ -7099,6 +7122,18 @@ private enum ParakeySelfTest {
         }
         try expect(rejectedDotSegment, equals: true,
                    "model integrity should reject dot path segments")
+
+        let symlinkedModelFile = modelDir.appendingPathComponent("model-link.mil")
+        try fm.createSymbolicLink(at: symlinkedModelFile, withDestinationURL: modelFile)
+        var rejectedSymlinkHashRead = false
+        do {
+            _ = try ModelIntegrity.sha256Hex(of: symlinkedModelFile,
+                                             relativePath: "Toy.mlmodelc/model-link.mil")
+        } catch is ModelIntegrityError {
+            rejectedSymlinkHashRead = true
+        }
+        try expect(rejectedSymlinkHashRead, equals: true,
+                   "model integrity hashing should not follow leaf symlinks")
 
         let localParakeetV3Cache = AsrModels.defaultCacheDirectory(for: .v3)
         if fm.fileExists(atPath: localParakeetV3Cache.path) {
