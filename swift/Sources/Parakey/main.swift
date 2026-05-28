@@ -2638,6 +2638,13 @@ func updateHelperScript(pid: pid_t,
         printf '%s\n' "$candidate"
     }
 
+    log_is_single_link_regular_file() {
+        local links
+        [ -f "$LOG" ] || return 1
+        links="$(/usr/bin/stat -f '%l' "$LOG" 2>/dev/null)" || return 1
+        [ "$links" = "1" ]
+    }
+
     prepare_log() {
         local dir fallback
         dir="$(/usr/bin/dirname "$LOG")"
@@ -2647,7 +2654,7 @@ func updateHelperScript(pid: pid_t,
             return 0
         fi
 
-        if [ -L "$LOG" ] || { [ -e "$LOG" ] && [ ! -f "$LOG" ]; }; then
+        if [ -L "$LOG" ] || { [ -e "$LOG" ] && ! log_is_single_link_regular_file; }; then
             fallback="$(private_log_path)" || exit 1
             LOG="$fallback"
             return 0
@@ -2657,6 +2664,10 @@ func updateHelperScript(pid: pid_t,
             fallback="$(private_log_path)" || exit 1
             LOG="$fallback"
         }
+        if ! log_is_single_link_regular_file; then
+            fallback="$(private_log_path)" || exit 1
+            LOG="$fallback"
+        fi
         /bin/chmod 600 "$LOG" 2>/dev/null || true
     }
 
@@ -7266,6 +7277,9 @@ private enum ParakeySelfTest {
             "/bin/rm -f \"$SCRIPT_PATH\"",
             "private_log_path()",
             "/usr/bin/mktemp -t parakey-update",
+            "log_is_single_link_regular_file()",
+            "/usr/bin/stat -f '%l' \"$LOG\"",
+            "[ \"$links\" = \"1\" ]",
             "[ -L \"$LOG\" ]",
             "/bin/chmod 600 \"$LOG\"",
             "prepare_log",
