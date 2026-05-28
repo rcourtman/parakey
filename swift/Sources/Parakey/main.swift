@@ -628,6 +628,30 @@ enum ModelIntegrity {
     }
 }
 
+func isSafeSpeechModelCacheDirectory(_ cacheDir: URL,
+                                     fluidAudioSupportDirectory: URL? = nil) -> Bool {
+    let supportDirectory = fluidAudioSupportDirectory
+        ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("FluidAudio", isDirectory: true)
+    guard let supportDirectory else { return false }
+
+    let cacheURL = cacheDir.standardizedFileURL
+    let supportURL = supportDirectory.standardizedFileURL
+    guard cacheURL.isFileURL, supportURL.isFileURL else { return false }
+
+    let cachePath = cacheURL.path
+    let supportPath = supportURL.path
+    let supportPrefix = supportPath.hasSuffix("/") ? supportPath : "\(supportPath)/"
+    guard cachePath.hasPrefix(supportPrefix), cachePath != supportPath else { return false }
+
+    let relativePath = String(cachePath.dropFirst(supportPrefix.count))
+    let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+    return !components.isEmpty
+        && !components.contains("")
+        && !components.contains(".")
+        && !components.contains("..")
+}
+
 func normalizedTranscriptCorrectionSource(_ source: String) -> String {
     source
         .split(whereSeparator: { $0.isWhitespace })
@@ -5394,6 +5418,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             await asr.unload()
             let cacheDir = AsrModels.defaultCacheDirectory(for: .v3)
             do {
+                guard isSafeSpeechModelCacheDirectory(cacheDir) else {
+                    throw NSError(
+                        domain: "Parakey",
+                        code: -3,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "Refusing to remove unexpected speech model cache path: \(cacheDir.path)"
+                        ]
+                    )
+                }
                 let didRemoveCache = try await Task.detached(priority: .userInitiated) {
                     let fm = FileManager.default
                     guard fm.fileExists(atPath: cacheDir.path) else {
@@ -6278,6 +6311,8 @@ private enum ParakeySelfTest {
     }
 
     private static func testModelIntegrity() throws {
+        try testSpeechModelCachePathSafety()
+
         let fm = FileManager.default
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("parakey-model-integrity-\(UUID().uuidString)",
@@ -6378,6 +6413,47 @@ private enum ParakeySelfTest {
         if fm.fileExists(atPath: localParakeetV3Cache.path) {
             try ModelIntegrity.verifyParakeetV3Model(at: localParakeetV3Cache)
         }
+    }
+
+    private static func testSpeechModelCachePathSafety() throws {
+        let support = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("parakey-cache-safety-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("FluidAudio", isDirectory: true)
+
+        try expect(
+            isSafeSpeechModelCacheDirectory(
+                support.appendingPathComponent("Models/parakeet-v3", isDirectory: true),
+                fluidAudioSupportDirectory: support
+            ),
+            equals: true,
+            "speech model cache reset should allow nested FluidAudio cache paths"
+        )
+        try expect(
+            isSafeSpeechModelCacheDirectory(support, fluidAudioSupportDirectory: support),
+            equals: false,
+            "speech model cache reset should not remove the FluidAudio support root"
+        )
+        try expect(
+            isSafeSpeechModelCacheDirectory(
+                support.deletingLastPathComponent().appendingPathComponent("FluidAudioBackup/parakeet-v3", isDirectory: true),
+                fluidAudioSupportDirectory: support
+            ),
+            equals: false,
+            "speech model cache reset should reject sibling support directories"
+        )
+        try expect(
+            isSafeSpeechModelCacheDirectory(
+                support.appendingPathComponent("../Outside/parakeet-v3", isDirectory: true),
+                fluidAudioSupportDirectory: support
+            ),
+            equals: false,
+            "speech model cache reset should reject paths that normalize outside FluidAudio support"
+        )
+        try expect(
+            isSafeSpeechModelCacheDirectory(AsrModels.defaultCacheDirectory(for: .v3)),
+            equals: true,
+            "FluidAudio v3 cache path should remain inside FluidAudio Application Support"
+        )
     }
 
     private static func testUpdate() throws {
