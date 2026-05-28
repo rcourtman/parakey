@@ -311,6 +311,7 @@ enum TranscriptCorrectionsTransfer {
     }
 
     static func decode(_ data: Data) throws -> [TranscriptCorrection] {
+        try validateTransferSize(data.count)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
@@ -325,6 +326,12 @@ enum TranscriptCorrectionsTransfer {
         // fallback costs almost nothing and makes hand-authored files
         // forgiving while the public file format settles.
         return normalizedTranscriptCorrections(try decoder.decode([TranscriptCorrection].self, from: data))
+    }
+
+    static func validateTransferSize(_ bytes: Int) throws {
+        guard bytes <= maxFileBytes else {
+            throw TranscriptCorrectionsTransferError.fileTooLarge(bytes, maxFileBytes)
+        }
     }
 
     static func write(_ corrections: [TranscriptCorrection], to url: URL) throws {
@@ -351,12 +358,6 @@ enum TranscriptCorrectionsTransfer {
         let data = try Data(contentsOf: url)
         try validateTransferSize(data.count)
         return data
-    }
-
-    private static func validateTransferSize(_ bytes: Int) throws {
-        guard bytes <= maxFileBytes else {
-            throw TranscriptCorrectionsTransferError.fileTooLarge(bytes, maxFileBytes)
-        }
     }
 }
 
@@ -1153,7 +1154,7 @@ final class Settings: @unchecked Sendable {
         get {
             guard let data = defaults.data(forKey: Self.keyTranscriptCorrections) else { return [] }
             do {
-                return normalizedTranscriptCorrections(try JSONDecoder().decode([TranscriptCorrection].self, from: data))
+                return try TranscriptCorrectionsTransfer.decode(data)
             } catch {
                 log("settings: transcript correction decode failed: \(error)")
                 return []
@@ -1167,6 +1168,7 @@ final class Settings: @unchecked Sendable {
             }
             do {
                 let data = try JSONEncoder().encode(corrections)
+                try TranscriptCorrectionsTransfer.validateTransferSize(data.count)
                 defaults.set(data, forKey: Self.keyTranscriptCorrections)
             } catch {
                 log("settings: transcript correction encode failed: \(error)")
@@ -6325,6 +6327,19 @@ private enum ParakeySelfTest {
             equals: [TranscriptCorrection(source: "old phrase", replacement: "new phrase")],
             "legacy bare-array correction files should remain importable"
         )
+
+        var oversizedDecodeRejected = false
+        do {
+            _ = try TranscriptCorrectionsTransfer.decode(
+                Data(repeating: 0x20, count: TranscriptCorrectionsTransfer.maxFileBytes + 1)
+            )
+        } catch let error as TranscriptCorrectionsTransferError {
+            if case .fileTooLarge = error {
+                oversizedDecodeRejected = true
+            }
+        }
+        try expect(oversizedDecodeRejected, equals: true,
+                   "correction transfer should reject oversized in-memory data before decoding")
 
         let transferTmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
         let transferFileManager = FileManager.default
