@@ -157,6 +157,111 @@ PY
     fi
 }
 
+is_release_version() {
+    [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+}
+
+is_build_number() {
+    [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
+is_sha256() {
+    [[ "$1" =~ ^[0-9a-f]{64}$ ]]
+}
+
+compute_target_version() {
+    local current="$1"
+    local bump="$2"
+    local explicit_target="${3:-}"
+    local major minor patch
+
+    case "$bump" in
+        explicit)
+            is_release_version "$explicit_target" \
+                || die "--version needs X.Y.Z without leading zeroes, got '$explicit_target'"
+            printf '%s\n' "$explicit_target"
+            ;;
+        patch|minor|major)
+            is_release_version "$current" \
+                || die "current version must be X.Y.Z without leading zeroes, got '$current'"
+            IFS=. read -r major minor patch <<<"$current"
+            case "$bump" in
+                patch) printf '%s.%s.%s\n' "$major" "$minor" "$((patch + 1))" ;;
+                minor) printf '%s.%s.0\n' "$major" "$((minor + 1))" ;;
+                major) printf '%s.0.0\n' "$((major + 1))" ;;
+            esac
+            ;;
+        *)
+            die "unknown version bump: $bump"
+            ;;
+    esac
+}
+
+increment_build_number() {
+    local current_build="$1"
+    is_build_number "$current_build" \
+        || die "CFBundleVersion must be a non-negative integer without leading zeroes, got '$current_build'"
+    printf '%s\n' "$((current_build + 1))"
+}
+
+rewrite_cask_file() {
+    local cask_file="$1"
+    local new_version="$2"
+    local new_sha="$3"
+
+    [[ -f "$cask_file" ]] || die "cask not found at $cask_file"
+    is_release_version "$new_version" || die "invalid cask version: $new_version"
+    is_sha256 "$new_sha" || die "invalid cask sha256: $new_sha"
+
+    /usr/bin/python3 - "$cask_file" "$new_version" "$new_sha" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+new_version = sys.argv[2]
+new_sha = sys.argv[3]
+src = path.read_text()
+
+src, version_count = re.subn(
+    r'^(\s*version\s+")[^"]+("\s*)$',
+    rf'\g<1>{new_version}\g<2>',
+    src,
+    count=0,
+    flags=re.M,
+)
+src, sha_count = re.subn(
+    r'^(\s*sha256\s+")[0-9a-f]{64}("\s*)$',
+    rf'\g<1>{new_sha}\g<2>',
+    src,
+    count=0,
+    flags=re.M,
+)
+
+if version_count != 1:
+    raise SystemExit(f"expected exactly one cask version line, found {version_count}")
+if sha_count != 1:
+    raise SystemExit(f"expected exactly one cask sha256 line, found {sha_count}")
+
+path.write_text(src)
+PY
+}
+
+assert_self_test_equals() {
+    local actual="$1"
+    local expected="$2"
+    local message="$3"
+    [[ "$actual" == "$expected" ]] || die "$message: got '$actual', expected '$expected'"
+}
+
+assert_self_test_fails() {
+    local message="$1"
+    shift
+    if ( "$@" ) >/dev/null 2>&1; then
+        die "$message"
+    fi
+}
+
 run_release_script_self_test() {
     say "Release script self-test"
 
@@ -173,10 +278,56 @@ run_release_script_self_test() {
     local notes_file="$tmpdir/notes.md"
     printf '%s\n' "Plain release notes" >"$notes_file"
     check_no_attribution_file "self-test release notes" "$notes_file"
-    rm -rf "$tmpdir"
 
     check_no_attribution_text "self-test generated notes" "$(printf -- '- Release v9.8.7\n- Improve update checks')"
 
+    assert_self_test_equals "$(compute_target_version "1.2.3" patch)" "1.2.4" \
+        "patch version bump failed"
+    assert_self_test_equals "$(compute_target_version "1.2.3" minor)" "1.3.0" \
+        "minor version bump failed"
+    assert_self_test_equals "$(compute_target_version "1.2.3" major)" "2.0.0" \
+        "major version bump failed"
+    assert_self_test_equals "$(compute_target_version "1.2.3" explicit "4.5.6")" "4.5.6" \
+        "explicit version selection failed"
+    assert_self_test_equals "$(increment_build_number "42")" "43" \
+        "build number increment failed"
+    assert_self_test_fails "accepted malformed current version" \
+        compute_target_version "1.02.3" patch
+    assert_self_test_fails "accepted malformed explicit version" \
+        compute_target_version "1.2.3" explicit "1.2"
+    assert_self_test_fails "accepted malformed build number" \
+        increment_build_number "04"
+
+    local cask_file
+    cask_file="$tmpdir/parakey.rb"
+    local old_sha new_sha
+    old_sha="$(printf 'a%.0s' {1..64})"
+    new_sha="$(printf 'b%.0s' {1..64})"
+    cat >"$cask_file" <<EOF
+cask "parakey" do
+  version "1.2.3"
+  sha256 "$old_sha"
+end
+EOF
+    rewrite_cask_file "$cask_file" "4.5.6" "$new_sha"
+    grep -qx '  version "4.5.6"' "$cask_file" \
+        || die "self-test cask rewrite missed version"
+    grep -qx "  sha256 \"$new_sha\"" "$cask_file" \
+        || die "self-test cask rewrite missed sha256"
+
+    cat >"$cask_file" <<EOF
+cask "parakey" do
+  version "1.2.3"
+  version "1.2.4"
+  sha256 "$old_sha"
+end
+EOF
+    assert_self_test_fails "accepted duplicate cask version lines" \
+        rewrite_cask_file "$cask_file" "4.5.6" "$new_sha"
+    assert_self_test_fails "accepted malformed cask sha256" \
+        rewrite_cask_file "$cask_file" "4.5.6" "not-a-sha"
+
+    rm -rf "$tmpdir"
     say "Release script self-test passed"
 }
 
@@ -220,18 +371,8 @@ current_build="$(plutil -extract CFBundleVersion raw "$INFO_PLIST")"
 [[ -n "$current_version" ]] || die "could not read CFBundleShortVersionString from $INFO_PLIST"
 [[ -n "$current_build"   ]] || die "could not read CFBundleVersion from $INFO_PLIST"
 
-if [[ "$BUMP" == "explicit" ]]; then
-    [[ "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--version needs X.Y.Z, got '$TARGET'"
-    new_version="$TARGET"
-else
-    IFS=. read -r major minor patch <<<"$current_version"
-    case "$BUMP" in
-        patch) new_version="$major.$minor.$((patch + 1))" ;;
-        minor) new_version="$major.$((minor + 1)).0"      ;;
-        major) new_version="$((major + 1)).0.0"           ;;
-    esac
-fi
-new_build=$((current_build + 1))
+new_version="$(compute_target_version "$current_version" "$BUMP" "$TARGET")"
+new_build="$(increment_build_number "$current_build")"
 
 say "Version: $current_version (build $current_build) -> $new_version (build $new_build)"
 
@@ -410,16 +551,7 @@ if [[ "$NO_CASK" -eq 1 ]]; then
     say "Skipping Cask bump (--no-cask)"
 else
     say "Updating Homebrew Cask at $CASK_FILE"
-    # Use python for the rewrite so we don't have to worry about
-    # quoting / escapes inside Ruby strings.
-    /usr/bin/python3 - "$CASK_FILE" "$new_version" "$ZIP_SHA" <<'PY'
-import re, sys, pathlib
-path, new_version, new_sha = sys.argv[1], sys.argv[2], sys.argv[3]
-src = pathlib.Path(path).read_text()
-src = re.sub(r'(version\s+")[^"]+(")', rf'\g<1>{new_version}\g<2>', src, count=1)
-src = re.sub(r'(sha256\s+")[^"]+(")',  rf'\g<1>{new_sha}\g<2>',     src, count=1)
-pathlib.Path(path).write_text(src)
-PY
+    rewrite_cask_file "$CASK_FILE" "$new_version" "$ZIP_SHA"
     grep -q "version \"$new_version\"" "$CASK_FILE" || die "cask rewrite failed (version)"
     grep -q "sha256 \"$ZIP_SHA\""      "$CASK_FILE" || die "cask rewrite failed (sha256)"
 
