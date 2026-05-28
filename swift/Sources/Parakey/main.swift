@@ -68,6 +68,9 @@ let SETTINGS_SUITE = "com.local.parakey"
 let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
 let CORRECTIONS_FILE_EXTENSION = "parakey-corrections"
 let CORRECTIONS_FILE_NAME = "Parakey Corrections.\(CORRECTIONS_FILE_EXTENSION)"
+let MAX_TRANSCRIPT_CORRECTIONS = 512
+let MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES = 512
+let MAX_TRANSCRIPT_CORRECTION_REPLACEMENT_BYTES = 4096
 
 /// Visible state of the menu-bar item. Idle/loading/busy use the
 /// template image so macOS handles light/dark menu bars. Recording and
@@ -809,12 +812,21 @@ func normalizedTranscriptCorrections(_ corrections: [TranscriptCorrection]) -> [
         let source = correction.source.trimmingCharacters(in: .whitespacesAndNewlines)
         let replacement = correction.replacement.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = normalizedTranscriptCorrectionSource(source)
-        guard !source.isEmpty, !replacement.isEmpty, !key.isEmpty else { continue }
+        guard !source.isEmpty,
+              !replacement.isEmpty,
+              !key.isEmpty,
+              source.utf8.count <= MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES,
+              replacement.utf8.count <= MAX_TRANSCRIPT_CORRECTION_REPLACEMENT_BYTES,
+              !source.unicodeScalars.contains(where: { $0.value == 0 }),
+              !replacement.unicodeScalars.contains(where: { $0.value == 0 }) else {
+            continue
+        }
 
         let cleaned = TranscriptCorrection(source: source, replacement: replacement)
         if let existing = indexBySource[key] {
             result[existing] = cleaned
         } else {
+            guard result.count < MAX_TRANSCRIPT_CORRECTIONS else { continue }
             indexBySource[key] = result.count
             result.append(cleaned)
         }
@@ -2080,12 +2092,7 @@ enum TranscriptCorrector {
     }
 
     static func apply(to text: String, corrections: [TranscriptCorrection]) -> (text: String, appliedCount: Int) {
-        let active = corrections
-            .map { TranscriptCorrection(
-                source: $0.source.trimmingCharacters(in: .whitespacesAndNewlines),
-                replacement: $0.replacement.trimmingCharacters(in: .whitespacesAndNewlines)
-            ) }
-            .filter { !$0.source.isEmpty && !$0.replacement.isEmpty }
+        let active = normalizedTranscriptCorrections(corrections)
             .sorted { lhs, rhs in
                 if lhs.source.count != rhs.source.count { return lhs.source.count > rhs.source.count }
                 return lhs.source.localizedCaseInsensitiveCompare(rhs.source) == .orderedAscending
@@ -6473,6 +6480,43 @@ private enum ParakeySelfTest {
             normalized,
             equals: [TranscriptCorrection(source: "yeti nano", replacement: "USB mic")],
             "normalization should trim, drop incomplete entries, collapse duplicate sources, and keep the latest replacement"
+        )
+
+        let boundedCorrections = normalizedTranscriptCorrections(
+            [
+                TranscriptCorrection(source: String(repeating: "s", count: MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES + 1),
+                                     replacement: "replacement"),
+                TranscriptCorrection(source: "source",
+                                     replacement: String(repeating: "r", count: MAX_TRANSCRIPT_CORRECTION_REPLACEMENT_BYTES + 1)),
+                TranscriptCorrection(source: "nul\u{0}source", replacement: "replacement"),
+                TranscriptCorrection(source: "valid", replacement: "replacement")
+            ]
+            + (0..<(MAX_TRANSCRIPT_CORRECTIONS + 3)).map {
+                TranscriptCorrection(source: "source-\($0)", replacement: "replacement-\($0)")
+            }
+            + [
+                TranscriptCorrection(source: "source-0", replacement: "updated")
+            ]
+        )
+        try expect(
+            boundedCorrections.count,
+            equals: MAX_TRANSCRIPT_CORRECTIONS,
+            "normalization should cap stored correction count"
+        )
+        try expect(
+            boundedCorrections.first,
+            equals: TranscriptCorrection(source: "valid", replacement: "replacement"),
+            "normalization should keep valid corrections while dropping oversized and NUL-containing entries"
+        )
+        try expect(
+            boundedCorrections.dropFirst().first,
+            equals: TranscriptCorrection(source: "source-0", replacement: "updated"),
+            "normalization should still let later duplicates update retained corrections"
+        )
+        try expect(
+            boundedCorrections.contains(where: { $0.source == "source-\(MAX_TRANSCRIPT_CORRECTIONS)" }),
+            equals: false,
+            "normalization should drop new unique corrections after the cap"
         )
 
         let applied = TranscriptCorrector.apply(
