@@ -55,6 +55,8 @@ let HOMEBREW_CASK_INSTALLED_TOKEN = "parakey"
 let INSTALLED_APP_BUNDLE_PATH = "/Applications/Parakey.app"
 let UPDATE_HELPER_LOG_PATH = (NSHomeDirectory() as NSString)
     .appendingPathComponent("Library/Logs/Parakey-update.log")
+let UPDATE_PROGRESS_ARGUMENT = "--update-progress"
+let UPDATE_PROGRESS_APP_PREFIX = "Parakey-update-progress-"
 let MAX_SKIPPED_UPDATE_VERSIONS = 20
 let MAX_CORRECTION_SYNC_PATH_BYTES = 4096
 let MAX_INPUT_DEVICE_PREFERENCE_BYTES = 512
@@ -3105,6 +3107,7 @@ private func updateProcessEnvironment(current: [String: String] = ProcessInfo.pr
 func updateHelperScript(pid: pid_t,
                         brewPath: String,
                         targetVersion: String,
+                        statePath: String,
                         appPath: String = INSTALLED_APP_BUNDLE_PATH,
                         releasesPageURL: String = GITHUB_RELEASES_PAGE.absoluteString) -> String {
     #"""
@@ -3115,6 +3118,7 @@ func updateHelperScript(pid: pid_t,
     SCRIPT_PATH="$0"
     BREW=\#(shellSingleQuoted(brewPath))
     TARGET_VERSION=\#(shellSingleQuoted(targetVersion))
+    STATE_PATH=\#(shellSingleQuoted(statePath))
     APP_PATH=\#(shellSingleQuoted(appPath))
     RELEASES_PAGE=\#(shellSingleQuoted(releasesPageURL))
     PARAKEY_PID=\#(pid)
@@ -3139,8 +3143,23 @@ func updateHelperScript(pid: pid_t,
         printf '[%s] %s\n' "$(timestamp)" "$*"
     }
 
+    state() {
+        local phase="$1"
+        local message="$2"
+        local tmp
+        log "$message"
+        [ -n "$STATE_PATH" ] || return 0
+        tmp="${STATE_PATH}.$$"
+        if printf '%s\t%s\n' "$phase" "$message" >"$tmp"; then
+            /bin/chmod 600 "$tmp" 2>/dev/null || true
+            /bin/mv -f "$tmp" "$STATE_PATH" 2>/dev/null || true
+        else
+            /bin/rm -f "$tmp" 2>/dev/null || true
+        fi
+    }
+
     fail() {
-        log "$*"
+        state "failed" "$*"
         /usr/bin/open "$RELEASES_PAGE"
         exit 1
     }
@@ -3211,26 +3230,33 @@ func updateHelperScript(pid: pid_t,
         echo "App: $APP_PATH"
     }
 
-    wait_for_parakey_exit
+    state "preparing" "Preparing Homebrew for Parakey v$TARGET_VERSION..."
 
     if ! run_brew tap "$CASK_TAP"; then
         fail "brew tap failed; leaving the existing app in place."
     fi
 
+    state "checking" "Checking Homebrew metadata..."
     if ! run_brew update --force; then
         fail "brew update failed; leaving the existing app in place."
     fi
 
+    state "downloading" "Downloading Parakey v$TARGET_VERSION..."
     if ! run_brew fetch --cask --force "$CASK_TOKEN"; then
         fail "brew cask fetch failed; leaving the existing app in place."
     fi
+
+    state "installing" "Installing Parakey v$TARGET_VERSION..."
+    wait_for_parakey_exit
 
     if ! run_brew upgrade --cask --force --appdir="$APP_DIR" "$CASK_TOKEN"; then
         fail "brew cask upgrade failed; leaving the existing app in place."
     fi
 
+    state "verifying" "Verifying the installed app..."
     if ! installed_target_version; then
         log "brew upgrade completed without installing v$TARGET_VERSION; forcing qualified cask reinstall."
+        state "installing" "Reinstalling Parakey v$TARGET_VERSION..."
         if ! run_brew update --force; then
             fail "brew update failed before reinstall; leaving the existing app in place."
         fi
@@ -3243,8 +3269,10 @@ func updateHelperScript(pid: pid_t,
         fail "Expected Parakey v$TARGET_VERSION or newer after update, but the installed app is still $(app_version)."
     fi
 
-    log "Update complete; relaunching Parakey."
+    state "relaunching" "Update complete. Reopening Parakey..."
+    sleep 2
     /usr/bin/open "$APP_PATH"
+    state "complete" "Parakey v$TARGET_VERSION is installed."
     """#
 }
 
@@ -3307,6 +3335,42 @@ private func openPrivateUpdateHelperLog(preferredPath: String = UPDATE_HELPER_LO
                                                      removeOnFailure: true)
         return PrivateOutputFile(path: fallbackPath,
                                  handle: FileHandle(fileDescriptor: fd, closeOnDealloc: true))
+    }
+}
+
+private func createPrivateUpdateProgressStateFile(directory: String = NSTemporaryDirectory()) throws -> String {
+    let path = (directory as NSString)
+        .appendingPathComponent("\(UPDATE_PROGRESS_APP_PREFIX)\(UUID().uuidString).state")
+    let fd = try openPrivateOutputFileDescriptor(atPath: path,
+                                                 exclusive: true,
+                                                 removeOnFailure: true)
+    do {
+        try writeAllData(Data("starting\tStarting update...\n".utf8), to: fd)
+        guard Darwin.close(fd) == 0 else { throw currentPOSIXError() }
+        return path
+    } catch {
+        _ = Darwin.close(fd)
+        _ = Darwin.unlink(path)
+        throw error
+    }
+}
+
+private func writePrivateUpdateProgressState(phase: String,
+                                             message: String,
+                                             to path: String) throws {
+    let safePhase = phase.replacingOccurrences(of: "\t", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+    let safeMessage = message.replacingOccurrences(of: "\t", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+    let fd = try openPrivateOutputFileDescriptor(atPath: path,
+                                                 exclusive: false,
+                                                 removeOnFailure: false)
+    do {
+        try writeAllData(Data("\(safePhase)\t\(safeMessage)\n".utf8), to: fd)
+        guard Darwin.close(fd) == 0 else { throw currentPOSIXError() }
+    } catch {
+        _ = Darwin.close(fd)
+        throw error
     }
 }
 
@@ -3489,6 +3553,263 @@ private final class RecordingHUDView: NSView {
             hue.withAlphaComponent(0.28 + (0.72 * activity)).setFill()
             path.fill()
         }
+    }
+}
+
+private struct UpdateProgressLaunch {
+    let statePath: String
+    let logPath: String
+    let targetVersion: String
+    let cleanupAppPath: String
+
+    init?(arguments: [String]) {
+        guard arguments.count >= 5,
+              arguments[0] == UPDATE_PROGRESS_ARGUMENT,
+              !arguments[1].isEmpty,
+              !arguments[2].isEmpty,
+              !arguments[3].isEmpty,
+              !arguments[4].isEmpty else {
+            return nil
+        }
+
+        statePath = arguments[1]
+        logPath = arguments[2]
+        targetVersion = arguments[3]
+        cleanupAppPath = arguments[4]
+    }
+}
+
+private struct UpdateProgressState {
+    let phase: String
+    let message: String
+
+    static func read(from path: String) -> UpdateProgressState? {
+        guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .newlines)
+        let parts = trimmed.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return UpdateProgressState(phase: String(parts[0]), message: String(parts[1]))
+    }
+}
+
+private func isSafeUpdateProgressCleanupPath(_ path: String) -> Bool {
+    guard !path.isEmpty else { return false }
+    let tempPath = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        .standardizedFileURL
+        .path
+    let tempPrefix = tempPath.hasSuffix("/") ? tempPath : "\(tempPath)/"
+    let url = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+    return url.path.hasPrefix(tempPrefix)
+        && url.pathExtension == "app"
+        && url.lastPathComponent.hasPrefix(UPDATE_PROGRESS_APP_PREFIX)
+}
+
+@MainActor
+private final class UpdateProgressAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private let launch: UpdateProgressLaunch
+    private var window: NSWindow?
+    private var pollTimer: Timer?
+    private var closeWorkItem: DispatchWorkItem?
+    private var lastPhase = ""
+    private var lastMessage = ""
+
+    private var messageLabel: NSTextField!
+    private var detailLabel: NSTextField!
+    private var progress: NSProgressIndicator!
+    private var openReleaseButton: NSButton!
+    private var closeButton: NSButton!
+
+    init(launch: UpdateProgressLaunch) {
+        self.launch = launch
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        buildWindow()
+        pollState()
+        pollTimer = Timer.scheduledTimer(timeInterval: 0.5,
+                                         target: self,
+                                         selector: #selector(updateProgressTimerFired(_:)),
+                                         userInfo: nil,
+                                         repeats: true)
+        pollTimer?.tolerance = 0.15
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        pollTimer?.invalidate()
+        pollTimer = nil
+        closeWorkItem?.cancel()
+        scheduleCopiedAppCleanup()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.terminate(nil)
+    }
+
+    private func buildWindow() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 430, height: 184),
+                              styleMask: [.titled, .closable],
+                              backing: .buffered,
+                              defer: false)
+        window.title = "Updating Parakey"
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        self.window = window
+
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = 12
+        root.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 16, right: 20)
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = updateProgressLabel("Updating Parakey to v\(launch.targetVersion)",
+                                        font: .systemFont(ofSize: 18, weight: .semibold))
+        messageLabel = updateProgressLabel("Starting update...",
+                                           font: .systemFont(ofSize: 13, weight: .medium))
+        detailLabel = updateProgressLabel("Parakey will reopen automatically when the update finishes.",
+                                          font: .systemFont(ofSize: 12),
+                                          color: .secondaryLabelColor)
+        detailLabel.preferredMaxLayoutWidth = 390
+
+        progress = NSProgressIndicator()
+        progress.style = .bar
+        progress.isIndeterminate = true
+        progress.usesThreadedAnimation = true
+        progress.translatesAutoresizingMaskIntoConstraints = false
+        progress.startAnimation(nil)
+
+        let buttonRow = NSStackView()
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.spacing = 8
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let openLog = NSButton(title: "Open Log",
+                               target: self,
+                               action: #selector(openUpdateLogClicked(_:)))
+        openLog.bezelStyle = .rounded
+
+        openReleaseButton = NSButton(title: "Open Release Page",
+                                     target: self,
+                                     action: #selector(openReleasePageClicked(_:)))
+        openReleaseButton.bezelStyle = .rounded
+        openReleaseButton.isHidden = true
+
+        closeButton = NSButton(title: "Close",
+                               target: self,
+                               action: #selector(closeUpdateProgressClicked(_:)))
+        closeButton.bezelStyle = .rounded
+        closeButton.isHidden = true
+
+        buttonRow.addArrangedSubview(openLog)
+        buttonRow.addArrangedSubview(openReleaseButton)
+        buttonRow.addArrangedSubview(NSView())
+        buttonRow.addArrangedSubview(closeButton)
+        buttonRow.setHuggingPriority(.defaultLow, for: .horizontal)
+
+        root.addArrangedSubview(title)
+        root.addArrangedSubview(messageLabel)
+        root.addArrangedSubview(progress)
+        root.addArrangedSubview(detailLabel)
+        root.addArrangedSubview(buttonRow)
+
+        for view in root.arrangedSubviews {
+            view.widthAnchor.constraint(equalTo: root.widthAnchor,
+                                        constant: -(root.edgeInsets.left + root.edgeInsets.right)).isActive = true
+        }
+
+        let container = NSView()
+        container.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            root.topAnchor.constraint(equalTo: container.topAnchor),
+            root.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            root.widthAnchor.constraint(equalToConstant: 430),
+            progress.heightAnchor.constraint(equalToConstant: 14),
+        ])
+
+        window.contentView = container
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func updateProgressLabel(_ text: String,
+                                     font: NSFont,
+                                     color: NSColor = .labelColor) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = font
+        label.textColor = color
+        label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 0
+        return label
+    }
+
+    @objc private func updateProgressTimerFired(_ timer: Timer) {
+        pollState()
+    }
+
+    private func pollState() {
+        let state = UpdateProgressState.read(from: launch.statePath)
+            ?? UpdateProgressState(phase: "starting", message: "Starting update...")
+        guard state.phase != lastPhase || state.message != lastMessage else { return }
+
+        lastPhase = state.phase
+        lastMessage = state.message
+        messageLabel.stringValue = state.message
+
+        switch state.phase {
+        case "failed":
+            progress.stopAnimation(nil)
+            progress.isHidden = true
+            detailLabel.stringValue = "The existing app was left in place. Open the log for details."
+            openReleaseButton.isHidden = false
+            closeButton.isHidden = false
+            NSApp.activate(ignoringOtherApps: true)
+        case "complete":
+            progress.stopAnimation(nil)
+            progress.isHidden = true
+            detailLabel.stringValue = "The updated app is opening. This window will close shortly."
+            closeButton.isHidden = false
+            scheduleClose(after: 4)
+        case "installing":
+            detailLabel.stringValue = "Parakey has quit so Homebrew can replace the app bundle. It will reopen automatically."
+        case "relaunching":
+            detailLabel.stringValue = "Closing the updater so macOS opens the newly installed app."
+            scheduleClose(after: 0.5)
+        default:
+            detailLabel.stringValue = "Parakey will reopen automatically when the update finishes."
+        }
+    }
+
+    private func scheduleClose(after delay: TimeInterval) {
+        guard closeWorkItem == nil else { return }
+        let item = DispatchWorkItem { NSApp.terminate(nil) }
+        closeWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+    }
+
+    private func scheduleCopiedAppCleanup() {
+        guard isSafeUpdateProgressCleanupPath(launch.cleanupAppPath) else { return }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", "sleep 2; /bin/rm -rf \"$1\"", "cleanup", launch.cleanupAppPath]
+        proc.environment = systemToolProcessEnvironment()
+        try? proc.run()
+    }
+
+    @objc private func openUpdateLogClicked(_ sender: NSButton) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: launch.logPath))
+    }
+
+    @objc private func openReleasePageClicked(_ sender: NSButton) {
+        NSWorkspace.shared.open(GITHUB_RELEASES_PAGE)
+    }
+
+    @objc private func closeUpdateProgressClicked(_ sender: NSButton) {
+        NSApp.terminate(nil)
     }
 }
 
@@ -4699,13 +5020,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if addedPermRow { menu.addItem(.separator()) }
 
-        // History: newest transcript inline (one-click to copy back to
-        // the clipboard), older ones hidden inside a Recent submenu so
-        // the top level stays scannable. The most common re-paste need
-        // — "drop what I just dictated into a second place" — is then
-        // a single click rather than a hover-into-submenu.
+        // History: keep one-click access to the last transcript, but
+        // hide transcript preview text inside the submenu so the menu
+        // stays stable even after long dictations.
         if let newest = history.first {
-            let inline = NSMenuItem(title: previewLine(for: newest),
+            let inline = NSMenuItem(title: "Copy Last Transcript",
                                     action: #selector(historyClicked(_:)),
                                     keyEquivalent: "")
             inline.target = self
@@ -4713,67 +5032,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             inline.toolTip = newest
             menu.addItem(inline)
 
-            if history.count > 1 {
-                let parent = NSMenuItem(title: "Recent", action: nil, keyEquivalent: "")
-                let sub = NSMenu()
-                sub.autoenablesItems = false
-                for entry in history.dropFirst() {
-                    let item = NSMenuItem(title: previewLine(for: entry),
-                                          action: #selector(historyClicked(_:)),
-                                          keyEquivalent: "")
-                    item.target = self
-                    item.representedObject = entry
-                    item.toolTip = entry
-                    sub.addItem(item)
-                }
-                parent.submenu = sub
-                menu.addItem(parent)
-            }
-
-            let clear = NSMenuItem(title: "Clear Recent Transcripts",
-                                   action: #selector(clearHistoryClicked(_:)),
-                                   keyEquivalent: "")
-            clear.target = self
-            menu.addItem(clear)
+            menu.addItem(buildRecentTranscriptsItem())
 
             menu.addItem(.separator())
         }
 
         // Settings submenu.
         menu.addItem(buildSettingsItem())
+        menu.addItem(buildSupportItem())
         menu.addItem(.separator())
-
-        let checkUpdates = NSMenuItem(title: isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…",
-                                      action: #selector(checkForUpdatesClicked(_:)),
-                                      keyEquivalent: "")
-        checkUpdates.target = self
-        checkUpdates.isEnabled = !isCheckingForUpdates && !isTerminating
-        menu.addItem(checkUpdates)
-
-        let setup = NSMenuItem(title: "Setup Checklist…",
-                               action: #selector(showSetupChecklistClicked(_:)),
-                               keyEquivalent: "")
-        setup.target = self
-        menu.addItem(setup)
-
-        // About + Quit.
-        let about = NSMenuItem(title: "About Parakey",
-                               action: #selector(showAboutClicked(_:)),
-                               keyEquivalent: "")
-        about.target = self
-        menu.addItem(about)
-
-        let diagnostics = NSMenuItem(title: "Copy Diagnostics",
-                                     action: #selector(copyDiagnosticsClicked(_:)),
-                                     keyEquivalent: "")
-        diagnostics.target = self
-        menu.addItem(diagnostics)
-
-        let saveDiagnostics = NSMenuItem(title: "Save Diagnostics…",
-                                         action: #selector(saveDiagnosticsClicked(_:)),
-                                         keyEquivalent: "")
-        saveDiagnostics.target = self
-        menu.addItem(saveDiagnostics)
 
         // Route through our own selector rather than `NSApp.terminate(_:)`
         // directly. macOS auto-decorates items whose action is the
@@ -4788,6 +5055,98 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         quit.target = self
         menu.addItem(quit)
         return menu
+    }
+
+    private func buildRecentTranscriptsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Recent Transcripts", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        for entry in history {
+            let item = NSMenuItem(title: previewLine(for: entry),
+                                  action: #selector(historyClicked(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry
+            item.toolTip = entry
+            sub.addItem(item)
+        }
+
+        sub.addItem(.separator())
+
+        let clear = NSMenuItem(title: "Clear Recent Transcripts",
+                               action: #selector(clearHistoryClicked(_:)),
+                               keyEquivalent: "")
+        clear.target = self
+        sub.addItem(clear)
+
+        parent.submenu = sub
+        return parent
+    }
+
+    private func buildSupportItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Support", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        let setup = NSMenuItem(title: "Setup Checklist…",
+                               action: #selector(showSetupChecklistClicked(_:)),
+                               keyEquivalent: "")
+        setup.target = self
+        sub.addItem(setup)
+
+        sub.addItem(.separator())
+
+        let checkUpdates = NSMenuItem(title: isCheckingForUpdates ? "Checking for Updates…" : "Check for Updates…",
+                                      action: #selector(checkForUpdatesClicked(_:)),
+                                      keyEquivalent: "")
+        checkUpdates.target = self
+        checkUpdates.isEnabled = !isCheckingForUpdates && !isTerminating
+        sub.addItem(checkUpdates)
+
+        let checkToggle = NSMenuItem(title: "Check for updates automatically",
+                                     action: #selector(toggleCheckForUpdates(_:)),
+                                     keyEquivalent: "")
+        checkToggle.target = self
+        checkToggle.state = settings.checkForUpdates ? .on : .off
+        sub.addItem(checkToggle)
+
+        sub.addItem(.separator())
+
+        let about = NSMenuItem(title: "About Parakey",
+                               action: #selector(showAboutClicked(_:)),
+                               keyEquivalent: "")
+        about.target = self
+        sub.addItem(about)
+
+        sub.addItem(.separator())
+
+        let diagnostics = NSMenuItem(title: "Copy Diagnostics",
+                                     action: #selector(copyDiagnosticsClicked(_:)),
+                                     keyEquivalent: "")
+        diagnostics.target = self
+        sub.addItem(diagnostics)
+
+        let saveDiagnostics = NSMenuItem(title: "Save Diagnostics…",
+                                         action: #selector(saveDiagnosticsClicked(_:)),
+                                         keyEquivalent: "")
+        saveDiagnostics.target = self
+        sub.addItem(saveDiagnostics)
+
+        let resetModel = NSMenuItem(title: isResettingSpeechModelCache ? "Resetting Speech Model Cache…" : "Reset Speech Model Cache…",
+                                    action: #selector(resetSpeechModelCacheClicked(_:)),
+                                    keyEquivalent: "")
+        resetModel.target = self
+        resetModel.isEnabled = !isRecording
+            && !isBusy
+            && !isTerminating
+            && startupTask == nil
+            && !isResettingSpeechModelCache
+        resetModel.toolTip = "Delete the local speech model cache and download a fresh verified copy."
+        sub.addItem(resetModel)
+
+        parent.submenu = sub
+        return parent
     }
 
     private func menuStatusTitle() -> String {
@@ -5309,7 +5668,101 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let sub = NSMenu()
         sub.autoenablesItems = false
 
-        // Input + capture preferences.
+        sub.addItem(buildDictationSettingsItem())
+        sub.addItem(buildTextSettingsItem())
+        sub.addItem(buildBehaviorSettingsItem())
+
+        parent.submenu = sub
+        return parent
+    }
+
+    private func buildDictationSettingsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Dictation", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        sub.addItem(buildHotkeySettingsItem())
+        sub.addItem(buildTriggerSettingsItem())
+        sub.addItem(buildInputDeviceItem())
+        sub.addItem(buildDictationLanguageSettingsItem())
+
+        parent.submenu = sub
+        return parent
+    }
+
+    private func buildTextSettingsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Text", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        sub.addItem(buildPasteSuffixSettingsItem())
+        sub.addItem(buildRecentTranscriptLimitSettingsItem())
+        sub.addItem(buildCorrectionsItem())
+
+        let filler = NSMenuItem(title: "Remove filler words (um, uh, ah, er, hmm)",
+                                action: #selector(toggleRemoveFillerWords(_:)),
+                                keyEquivalent: "")
+        filler.target = self
+        filler.state = settings.removeFillerWords ? .on : .off
+        sub.addItem(filler)
+
+        parent.submenu = sub
+        return parent
+    }
+
+    private func buildBehaviorSettingsItem() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Behavior", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+
+        let waveform = NSMenuItem(title: "Show recording waveform",
+                                  action: #selector(toggleRecordingWaveform(_:)),
+                                  keyEquivalent: "")
+        waveform.target = self
+        waveform.state = settings.showRecordingWaveform ? .on : .off
+        sub.addItem(waveform)
+
+        let mute = NSMenuItem(title: "Mute system audio while recording",
+                              action: #selector(toggleMute(_:)),
+                              keyEquivalent: "")
+        mute.target = self
+        mute.state = settings.muteWhileRecording ? .on : .off
+        sub.addItem(mute)
+
+        let sounds = NSMenuItem(title: "Play feedback sounds",
+                                action: #selector(toggleFeedbackSounds(_:)),
+                                keyEquivalent: "")
+        sounds.target = self
+        sounds.state = settings.playFeedbackSounds ? .on : .off
+        sub.addItem(sounds)
+
+        let launchAtLogin = NSMenuItem(title: "Launch at Login",
+                                       action: #selector(toggleLaunchAtLogin(_:)),
+                                       keyEquivalent: "")
+        launchAtLogin.target = self
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            launchAtLogin.state = .on
+        case .requiresApproval:
+            launchAtLogin.state = .mixed
+            launchAtLogin.toolTip = "Approve Parakey in System Settings → General → Login Items."
+        default:
+            launchAtLogin.state = .off
+        }
+        sub.addItem(launchAtLogin)
+
+        let dock = NSMenuItem(title: "Show Parakey in Dock",
+                              action: #selector(toggleDock(_:)),
+                              keyEquivalent: "")
+        dock.target = self
+        dock.state = settings.showInDock ? .on : .off
+        sub.addItem(dock)
+
+        parent.submenu = sub
+        return parent
+    }
+
+    private func buildHotkeySettingsItem() -> NSMenuItem {
         let hkParent = NSMenuItem(title: "Hotkey", action: nil, keyEquivalent: "")
         let hkSub = NSMenu()
         hkSub.autoenablesItems = false
@@ -5323,8 +5776,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             hkSub.addItem(item)
         }
         hkParent.submenu = hkSub
-        sub.addItem(hkParent)
+        return hkParent
+    }
 
+    private func buildTriggerSettingsItem() -> NSMenuItem {
         let tmParent = NSMenuItem(title: "Trigger", action: nil, keyEquivalent: "")
         let tmSub = NSMenu()
         tmSub.autoenablesItems = false
@@ -5338,8 +5793,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             tmSub.addItem(item)
         }
         tmParent.submenu = tmSub
-        sub.addItem(tmParent)
+        return tmParent
+    }
 
+    private func buildDictationLanguageSettingsItem() -> NSMenuItem {
         let langParent = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
         let langSub = NSMenu()
         langSub.autoenablesItems = false
@@ -5359,13 +5816,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         langParent.submenu = langSub
-        sub.addItem(langParent)
+        return langParent
+    }
 
-        sub.addItem(buildInputDeviceItem())
-
-        sub.addItem(.separator())
-
-        // Text handling preferences.
+    private func buildPasteSuffixSettingsItem() -> NSMenuItem {
         let pasteParent = NSMenuItem(title: "After Pasting", action: nil, keyEquivalent: "")
         let pasteSub = NSMenu()
         pasteSub.autoenablesItems = false
@@ -5379,8 +5833,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             pasteSub.addItem(item)
         }
         pasteParent.submenu = pasteSub
-        sub.addItem(pasteParent)
+        return pasteParent
+    }
 
+    private func buildRecentTranscriptLimitSettingsItem() -> NSMenuItem {
         let recentParent = NSMenuItem(title: "Recent Transcripts", action: nil, keyEquivalent: "")
         let recentSub = NSMenu()
         recentSub.autoenablesItems = false
@@ -5394,97 +5850,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             recentSub.addItem(item)
         }
         recentParent.submenu = recentSub
-        sub.addItem(recentParent)
-
-        sub.addItem(buildCorrectionsItem())
-
-        // Filler-word removal sits with the other text-processing
-        // settings (After Pasting, Manage Corrections) rather than the
-        // behaviour toggles below — it transforms the transcript.
-        let filler = NSMenuItem(title: "Remove filler words (um, uh, ah, er, hmm)",
-                                action: #selector(toggleRemoveFillerWords(_:)),
-                                keyEquivalent: "")
-        filler.target = self
-        filler.state = settings.removeFillerWords ? .on : .off
-        sub.addItem(filler)
-
-        sub.addItem(.separator())
-
-        // App behavior toggles.
-        let waveform = NSMenuItem(title: "Show recording waveform",
-                                  action: #selector(toggleRecordingWaveform(_:)),
-                                  keyEquivalent: "")
-        waveform.target = self
-        waveform.state = settings.showRecordingWaveform ? .on : .off
-        sub.addItem(waveform)
-
-        // Mute toggle.
-        let mute = NSMenuItem(title: "Mute system audio while recording",
-                              action: #selector(toggleMute(_:)),
-                              keyEquivalent: "")
-        mute.target = self
-        mute.state = settings.muteWhileRecording ? .on : .off
-        sub.addItem(mute)
-
-        // Feedback sound toggle.
-        let sounds = NSMenuItem(title: "Play feedback sounds",
-                                action: #selector(toggleFeedbackSounds(_:)),
-                                keyEquivalent: "")
-        sounds.target = self
-        sounds.state = settings.playFeedbackSounds ? .on : .off
-        sub.addItem(sounds)
-
-        // Dock toggle.
-        let dock = NSMenuItem(title: "Show Parakey in Dock",
-                              action: #selector(toggleDock(_:)),
-                              keyEquivalent: "")
-        dock.target = self
-        dock.state = settings.showInDock ? .on : .off
-        sub.addItem(dock)
-
-        let launchAtLogin = NSMenuItem(title: "Launch at Login",
-                                       action: #selector(toggleLaunchAtLogin(_:)),
-                                       keyEquivalent: "")
-        launchAtLogin.target = self
-        switch SMAppService.mainApp.status {
-        case .enabled:
-            launchAtLogin.state = .on
-        case .requiresApproval:
-            launchAtLogin.state = .mixed
-            launchAtLogin.toolTip = "Approve Parakey in System Settings → General → Login Items."
-        default:
-            launchAtLogin.state = .off
-        }
-        sub.addItem(launchAtLogin)
-
-        sub.addItem(.separator())
-
-        // Periodic-check toggle. Manual checks live at top level so
-        // users can force a fresh GitHub lookup without changing the
-        // background polling preference.
-        let checkToggle = NSMenuItem(title: "Check for updates automatically",
-                                     action: #selector(toggleCheckForUpdates(_:)),
-                                     keyEquivalent: "")
-        checkToggle.target = self
-        checkToggle.state = settings.checkForUpdates ? .on : .off
-        sub.addItem(checkToggle)
-
-        sub.addItem(.separator())
-
-        let resetModel = NSMenuItem(title: isResettingSpeechModelCache ? "Resetting Speech Model Cache…" : "Reset Speech Model Cache…",
-                                    action: #selector(resetSpeechModelCacheClicked(_:)),
-                                    keyEquivalent: "")
-        resetModel.target = self
-        resetModel.isEnabled = !isRecording
-            && !isBusy
-            && !isTerminating
-            && startupTask == nil
-            && !isResettingSpeechModelCache
-        resetModel.toolTip = "Delete the local speech model cache and download a fresh verified copy."
-        sub.addItem(resetModel)
-
-        parent.submenu = sub
-        return parent
+        return recentParent
     }
 
     private func buildInputDeviceItem() -> NSMenuItem {
@@ -6805,15 +7171,64 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return nil
     }
 
+    private func launchUpdateProgressApp(statePath: String,
+                                         logPath: String,
+                                         targetVersion: String) throws -> String {
+        let sourceAppURL = Bundle.main.bundleURL
+        guard sourceAppURL.pathExtension == "app",
+              let executableName = Bundle.main.executableURL?.lastPathComponent else {
+            throw posixError(EINVAL)
+        }
+
+        let progressAppURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("\(UPDATE_PROGRESS_APP_PREFIX)\(UUID().uuidString).app",
+                                    isDirectory: true)
+        try FileManager.default.copyItem(at: sourceAppURL, to: progressAppURL)
+
+        let executableURL = progressAppURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("MacOS", isDirectory: true)
+            .appendingPathComponent(executableName)
+
+        let proc = Process()
+        proc.executableURL = executableURL
+        proc.arguments = [
+            UPDATE_PROGRESS_ARGUMENT,
+            statePath,
+            logPath,
+            targetVersion,
+            progressAppURL.path,
+        ]
+        proc.environment = systemToolProcessEnvironment()
+
+        do {
+            try proc.run()
+            return progressAppURL.path
+        } catch {
+            try? FileManager.default.removeItem(at: progressAppURL)
+            throw error
+        }
+    }
+
     private func spawnUpdateHelper(brewPath: String, targetVersion: String) {
-        // Detached shell helper that waits for THIS process to exit,
-        // refreshes Homebrew, upgrades/reinstalls the cask, verifies the
-        // installed bundle version, then re-opens /Applications/Parakey.app.
-        // We can't run brew in-process because it replaces the bundle we're
-        // executing from.
+        let statePath: String
+        do {
+            statePath = try createPrivateUpdateProgressStateFile()
+        } catch {
+            log("update: creating progress state failed: \(error.localizedDescription)")
+            showUpdateCouldNotStart(detail: "Parakey couldn't prepare the update progress window.")
+            return
+        }
+
+        // Detached shell helper refreshes Homebrew, downloads the cask,
+        // waits for THIS process to exit, upgrades/reinstalls the app,
+        // verifies the installed bundle version, then re-opens
+        // /Applications/Parakey.app. We can't run the install step
+        // in-process because it replaces the bundle we're executing from.
         let script = updateHelperScript(pid: getpid(),
                                         brewPath: brewPath,
-                                        targetVersion: targetVersion)
+                                        targetVersion: targetVersion,
+                                        statePath: statePath)
         // Use NSTemporaryDirectory() (per-user, typically /var/folders/…/T/)
         // instead of /tmp, and create the script with O_EXCL/O_NOFOLLOW at
         // mode 0600 so an existing leaf path is never overwritten or followed.
@@ -6823,6 +7238,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             helperPath = try writePrivateUpdateHelperScript(script)
         } catch {
+            try? FileManager.default.removeItem(atPath: statePath)
             log("update: writing helper failed: \(error.localizedDescription)")
             showUpdateCouldNotStart(detail: "Parakey couldn't write the update helper script.")
             return
@@ -6832,10 +7248,26 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             helperLog = try openPrivateUpdateHelperLog()
         } catch {
             try? FileManager.default.removeItem(atPath: helperPath)
+            try? FileManager.default.removeItem(atPath: statePath)
             log("update: opening helper log failed: \(error.localizedDescription)")
             showUpdateCouldNotStart(detail: "Parakey couldn't open the update helper log.")
             return
         }
+
+        let progressAppPath: String
+        do {
+            progressAppPath = try launchUpdateProgressApp(statePath: statePath,
+                                                          logPath: helperLog.path,
+                                                          targetVersion: targetVersion)
+        } catch {
+            try? FileManager.default.removeItem(atPath: helperPath)
+            try? FileManager.default.removeItem(atPath: statePath)
+            helperLog.handle.closeFile()
+            log("update: launching progress app failed: \(error.localizedDescription)")
+            showUpdateCouldNotStart(detail: "Parakey couldn't open the update progress window.")
+            return
+        }
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
         proc.arguments = [helperPath]
@@ -6847,10 +7279,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } catch {
             try? FileManager.default.removeItem(atPath: helperPath)
             helperLog.handle.closeFile()
+            try? writePrivateUpdateProgressState(phase: "failed",
+                                                 message: "Parakey couldn't launch the update helper.",
+                                                 to: statePath)
             showUpdateCouldNotStart(detail: "Parakey couldn't launch the update helper.")
             return
         }
-        log("update helper spawned \(privacySafeLogPath(helperPath)), logging to \(privacySafeLogPath(helperLog.path)); quitting for upgrade")
+        log("update helper spawned \(privacySafeLogPath(helperPath)), progress app \(privacySafeLogPath(progressAppPath)), logging to \(privacySafeLogPath(helperLog.path)); quitting for upgrade")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             NSApp.terminate(nil)
         }
@@ -8124,6 +8559,7 @@ private enum ParakeySelfTest {
     private static func testUpdate() throws {
         try testUpdateCheckParsing()
         try testUpdateHelperScript()
+        try testUpdateProgressState()
     }
 
     private static func testUpdateCheckParsing() throws {
@@ -8332,27 +8768,35 @@ private enum ParakeySelfTest {
         let script = updateHelperScript(pid: 123,
                                         brewPath: "/opt/homebrew/bin/brew",
                                         targetVersion: "9.8.7",
+                                        statePath: "/tmp/parakey-update.state",
                                         appPath: "/Applications/Parakey.app",
                                         releasesPageURL: "https://example.test/releases")
         for fragment in [
             "umask 077",
             "TARGET_VERSION='9.8.7'",
+            "STATE_PATH='/tmp/parakey-update.state'",
             "PARAKEY_PID=123",
             "SCRIPT_PATH=\"$0\"",
             "trap cleanup EXIT",
             "/bin/rm -f \"$SCRIPT_PATH\"",
             "printf '[%s] %s\\n' \"$(timestamp)\" \"$*\"",
+            "printf '%s\\t%s\\n' \"$phase\" \"$message\" >\"$tmp\"",
             "CASK_TAP='rcourtman/parakey'",
             "CASK_TOKEN='rcourtman/parakey/parakey'",
             "CASK_INSTALLED_TOKEN='parakey'",
             "PlistBuddy -c \"Print :CFBundleShortVersionString\"",
             "version_at_least \"$installed\" \"$TARGET_VERSION\"",
+            "state \"preparing\" \"Preparing Homebrew for Parakey v$TARGET_VERSION...\"",
+            "state \"downloading\" \"Downloading Parakey v$TARGET_VERSION...\"",
+            "state \"installing\" \"Installing Parakey v$TARGET_VERSION...\"",
             "run_brew tap \"$CASK_TAP\"",
             "run_brew update --force",
             "run_brew fetch --cask --force \"$CASK_TOKEN\"",
             "run_brew upgrade --cask --force --appdir=\"$APP_DIR\" \"$CASK_TOKEN\"",
             "run_brew reinstall --cask --force --appdir=\"$APP_DIR\" \"$CASK_TOKEN\"",
             "installed_target_version",
+            "sleep 2",
+            "state \"complete\" \"Parakey v$TARGET_VERSION is installed.\"",
             "/usr/bin/open \"$APP_PATH\""
         ] {
             guard script.contains(fragment) else {
@@ -8506,6 +8950,65 @@ private enum ParakeySelfTest {
             equals: "hard target\n",
             "update helper log fallback should leave hard-linked targets untouched"
         )
+    }
+
+    private static func testUpdateProgressState() throws {
+        let launch = UpdateProgressLaunch(arguments: [
+            UPDATE_PROGRESS_ARGUMENT,
+            "/tmp/parakey.state",
+            "/tmp/parakey.log",
+            "9.8.7",
+            "/tmp/\(UPDATE_PROGRESS_APP_PREFIX)test.app",
+        ])
+        try expect(launch != nil, equals: true,
+                   "update progress launch arguments should parse")
+        try expect(launch?.targetVersion, equals: Optional("9.8.7"),
+                   "update progress launch should retain target version")
+        try expect(
+            UpdateProgressLaunch(arguments: [UPDATE_PROGRESS_ARGUMENT, "", "/tmp/parakey.log", "9.8.7", "/tmp/app"]) != nil,
+            equals: false,
+            "update progress launch should reject empty paths"
+        )
+
+        let statePath = try createPrivateUpdateProgressStateFile()
+        defer { try? FileManager.default.removeItem(atPath: statePath) }
+
+        var st = stat()
+        guard lstat(statePath, &st) == 0 else {
+            throw SelfTestFailure.failed("update progress state file should exist")
+        }
+        try expect((st.st_mode & S_IFMT) == S_IFREG, equals: true,
+                   "update progress state file should be regular")
+        try expect(Int(st.st_nlink), equals: 1,
+                   "update progress state file should not be hard-linked")
+        try expect(Int(st.st_mode & mode_t(0o777)), equals: 0o600,
+                   "update progress state file should be private to the current user")
+
+        let initial = UpdateProgressState.read(from: statePath)
+        try expect(initial?.phase, equals: Optional("starting"),
+                   "update progress state should default to starting")
+        try expect(initial?.message, equals: Optional("Starting update..."),
+                   "update progress state should default to the startup message")
+
+        try writePrivateUpdateProgressState(phase: "failed\tbad",
+                                            message: "Line 1\nLine 2",
+                                            to: statePath)
+        let failed = UpdateProgressState.read(from: statePath)
+        try expect(failed?.phase, equals: Optional("failed bad"),
+                   "update progress state should sanitize tab characters in phases")
+        try expect(failed?.message, equals: Optional("Line 1 Line 2"),
+                   "update progress state should sanitize newlines in messages")
+
+        let safeCleanupPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("\(UPDATE_PROGRESS_APP_PREFIX)test.app")
+        try expect(isSafeUpdateProgressCleanupPath(safeCleanupPath), equals: true,
+                   "update progress cleanup should allow copied temp app bundles")
+        try expect(isSafeUpdateProgressCleanupPath("/Applications/Parakey.app"), equals: false,
+                   "update progress cleanup should reject non-temp app bundles")
+        let unsafeTempPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("Parakey.app")
+        try expect(isSafeUpdateProgressCleanupPath(unsafeTempPath), equals: false,
+                   "update progress cleanup should reject temp app bundles without the copied-helper prefix")
     }
 
     private static func testHostileRegistryEnvDetection() throws {
@@ -8809,11 +9312,17 @@ if let status = ParakeySelfTest.run(arguments: Array(CommandLine.arguments.dropF
 #endif
 
 let app = NSApplication.shared
-let delegate = ParakeyApp()
-app.delegate = delegate
-// Refuse to start under a tampered launch environment that would
-// redirect FluidAudio's model download to an attacker-controlled host.
-// Runs after NSApplication.shared is initialised so NSAlert.runModal
-// has its event loop.
-refuseHostileRegistryEnvironmentAndExit()
-app.run()
+if let launch = UpdateProgressLaunch(arguments: Array(CommandLine.arguments.dropFirst())) {
+    let delegate = UpdateProgressAppDelegate(launch: launch)
+    app.delegate = delegate
+    app.run()
+} else {
+    let delegate = ParakeyApp()
+    app.delegate = delegate
+    // Refuse to start under a tampered launch environment that would
+    // redirect FluidAudio's model download to an attacker-controlled host.
+    // Runs after NSApplication.shared is initialised so NSAlert.runModal
+    // has its event loop.
+    refuseHostileRegistryEnvironmentAndExit()
+    app.run()
+}
