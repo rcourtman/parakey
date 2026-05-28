@@ -113,6 +113,25 @@ func hotkeyChoice(forKeycode keycode: CGKeyCode) -> HotkeyChoice {
         ?? HOTKEY_CHOICES.first(where: { $0.keycode == DEFAULT_HOTKEY_KEYCODE })!
 }
 
+func normalizedHotkeyKeycode(storedValue value: Any?) -> CGKeyCode? {
+    let raw: Int?
+    if let number = value as? NSNumber {
+        raw = number.intValue
+    } else if let string = value as? String {
+        raw = Int(string.trimmingCharacters(in: .whitespacesAndNewlines))
+    } else {
+        raw = nil
+    }
+
+    guard let raw,
+          raw >= 0,
+          raw <= Int(CGKeyCode.max),
+          HOTKEY_CHOICES.contains(where: { Int($0.keycode) == raw }) else {
+        return nil
+    }
+    return CGKeyCode(raw)
+}
+
 enum TriggerMode: String { case hold, toggle }
 let TRIGGER_DISPLAY: [TriggerMode: String] = [
     .hold: "Press and hold",
@@ -1130,10 +1149,14 @@ final class Settings: @unchecked Sendable {
 
     var hotkeyKeycode: CGKeyCode {
         get {
-            if defaults.object(forKey: Self.keyHotkeyKeycode) == nil { return DEFAULT_HOTKEY_KEYCODE }
-            return CGKeyCode(defaults.integer(forKey: Self.keyHotkeyKeycode))
+            normalizedHotkeyKeycode(storedValue: defaults.object(forKey: Self.keyHotkeyKeycode))
+                ?? DEFAULT_HOTKEY_KEYCODE
         }
-        set { defaults.set(Int(newValue), forKey: Self.keyHotkeyKeycode) }
+        set {
+            let normalized = normalizedHotkeyKeycode(storedValue: NSNumber(value: Int(newValue)))
+                ?? DEFAULT_HOTKEY_KEYCODE
+            defaults.set(Int(normalized), forKey: Self.keyHotkeyKeycode)
+        }
     }
 
     var triggerMode: TriggerMode {
@@ -6245,12 +6268,41 @@ private enum ParakeySelfTest {
     }
 
     private static func testHotkey() throws {
+        try testHotkeyPreferenceNormalization()
         try testHandledHotkeySuppression()
         try testFKeyAutoRepeatSuppressesWithoutAction()
         try testRightModifierReleaseWithLeftFlagStillSet()
         try testTogglePressFlipsOnceAndReleaseIsNoOp()
         try testEscapePassesThroughWhenNotRecording()
         try testEscapeSuppressesCancelRepeatAndKeyUpWhileRecording()
+    }
+
+    private static func testHotkeyPreferenceNormalization() throws {
+        try expect(
+            normalizedHotkeyKeycode(storedValue: NSNumber(value: Int(DEFAULT_HOTKEY_KEYCODE))),
+            equals: DEFAULT_HOTKEY_KEYCODE,
+            "stored hotkey normalization should keep supported numeric keycodes"
+        )
+        try expect(
+            normalizedHotkeyKeycode(storedValue: " 96\n"),
+            equals: CGKeyCode(96),
+            "stored hotkey normalization should accept legacy string keycodes"
+        )
+        try expect(
+            normalizedHotkeyKeycode(storedValue: NSNumber(value: 999)),
+            equals: nil,
+            "stored hotkey normalization should reject unsupported keycodes"
+        )
+        try expect(
+            normalizedHotkeyKeycode(storedValue: NSNumber(value: -1)),
+            equals: nil,
+            "stored hotkey normalization should reject negative keycodes"
+        )
+        try expect(
+            hotkeyChoice(forKeycode: CGKeyCode(999)),
+            equals: hotkeyChoice(forKeycode: DEFAULT_HOTKEY_KEYCODE),
+            "unknown hotkey choices should fall back to the default"
+        )
     }
 
     private static func testReadiness() throws {
