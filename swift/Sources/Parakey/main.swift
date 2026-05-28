@@ -2641,15 +2641,13 @@ func updateHelperScript(pid: pid_t,
                         brewPath: String,
                         targetVersion: String,
                         appPath: String = INSTALLED_APP_BUNDLE_PATH,
-                        releasesPageURL: String = GITHUB_RELEASES_PAGE.absoluteString,
-                        logPath: String = UPDATE_HELPER_LOG_PATH) -> String {
+                        releasesPageURL: String = GITHUB_RELEASES_PAGE.absoluteString) -> String {
     #"""
     #!/bin/bash
     set -u
     umask 077
 
     SCRIPT_PATH="$0"
-    LOG=\#(shellSingleQuoted(logPath))
     BREW=\#(shellSingleQuoted(brewPath))
     TARGET_VERSION=\#(shellSingleQuoted(targetVersion))
     APP_PATH=\#(shellSingleQuoted(appPath))
@@ -2672,48 +2670,8 @@ func updateHelperScript(pid: pid_t,
         /bin/date -u '+%Y-%m-%dT%H:%M:%SZ'
     }
 
-    private_log_path() {
-        local candidate
-        candidate="$(/usr/bin/mktemp -t parakey-update 2>/dev/null)" || return 1
-        /bin/chmod 600 "$candidate" 2>/dev/null || true
-        printf '%s\n' "$candidate"
-    }
-
-    log_is_single_link_regular_file() {
-        local links
-        [ -f "$LOG" ] || return 1
-        links="$(/usr/bin/stat -f '%l' "$LOG" 2>/dev/null)" || return 1
-        [ "$links" = "1" ]
-    }
-
-    prepare_log() {
-        local dir fallback
-        dir="$(/usr/bin/dirname "$LOG")"
-        if ! /bin/mkdir -p "$dir" 2>/dev/null; then
-            fallback="$(private_log_path)" || exit 1
-            LOG="$fallback"
-            return 0
-        fi
-
-        if [ -L "$LOG" ] || { [ -e "$LOG" ] && ! log_is_single_link_regular_file; }; then
-            fallback="$(private_log_path)" || exit 1
-            LOG="$fallback"
-            return 0
-        fi
-
-        : >"$LOG" || {
-            fallback="$(private_log_path)" || exit 1
-            LOG="$fallback"
-        }
-        if ! log_is_single_link_regular_file; then
-            fallback="$(private_log_path)" || exit 1
-            LOG="$fallback"
-        fi
-        /bin/chmod 600 "$LOG" 2>/dev/null || true
-    }
-
     log() {
-        echo "[$(timestamp)] $*" >>"$LOG"
+        printf '[%s] %s\n' "$(timestamp)" "$*"
     }
 
     fail() {
@@ -2747,7 +2705,7 @@ func updateHelperScript(pid: pid_t,
 
     run_brew() {
         log "Running: $BREW $*"
-        "$BREW" "$@" >>"$LOG" 2>&1
+        "$BREW" "$@"
     }
 
     wait_for_parakey_exit() {
@@ -2777,7 +2735,6 @@ func updateHelperScript(pid: pid_t,
         [ -n "$installed" ] && version_at_least "$installed" "$TARGET_VERSION"
     }
 
-    prepare_log
     {
         echo "[$(timestamp)] Parakey update starting"
         echo "Target version: $TARGET_VERSION"
@@ -2787,7 +2744,7 @@ func updateHelperScript(pid: pid_t,
         echo "Cask: $CASK_TOKEN"
         echo "Installed cask name: $CASK_INSTALLED_TOKEN"
         echo "App: $APP_PATH"
-    } >"$LOG"
+    }
 
     wait_for_parakey_exit
 
@@ -2859,6 +2816,59 @@ private func writePrivateUpdateHelperScript(_ script: String,
         return path
     } catch {
         if !closed { _ = Darwin.close(fd) }
+        if removeOnFailure { _ = Darwin.unlink(path) }
+        throw error
+    }
+}
+
+private struct PrivateOutputFile {
+    let path: String
+    let handle: FileHandle
+}
+
+private func openPrivateUpdateHelperLog(preferredPath: String = UPDATE_HELPER_LOG_PATH,
+                                        fallbackDirectory: String = NSTemporaryDirectory()) throws -> PrivateOutputFile {
+    do {
+        let fd = try openPrivateOutputFileDescriptor(atPath: preferredPath,
+                                                     exclusive: false,
+                                                     removeOnFailure: false)
+        return PrivateOutputFile(path: preferredPath,
+                                 handle: FileHandle(fileDescriptor: fd, closeOnDealloc: true))
+    } catch {
+        let fallbackPath = (fallbackDirectory as NSString)
+            .appendingPathComponent("parakey-update-\(UUID().uuidString).log")
+        let fd = try openPrivateOutputFileDescriptor(atPath: fallbackPath,
+                                                     exclusive: true,
+                                                     removeOnFailure: true)
+        return PrivateOutputFile(path: fallbackPath,
+                                 handle: FileHandle(fileDescriptor: fd, closeOnDealloc: true))
+    }
+}
+
+private func openPrivateOutputFileDescriptor(atPath path: String,
+                                             exclusive: Bool,
+                                             removeOnFailure: Bool) throws -> Int32 {
+    let url = URL(fileURLWithPath: path)
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+
+    var flags = O_WRONLY | O_CREAT | O_NOFOLLOW
+    if exclusive { flags |= O_EXCL }
+
+    let fd = Darwin.open(path, flags, PRIVATE_LOG_FILE_MODE)
+    guard fd >= 0 else { throw currentPOSIXError() }
+
+    do {
+        try validateSingleLinkRegularFileDescriptor(fd)
+        guard Darwin.fchmod(fd, PRIVATE_LOG_FILE_MODE) == 0 else {
+            throw currentPOSIXError()
+        }
+        guard Darwin.ftruncate(fd, 0) == 0 else {
+            throw currentPOSIXError()
+        }
+        return fd
+    } catch {
+        _ = Darwin.close(fd)
         if removeOnFailure { _ = Darwin.unlink(path) }
         throw error
     }
@@ -6170,18 +6180,30 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             showUpdateCouldNotStart(detail: "Parakey couldn't write the update helper script.")
             return
         }
+        let helperLog: PrivateOutputFile
+        do {
+            helperLog = try openPrivateUpdateHelperLog()
+        } catch {
+            try? FileManager.default.removeItem(atPath: helperPath)
+            log("update: opening helper log failed: \(error.localizedDescription)")
+            showUpdateCouldNotStart(detail: "Parakey couldn't open the update helper log.")
+            return
+        }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/bash")
         proc.arguments = [helperPath]
         proc.environment = updateProcessEnvironment()
+        proc.standardOutput = helperLog.handle
+        proc.standardError = helperLog.handle
         do {
             try proc.run()
         } catch {
             try? FileManager.default.removeItem(atPath: helperPath)
+            helperLog.handle.closeFile()
             showUpdateCouldNotStart(detail: "Parakey couldn't launch the update helper.")
             return
         }
-        log("update helper spawned at \(helperPath); quitting for upgrade")
+        log("update helper spawned at \(helperPath), logging to \(helperLog.path); quitting for upgrade")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             NSApp.terminate(nil)
         }
@@ -7367,9 +7389,7 @@ private enum ParakeySelfTest {
                                         brewPath: "/opt/homebrew/bin/brew",
                                         targetVersion: "9.8.7",
                                         appPath: "/Applications/Parakey.app",
-                                        releasesPageURL: "https://example.test/releases",
-                                        logPath: (NSHomeDirectory() as NSString)
-                                            .appendingPathComponent("Library/Logs/Parakey-update.log"))
+                                        releasesPageURL: "https://example.test/releases")
         for fragment in [
             "umask 077",
             "TARGET_VERSION='9.8.7'",
@@ -7377,14 +7397,7 @@ private enum ParakeySelfTest {
             "SCRIPT_PATH=\"$0\"",
             "trap cleanup EXIT",
             "/bin/rm -f \"$SCRIPT_PATH\"",
-            "private_log_path()",
-            "/usr/bin/mktemp -t parakey-update",
-            "log_is_single_link_regular_file()",
-            "/usr/bin/stat -f '%l' \"$LOG\"",
-            "[ \"$links\" = \"1\" ]",
-            "[ -L \"$LOG\" ]",
-            "/bin/chmod 600 \"$LOG\"",
-            "prepare_log",
+            "printf '[%s] %s\\n' \"$(timestamp)\" \"$*\"",
             "CASK_TAP='rcourtman/parakey'",
             "CASK_TOKEN='rcourtman/parakey/parakey'",
             "CASK_INSTALLED_TOKEN='parakey'",
@@ -7400,6 +7413,11 @@ private enum ParakeySelfTest {
         ] {
             guard script.contains(fragment) else {
                 throw SelfTestFailure.failed("update helper script missing fragment: \(fragment)")
+            }
+        }
+        for fragment in ["LOG=", ">>\"$LOG\"", ">\"$LOG\"", "prepare_log"] {
+            guard !script.contains(fragment) else {
+                throw SelfTestFailure.failed("update helper script should not reopen a log path: \(fragment)")
             }
         }
 
@@ -7483,6 +7501,66 @@ private enum ParakeySelfTest {
             String(data: try Data(contentsOf: target), encoding: .utf8),
             equals: "target\n",
             "update helper script writer should leave symlink targets untouched"
+        )
+
+        let preferredLog = helperRoot.appendingPathComponent("Parakey-update.log")
+        let helperLog = try openPrivateUpdateHelperLog(preferredPath: preferredLog.path,
+                                                       fallbackDirectory: helperRoot.path)
+        helperLog.handle.write(Data("log\n".utf8))
+        helperLog.handle.closeFile()
+        try expect(helperLog.path, equals: preferredLog.path,
+                   "update helper log should use the preferred path when safe")
+        var logStat = stat()
+        guard lstat(preferredLog.path, &logStat) == 0 else {
+            throw SelfTestFailure.failed("update helper log file should exist")
+        }
+        try expect((logStat.st_mode & S_IFMT) == S_IFREG,
+                   equals: true,
+                   "update helper log should be a regular file")
+        try expect(Int(logStat.st_mode & mode_t(0o777)),
+                   equals: 0o600,
+                   "update helper log should be private to the current user")
+        try expect(Int(logStat.st_nlink),
+                   equals: 1,
+                   "update helper log should not be hard-linked")
+        try expect(
+            String(data: try Data(contentsOf: preferredLog), encoding: .utf8),
+            equals: "log\n",
+            "update helper log should receive helper output"
+        )
+
+        let linkedLogTarget = helperRoot.appendingPathComponent("linked-log-target.log")
+        try Data("target log\n".utf8).write(to: linkedLogTarget)
+        let linkedLog = helperRoot.appendingPathComponent("linked-log.log")
+        try fm.createSymbolicLink(at: linkedLog, withDestinationURL: linkedLogTarget)
+        let fallbackForSymlink = try openPrivateUpdateHelperLog(preferredPath: linkedLog.path,
+                                                                fallbackDirectory: helperRoot.path)
+        fallbackForSymlink.handle.write(Data("fallback\n".utf8))
+        fallbackForSymlink.handle.closeFile()
+        try expect(fallbackForSymlink.path == linkedLog.path,
+                   equals: false,
+                   "update helper log should fall back when preferred path is a symlink")
+        try expect(
+            String(data: try Data(contentsOf: linkedLogTarget), encoding: .utf8),
+            equals: "target log\n",
+            "update helper log fallback should leave symlink targets untouched"
+        )
+
+        let hardLogTarget = helperRoot.appendingPathComponent("hard-log-target.log")
+        try Data("hard target\n".utf8).write(to: hardLogTarget)
+        let hardLog = helperRoot.appendingPathComponent("hard-log.log")
+        try fm.linkItem(at: hardLogTarget, to: hardLog)
+        let fallbackForHardLink = try openPrivateUpdateHelperLog(preferredPath: hardLog.path,
+                                                                 fallbackDirectory: helperRoot.path)
+        fallbackForHardLink.handle.write(Data("hard fallback\n".utf8))
+        fallbackForHardLink.handle.closeFile()
+        try expect(fallbackForHardLink.path == hardLog.path,
+                   equals: false,
+                   "update helper log should fall back when preferred path is hard-linked")
+        try expect(
+            String(data: try Data(contentsOf: hardLogTarget), encoding: .utf8),
+            equals: "hard target\n",
+            "update helper log fallback should leave hard-linked targets untouched"
         )
     }
 
