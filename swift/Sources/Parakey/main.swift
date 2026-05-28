@@ -2224,6 +2224,8 @@ private struct GitHubReleaseResponse: Decodable {
 }
 
 enum UpdateCheck {
+    private static let githubReleaseURLPathPrefix = "/rcourtman/parakey/releases/tag/"
+
     static func fetchLatest() async -> GitHubRelease? {
         var req = URLRequest(url: GITHUB_LATEST_RELEASE_URL)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -2252,14 +2254,46 @@ enum UpdateCheck {
         }
 
         let tag = payload.tagName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !tag.isEmpty else { return nil }
+        guard let version = normalizedReleaseVersion(from: tag) else { return nil }
 
         return GitHubRelease(
             tagName: tag,
-            version: tag.drop(while: { $0 == "v" || $0 == "V" }).description,
+            version: version,
             body: payload.body ?? "",
-            htmlURL: payload.htmlURL ?? GITHUB_RELEASES_PAGE.absoluteString
+            htmlURL: sanitizedReleaseURL(payload.htmlURL)
         )
+    }
+
+    static func normalizedReleaseVersion(from tag: String) -> String? {
+        var version = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let first = version.first, first == "v" || first == "V" {
+            version.removeFirst()
+        }
+
+        let parts = version.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return nil }
+        for part in parts {
+            guard !part.isEmpty,
+                  part.allSatisfy({ ("0"..."9").contains($0) }),
+                  part == "0" || !part.hasPrefix("0") else {
+                return nil
+            }
+        }
+        return parts.joined(separator: ".")
+    }
+
+    static func sanitizedReleaseURL(_ value: String?) -> String {
+        guard let value else { return GITHUB_RELEASES_PAGE.absoluteString }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
+              components.scheme == "https",
+              components.host == "github.com",
+              components.user == nil,
+              components.password == nil,
+              components.path.hasPrefix(githubReleaseURLPathPrefix) else {
+            return GITHUB_RELEASES_PAGE.absoluteString
+        }
+        return trimmed
     }
 }
 
@@ -6359,7 +6393,7 @@ private enum ParakeySelfTest {
                                        httpVersion: nil,
                                        headerFields: nil)!
         let releaseData = Data(
-            #"{"tag_name":"v9.8.7","body":"Notes","html_url":"https://example.test/v9.8.7"}"#.utf8
+            #"{"tag_name":"v9.8.7","body":"Notes","html_url":"https://github.com/rcourtman/parakey/releases/tag/v9.8.7"}"#.utf8
         )
 
         try expect(
@@ -6367,7 +6401,7 @@ private enum ParakeySelfTest {
             equals: GitHubRelease(tagName: "v9.8.7",
                                   version: "9.8.7",
                                   body: "Notes",
-                                  htmlURL: "https://example.test/v9.8.7"),
+                                  htmlURL: "https://github.com/rcourtman/parakey/releases/tag/v9.8.7"),
             "update parsing should decode typed GitHub release payloads"
         )
         try expect(
@@ -6379,6 +6413,42 @@ private enum ParakeySelfTest {
             UpdateCheck.parseLatest(data: Data(#"{"tag_name":""}"#.utf8), response: ok),
             equals: nil,
             "update parsing should reject empty release tags"
+        )
+        try expect(
+            UpdateCheck.parseLatest(data: Data(#"{"tag_name":"latest"}"#.utf8), response: ok),
+            equals: nil,
+            "update parsing should reject non-version release tags"
+        )
+        try expect(
+            UpdateCheck.parseLatest(data: Data(#"{"tag_name":"v01.2.3"}"#.utf8), response: ok),
+            equals: nil,
+            "update parsing should reject non-normal semver tags"
+        )
+        try expect(
+            UpdateCheck.parseLatest(
+                data: Data(#"{"tag_name":"9.8.7","html_url":"https://example.test/v9.8.7"}"#.utf8),
+                response: ok
+            ),
+            equals: GitHubRelease(tagName: "9.8.7",
+                                  version: "9.8.7",
+                                  body: "",
+                                  htmlURL: GITHUB_RELEASES_PAGE.absoluteString),
+            "update parsing should fall back from non-project release URLs"
+        )
+        try expect(
+            UpdateCheck.normalizedReleaseVersion(from: " V1.2.3\n"),
+            equals: "1.2.3",
+            "release version normalization should allow one leading v"
+        )
+        try expect(
+            UpdateCheck.sanitizedReleaseURL("http://github.com/rcourtman/parakey/releases/tag/v9.8.7"),
+            equals: GITHUB_RELEASES_PAGE.absoluteString,
+            "release URL sanitizing should require HTTPS"
+        )
+        try expect(
+            UpdateCheck.sanitizedReleaseURL("https://user@github.com/rcourtman/parakey/releases/tag/v9.8.7"),
+            equals: GITHUB_RELEASES_PAGE.absoluteString,
+            "release URL sanitizing should reject userinfo"
         )
     }
 
