@@ -3487,9 +3487,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var isCoreRuntimeReady = false
     private var isSpeechModelReady = false
     private var isTerminating = false
-    private var didStartUpdateCheckLoop = false
     private var isResettingSpeechModelCache = false
     private var startupTask: Task<Void, Never>?
+    private var updateCheckLoopTask: Task<Void, Never>?
+    private var manualUpdateCheckTask: Task<Void, Never>?
     private var startupStatusTitle = "Loading speech model…"
     private var startupFailure: StartupFailure?
     private var didTouchAudioEngine = false
@@ -3639,6 +3640,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         isTerminating = true
         startupTask?.cancel()
         startupTask = nil
+        updateCheckLoopTask?.cancel()
+        updateCheckLoopTask = nil
+        manualUpdateCheckTask?.cancel()
+        manualUpdateCheckTask = nil
         stopPermissionReadinessMonitor()
         stopSetupChecklistRefreshTimer()
         removeWorkspacePowerObservers()
@@ -6498,9 +6503,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: - Update flow
 
     private func startUpdateCheckLoop() {
-        guard !didStartUpdateCheckLoop else { return }
-        didStartUpdateCheckLoop = true
-        Task.detached { [weak self] in
+        guard updateCheckLoopTask == nil else { return }
+        updateCheckLoopTask = Task.detached { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(UPDATE_CHECK_FIRST_DELAY_SECONDS * 1_000_000_000))
             while !Task.isCancelled {
                 await self?.tickUpdateCheck()
@@ -6599,13 +6603,18 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard !isCheckingForUpdates else { return }
         isCheckingForUpdates = true
         rebuildMenu()
-        Task { [weak self] in
+        manualUpdateCheckTask = Task { [weak self] in
             let release = await UpdateCheck.fetchLatest()
-            self?.finishManualUpdateCheck(release)
+            guard !Task.isCancelled,
+                  let self,
+                  !self.isTerminating else { return }
+            self.manualUpdateCheckTask = nil
+            self.finishManualUpdateCheck(release)
         }
     }
 
     private func finishManualUpdateCheck(_ release: GitHubRelease?) {
+        manualUpdateCheckTask = nil
         isCheckingForUpdates = false
         guard let release else {
             rebuildMenu()
