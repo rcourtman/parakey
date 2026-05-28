@@ -56,6 +56,7 @@ let INSTALLED_APP_BUNDLE_PATH = "/Applications/Parakey.app"
 let UPDATE_HELPER_LOG_PATH = (NSHomeDirectory() as NSString)
     .appendingPathComponent("Library/Logs/Parakey-update.log")
 let MAX_SKIPPED_UPDATE_VERSIONS = 20
+let MAX_CORRECTION_SYNC_PATH_BYTES = 4096
 let RECORDING_HUD_EXPANDED_SIZE = NSSize(width: 232, height: 54)
 let RECORDING_HUD_COLLAPSED_SIZE = NSSize(width: 58, height: 42)
 let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
@@ -411,6 +412,17 @@ enum TranscriptCorrectionsSyncPathError: LocalizedError {
             return "The text correction sync file is a symbolic link. Parakey refuses to sync through symlinks. Reconnect Parakey to a regular file."
         }
     }
+}
+
+func normalizedCorrectionSyncFilePath(_ value: String) -> String? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          trimmed.utf8.count <= MAX_CORRECTION_SYNC_PATH_BYTES,
+          !trimmed.unicodeScalars.contains(where: { $0.value == 0 }),
+          (trimmed as NSString).isAbsolutePath else {
+        return nil
+    }
+    return URL(fileURLWithPath: trimmed).standardizedFileURL.path
 }
 
 func validateCorrectionSyncPath(_ url: URL) throws {
@@ -1218,13 +1230,18 @@ final class Settings: @unchecked Sendable {
     }
 
     var transcriptCorrectionsSyncFile: String {
-        get { defaults.string(forKey: Self.keyTranscriptCorrectionsSyncFile) ?? "" }
+        get {
+            guard let raw = defaults.string(forKey: Self.keyTranscriptCorrectionsSyncFile),
+                  let normalized = normalizedCorrectionSyncFilePath(raw) else {
+                return ""
+            }
+            return normalized
+        }
         set {
-            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                defaults.removeObject(forKey: Self.keyTranscriptCorrectionsSyncFile)
+            if let normalized = normalizedCorrectionSyncFilePath(newValue) {
+                defaults.set(normalized, forKey: Self.keyTranscriptCorrectionsSyncFile)
             } else {
-                defaults.set(trimmed, forKey: Self.keyTranscriptCorrectionsSyncFile)
+                defaults.removeObject(forKey: Self.keyTranscriptCorrectionsSyncFile)
             }
         }
     }
@@ -6490,6 +6507,28 @@ private enum ParakeySelfTest {
             equals: TranscriptCorrectionSyncMergeResult(corrections: [],
                                                         conflictingSources: ["same source"]),
             "sync merge should report same-source edits that changed differently on both sides"
+        )
+
+        let normalizedSyncPath = normalizedCorrectionSyncFilePath(" /tmp/parakey/../Parakey Corrections.parakey-corrections\n")
+        try expect(
+            normalizedSyncPath,
+            equals: "/tmp/Parakey Corrections.parakey-corrections",
+            "correction sync path normalization should trim and standardize absolute paths"
+        )
+        try expect(
+            normalizedCorrectionSyncFilePath("relative/path.parakey-corrections"),
+            equals: nil,
+            "correction sync path normalization should reject relative paths"
+        )
+        try expect(
+            normalizedCorrectionSyncFilePath("/tmp/\u{0}parakey.parakey-corrections"),
+            equals: nil,
+            "correction sync path normalization should reject NUL bytes"
+        )
+        try expect(
+            normalizedCorrectionSyncFilePath("/" + String(repeating: "x", count: MAX_CORRECTION_SYNC_PATH_BYTES)),
+            equals: nil,
+            "correction sync path normalization should reject oversized paths"
         )
 
         // Reject leaf-symlinks at the sync path so an attacker who can
