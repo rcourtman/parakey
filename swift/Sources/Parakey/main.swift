@@ -1026,6 +1026,17 @@ private func appendPrivateLogData(_ data: Data, to url: URL) throws {
     guard fd >= 0 else { throw currentPOSIXError() }
     defer { _ = Darwin.close(fd) }
 
+    var st = stat()
+    guard Darwin.fstat(fd, &st) == 0 else {
+        throw currentPOSIXError()
+    }
+    guard (st.st_mode & S_IFMT) == S_IFREG else {
+        throw posixError(EFTYPE)
+    }
+    guard st.st_nlink == 1 else {
+        throw posixError(EMLINK)
+    }
+
     guard Darwin.fchmod(fd, PRIVATE_LOG_FILE_MODE) == 0 else {
         throw currentPOSIXError()
     }
@@ -1049,6 +1060,10 @@ private func appendPrivateLogData(_ data: Data, to url: URL) throws {
 
 private func currentPOSIXError() -> POSIXError {
     POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+}
+
+private func posixError(_ code: Int32) -> POSIXError {
+    POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
 }
 
 extension ISO8601DateFormatter {
@@ -6166,6 +6181,28 @@ private enum ParakeySelfTest {
             String(data: try Data(contentsOf: target), encoding: .utf8),
             equals: "target\n",
             "log symlink rejection should leave the target untouched"
+        )
+
+        let hardlinkTarget = root.appendingPathComponent("hardlink-target.log")
+        try Data("hardlink target\n".utf8).write(to: hardlinkTarget)
+        let hardlink = root.appendingPathComponent("hardlink.log")
+        guard Darwin.link(hardlinkTarget.path, hardlink.path) == 0 else {
+            throw currentPOSIXError()
+        }
+
+        var hardlinkRejected = false
+        do {
+            try appendPrivateLogData(Data("bad\n".utf8), to: hardlink)
+        } catch {
+            hardlinkRejected = true
+        }
+        try expect(hardlinkRejected,
+                   equals: true,
+                   "log appends should reject hard-linked files")
+        try expect(
+            String(data: try Data(contentsOf: hardlinkTarget), encoding: .utf8),
+            equals: "hardlink target\n",
+            "log hard-link rejection should leave the target untouched"
         )
     }
 
