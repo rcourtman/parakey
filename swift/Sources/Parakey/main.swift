@@ -242,6 +242,10 @@ func limitedRecentTranscripts(_ transcripts: [String], limit: RecentTranscriptLi
     return Array(transcripts.prefix(count))
 }
 
+func normalizedStoredAppVersion(_ value: String) -> String? {
+    UpdateCheck.normalizedReleaseVersion(from: value)
+}
+
 func normalizedSkippedUpdateVersions(_ values: [String]) -> [String] {
     var result: [String] = []
     var seen = Set<String>()
@@ -1220,8 +1224,20 @@ final class Settings: @unchecked Sendable {
     }
 
     var lastSeenVersion: String {
-        get { defaults.string(forKey: Self.keyLastSeenVersion) ?? "" }
-        set { defaults.set(newValue, forKey: Self.keyLastSeenVersion) }
+        get {
+            guard let raw = defaults.string(forKey: Self.keyLastSeenVersion),
+                  let normalized = normalizedStoredAppVersion(raw) else {
+                return ""
+            }
+            return normalized
+        }
+        set {
+            if let normalized = normalizedStoredAppVersion(newValue) {
+                defaults.set(normalized, forKey: Self.keyLastSeenVersion)
+            } else {
+                defaults.removeObject(forKey: Self.keyLastSeenVersion)
+            }
+        }
     }
 
     var skippedVersions: [String] {
@@ -7090,6 +7106,21 @@ private enum ParakeySelfTest {
             UpdateCheck.normalizedReleaseVersion(from: " V1.2.3\n"),
             equals: "1.2.3",
             "release version normalization should allow one leading v"
+        )
+        try expect(
+            normalizedStoredAppVersion(" v2.3.4\n"),
+            equals: "2.3.4",
+            "stored app version normalization should canonicalize release-style versions"
+        )
+        try expect(
+            normalizedStoredAppVersion("2.3"),
+            equals: nil,
+            "stored app version normalization should reject incomplete versions"
+        )
+        try expect(
+            normalizedStoredAppVersion("v999999999999999999999999.2.3"),
+            equals: nil,
+            "stored app version normalization should reject oversized numeric components"
         )
         try expect(
             UpdateCheck.sanitizedReleaseURL("http://github.com/rcourtman/parakey/releases/tag/v9.8.7",
