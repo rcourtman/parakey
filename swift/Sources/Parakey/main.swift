@@ -2260,7 +2260,7 @@ enum UpdateCheck {
             tagName: tag,
             version: version,
             body: payload.body ?? "",
-            htmlURL: sanitizedReleaseURL(payload.htmlURL)
+            htmlURL: sanitizedReleaseURL(payload.htmlURL, expectedTag: tag)
         )
     }
 
@@ -2282,7 +2282,7 @@ enum UpdateCheck {
         return parts.joined(separator: ".")
     }
 
-    static func sanitizedReleaseURL(_ value: String?) -> String {
+    static func sanitizedReleaseURL(_ value: String?, expectedTag: String) -> String {
         guard let value else { return GITHUB_RELEASES_PAGE.absoluteString }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: trimmed),
@@ -2290,7 +2290,9 @@ enum UpdateCheck {
               components.host == "github.com",
               components.user == nil,
               components.password == nil,
-              components.path.hasPrefix(githubReleaseURLPathPrefix) else {
+              components.query == nil,
+              components.fragment == nil,
+              components.path == "\(githubReleaseURLPathPrefix)\(expectedTag)" else {
             return GITHUB_RELEASES_PAGE.absoluteString
         }
         return trimmed
@@ -6436,19 +6438,38 @@ private enum ParakeySelfTest {
             "update parsing should fall back from non-project release URLs"
         )
         try expect(
+            UpdateCheck.parseLatest(
+                data: Data(#"{"tag_name":"v9.8.7","html_url":"https://github.com/rcourtman/parakey/releases/tag/v9.8.8"}"#.utf8),
+                response: ok
+            ),
+            equals: GitHubRelease(tagName: "v9.8.7",
+                                  version: "9.8.7",
+                                  body: "",
+                                  htmlURL: GITHUB_RELEASES_PAGE.absoluteString),
+            "update parsing should fall back when release URL tag does not match the payload tag"
+        )
+        try expect(
             UpdateCheck.normalizedReleaseVersion(from: " V1.2.3\n"),
             equals: "1.2.3",
             "release version normalization should allow one leading v"
         )
         try expect(
-            UpdateCheck.sanitizedReleaseURL("http://github.com/rcourtman/parakey/releases/tag/v9.8.7"),
+            UpdateCheck.sanitizedReleaseURL("http://github.com/rcourtman/parakey/releases/tag/v9.8.7",
+                                            expectedTag: "v9.8.7"),
             equals: GITHUB_RELEASES_PAGE.absoluteString,
             "release URL sanitizing should require HTTPS"
         )
         try expect(
-            UpdateCheck.sanitizedReleaseURL("https://user@github.com/rcourtman/parakey/releases/tag/v9.8.7"),
+            UpdateCheck.sanitizedReleaseURL("https://user@github.com/rcourtman/parakey/releases/tag/v9.8.7",
+                                            expectedTag: "v9.8.7"),
             equals: GITHUB_RELEASES_PAGE.absoluteString,
             "release URL sanitizing should reject userinfo"
+        )
+        try expect(
+            UpdateCheck.sanitizedReleaseURL("https://github.com/rcourtman/parakey/releases/tag/v9.8.7?download=1",
+                                            expectedTag: "v9.8.7"),
+            equals: GITHUB_RELEASES_PAGE.absoluteString,
+            "release URL sanitizing should reject query strings"
         )
     }
 
