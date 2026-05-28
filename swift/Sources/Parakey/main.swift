@@ -899,6 +899,54 @@ struct TranscriptCorrectionSyncMergeResult: Equatable {
     let conflictingSources: [String]
 }
 
+struct CorrectionSyncFileFingerprint: Equatable {
+    let modifiedAt: Date?
+    let size: Int?
+    let sha256: String
+}
+
+func correctionSyncFingerprint(for url: URL) -> CorrectionSyncFileFingerprint? {
+    do {
+        let digest = try correctionSyncFileSHA256Hex(url)
+        let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        return CorrectionSyncFileFingerprint(modifiedAt: values.contentModificationDate,
+                                             size: values.fileSize,
+                                             sha256: digest)
+    } catch {
+        return nil
+    }
+}
+
+private func correctionSyncFileSHA256Hex(_ url: URL) throws -> String {
+    let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    guard fd >= 0 else {
+        throw currentPOSIXError()
+    }
+    defer { _ = Darwin.close(fd) }
+
+    var st = stat()
+    guard Darwin.fstat(fd, &st) == 0 else {
+        throw currentPOSIXError()
+    }
+    guard (st.st_mode & S_IFMT) == S_IFREG else {
+        throw TranscriptCorrectionsTransferError.notRegularFile
+    }
+    guard st.st_size <= TranscriptCorrectionsTransfer.maxFileBytes else {
+        throw TranscriptCorrectionsTransferError.fileTooLarge(Int(st.st_size),
+                                                              TranscriptCorrectionsTransfer.maxFileBytes)
+    }
+
+    let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+    var hasher = SHA256()
+    while true {
+        guard let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty else {
+            break
+        }
+        hasher.update(data: chunk)
+    }
+    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+}
+
 func mergedTranscriptCorrectionsForSync(base: [TranscriptCorrection],
                                         local: [TranscriptCorrection],
                                         remote: [TranscriptCorrection]) -> TranscriptCorrectionSyncMergeResult {
@@ -3472,11 +3520,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private enum CorrectionImportChoice {
         case merge
         case replace
-    }
-
-    private struct CorrectionSyncFileFingerprint: Equatable {
-        let modifiedAt: Date?
-        let size: Int?
     }
 
     private var correctionSyncTimer: Timer?
@@ -6095,14 +6138,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func correctionSyncFingerprint(for url: URL) -> CorrectionSyncFileFingerprint? {
-        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]) else {
-            return nil
-        }
-        return CorrectionSyncFileFingerprint(modifiedAt: values.contentModificationDate,
-                                             size: values.fileSize)
-    }
-
     private func stopCorrectionSyncAfterConflict(conflictingSources: [String]) {
         settings.transcriptCorrectionsSyncFile = ""
         correctionSyncTimer?.invalidate()
@@ -7552,6 +7587,38 @@ private enum ParakeySelfTest {
         }
         try expect(rejected, equals: true,
                    "validateCorrectionSyncPath should reject a leaf symlink")
+        try expect(
+            correctionSyncFingerprint(for: link),
+            equals: nil,
+            "correction sync fingerprinting should not follow leaf symlinks"
+        )
+
+        let sameSizeA = tmpDir.appendingPathComponent("parakey-sync-fingerprint-a-\(UUID().uuidString).json")
+        let sameSizeB = tmpDir.appendingPathComponent("parakey-sync-fingerprint-b-\(UUID().uuidString).json")
+        try Data("aaaa".utf8).write(to: sameSizeA)
+        try Data("bbbb".utf8).write(to: sameSizeB)
+        defer {
+            try? fm.removeItem(at: sameSizeA)
+            try? fm.removeItem(at: sameSizeB)
+        }
+        let sharedModifiedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try fm.setAttributes([.modificationDate: sharedModifiedAt], ofItemAtPath: sameSizeA.path)
+        try fm.setAttributes([.modificationDate: sharedModifiedAt], ofItemAtPath: sameSizeB.path)
+
+        guard let fingerprintA = correctionSyncFingerprint(for: sameSizeA),
+              let fingerprintB = correctionSyncFingerprint(for: sameSizeB) else {
+            throw SelfTestFailure.failed("correction sync fingerprint should read regular files")
+        }
+        try expect(
+            fingerprintA.size,
+            equals: fingerprintB.size,
+            "same-size sync files should have equal size metadata in the fingerprint"
+        )
+        try expect(
+            fingerprintA == fingerprintB,
+            equals: false,
+            "correction sync fingerprint should detect content changes even when file size matches"
+        )
     }
 
     private static func testFillerWordRemoval() throws {
