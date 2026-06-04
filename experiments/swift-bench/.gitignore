@@ -3,4 +3,9 @@
 Package.resolved
 test-audio/*.wav
 test-audio/*.txt
+real-audio/*
+!real-audio/
+!real-audio/README.md
+real-results/
+power-results/
 *.log

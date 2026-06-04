@@ -73,7 +73,7 @@ Useful menu items:
 
 - **Setup Checklist…** — model, permissions, and hotkey readiness
 - **Settings → Hotkey** — choose Right Option, Right Control, Right
-  Command, or selected F-keys
+  Command, selected F-keys, or record another F-key/right modifier
 - **Settings → Trigger** — hold-to-talk or press-to-toggle
 - **Settings → Language** — auto-detect (default) or pin to one of 18
   Latin/Cyrillic-script languages to prevent wrong-script
@@ -81,7 +81,8 @@ Useful menu items:
 - **Settings → After Pasting** — append space, append newline, or no
   suffix
 - **Settings → Text Corrections** — local phrase replacements for
-  recurring mishearings
+  recurring mishearings, including a prefilled correction from the
+  last in-memory transcript
 - **Settings → Remove filler words** — opt-in deterministic strip of
   "um", "uh", "ah", "er", "erm", "hm" (and elongated variants)
 - **Copy/Save Diagnostics** — privacy-safe support report with app state, settings counts, and bounded recent logs

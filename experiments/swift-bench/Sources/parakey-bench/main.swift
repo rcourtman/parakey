@@ -6,7 +6,7 @@
 // all three backends can be cross-referenced in one table.
 //
 // Usage:
-//   parakey-bench --file path/to/audio.wav [--trials 5] [--backend apple|v3|110m|fluid|both]
+//   parakey-bench --file path/to/audio.wav [--trials 5] [--backend apple|v3|110m|fluid|both] [--redact-transcripts]
 //
 // Audio must be 16 kHz mono Float32 (or convertible to that —
 // AVAudioFile + AVAudioPCMBuffer handles the conversion).
@@ -29,6 +29,10 @@ struct CLIArgs {
     // "<file-stem>.txt" (written by generate-test-audio.sh); if neither
     // exists, WER is skipped.
     var ref: String? = nil
+    // Keep transcript/reference contents out of stdout while still
+    // computing latency, memory, and WER. Used for local real-dictation
+    // regression reports that should remain privacy-safe by default.
+    var redactTranscripts = false
 }
 
 func parseArgs() -> CLIArgs {
@@ -37,6 +41,7 @@ func parseArgs() -> CLIArgs {
     var trials: Int = 5
     var backend: String = "v3"
     var ref: String? = nil
+    var redactTranscripts = false
     while let arg = iter.next() {
         switch arg {
         case "--file":
@@ -47,9 +52,11 @@ func parseArgs() -> CLIArgs {
             if let v = iter.next() { backend = v }
         case "--ref":
             if let v = iter.next() { ref = v }
+        case "--redact-transcripts":
+            redactTranscripts = true
         case "-h", "--help":
             print("""
-            usage: parakey-bench --file <wav> [--trials N] [--backend apple|v3|110m|fluid|both] [--ref "text"]
+            usage: parakey-bench --file <wav> [--trials N] [--backend apple|v3|110m|fluid|both] [--ref "text"] [--redact-transcripts]
 
               --backend  v3    FluidAudio Parakeet TDT v3 — production model (default)
                          110m  FluidAudio Parakeet TDT-CTC 110M (smaller English model;
@@ -58,6 +65,9 @@ func parseArgs() -> CLIArgs {
                          apple Apple SpeechAnalyzer (macOS 26+)
                          both  apple + v3 + 110m
               --ref      reference transcript for WER; defaults to <file>.txt if present
+              --redact-transcripts
+                         omit reference and hypothesis text from output while still
+                         reporting WER; useful for private real-dictation runs
 
             For a clean per-model memory number, run one model per process
             (--backend v3, then --backend 110m) — footprint is cumulative
@@ -73,7 +83,7 @@ func parseArgs() -> CLIArgs {
         FileHandle.standardError.write(Data("--file is required\n".utf8))
         exit(2)
     }
-    return CLIArgs(file: file, trials: trials, backend: backend, ref: ref)
+    return CLIArgs(file: file, trials: trials, backend: backend, ref: ref, redactTranscripts: redactTranscripts)
 }
 
 // MARK: - Audio loading
@@ -83,6 +93,30 @@ func parseArgs() -> CLIArgs {
 // rather than trusting the caller to have pre-resampled.
 
 enum AudioLoadError: Error { case openFailed, convertFailed, emptyBuffer }
+
+private final class SingleBufferConverterInputProvider: @unchecked Sendable {
+    private let buffer: AVAudioPCMBuffer
+    private let lock = NSLock()
+    private var didProvideBuffer = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func provide(outStatus: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if didProvideBuffer {
+            outStatus.pointee = .endOfStream
+            return nil
+        }
+
+        didProvideBuffer = true
+        outStatus.pointee = .haveData
+        return buffer
+    }
+}
 
 func load16kMono(url: URL) throws -> [Float] {
     let file = try AVAudioFile(forReading: url)
@@ -111,10 +145,9 @@ func load16kMono(url: URL) throws -> [Float] {
     else { throw AudioLoadError.convertFailed }
 
     var error: NSError?
-    var fed = false
+    let inputProvider = SingleBufferConverterInputProvider(buffer: srcBuf)
     let status = converter.convert(to: dstBuf, error: &error) { _, outStatus in
-        if fed { outStatus.pointee = .endOfStream; return nil }
-        fed = true; outStatus.pointee = .haveData; return srcBuf
+        inputProvider.provide(outStatus: outStatus)
     }
     if status == .error { throw error ?? AudioLoadError.convertFailed }
 
@@ -391,7 +424,16 @@ func runBackend(_ backend: ASRBackend, samples: [Float], trials: Int) async thro
     return (out, peak)
 }
 
-func summarize(_ name: String, _ results: [TrialResult], reference: String?, baseline: UInt64, peak: UInt64) {
+func redactedTextLabel(_ text: String) -> String {
+    "<redacted \(text.count) chars>"
+}
+
+func summarize(_ name: String,
+               _ results: [TrialResult],
+               reference: String?,
+               baseline: UInt64,
+               peak: UInt64,
+               redactTranscripts: Bool) {
     let times = results.map(\.elapsed)
     let p50 = percentile(times, 0.5)
     let mn = times.min() ?? 0
@@ -407,10 +449,14 @@ func summarize(_ name: String, _ results: [TrialResult], reference: String?, bas
         return " [WER \(String(format: "%.1f%%", werPercent(reference: reference, hypothesis: text)))]"
     }
     if texts.count == 1, let only = texts.first {
-        print("    transcript:\(werTag(only)) \"\(only)\"")
+        let display = redactTranscripts ? redactedTextLabel(only) : "\"\(only)\""
+        print("    transcript:\(werTag(only)) \(display)")
     } else {
         print("    transcripts (\(texts.count) distinct):")
-        for t in texts.sorted() { print("      •\(werTag(t)) \"\(t)\"") }
+        for t in texts.sorted() {
+            let display = redactTranscripts ? redactedTextLabel(t) : "\"\(t)\""
+            print("      •\(werTag(t)) \(display)")
+        }
     }
 }
 
@@ -437,7 +483,8 @@ struct ParakeyBench {
             return nil
         }()
         if let reference {
-            log("reference: \"\(reference)\"")
+            let display = args.redactTranscripts ? redactedTextLabel(reference) : "\"\(reference)\""
+            log("reference: \(display)")
         } else {
             log("no reference (--ref or <file>.txt) — WER skipped")
         }
@@ -463,8 +510,8 @@ struct ParakeyBench {
             backends.append(FluidBackend(name: "fluid-ParakeetTDTv3", version: .v3))
         }
         if args.backend == "110m" || args.backend == "fluid" || args.backend == "both" {
-            // Kept wired up but off the default path: as of FluidAudio main
-            // (2026-05) the 110m CoreML bundle won't load — missing
+            // Kept wired up but off the default path: as of the current
+            // tested FluidAudio revision the 110m CoreML bundle won't load — missing
             // CtcHead.mlmodelc plus a decoder shape mismatch (2×1×640 vs
             // 1×1×640). prepare() fails gracefully and the run continues.
             // Re-test with --backend 110m once it's fixed upstream.
@@ -494,7 +541,12 @@ struct ParakeyBench {
 
             do {
                 let (results, peak) = try await runBackend(backend, samples: samples, trials: args.trials)
-                summarize(backend.name, results, reference: reference, baseline: baseline, peak: peak)
+                summarize(backend.name,
+                          results,
+                          reference: reference,
+                          baseline: baseline,
+                          peak: peak,
+                          redactTranscripts: args.redactTranscripts)
             } catch {
                 log("  run(\(backend.name)) FAILED: \(error)")
             }

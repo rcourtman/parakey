@@ -43,6 +43,69 @@ swift build
 ../../.venv/bin/python bench-py.py --file test-audio/short-clean.wav --trials 5
 ```
 
+The Swift benchmark pins FluidAudio to the same revision as the
+production app. Temporarily change `Package.swift` only when evaluating
+an upstream FluidAudio bump, then restore or intentionally update both
+manifests together.
+
+## Private real-dictation regression
+
+TTS is useful for latency and smoke testing, but it is not a substitute
+for human dictation. For local accuracy checks, put private clips under
+`real-audio/` with matching `.txt` reference sidecars:
+
+```text
+real-audio/
+  short-note.wav
+  short-note.txt
+  noisy-room.m4a
+  noisy-room.txt
+```
+
+Then run:
+
+```sh
+./run-real-dictation-regression.sh --backend v3 --trials 5
+```
+
+The script normalizes audio through `afconvert`, runs the Swift bench
+for each clip, and writes an ignored report under `real-results/`.
+Transcript text, fixture filenames, and local paths are redacted by
+default while WER, latency, and memory numbers remain visible. Pass
+`--show-transcripts` and `--show-paths` only for local reports you do not
+intend to share.
+
+For a quick non-ASR check of argument parsing and report redaction:
+
+```sh
+./run-real-dictation-regression.sh --self-test
+```
+
+## Power measurement
+
+Latency is already below the threshold where another few milliseconds are
+likely to matter. To compare energy impact on the same Mac, run:
+
+```sh
+sudo -v
+./bench-power.sh --file test-audio/medium-clean.wav --backend v3 --trials 20
+```
+
+This samples `cpu_power,gpu_power,ane_power` with `powermetrics` while
+`parakey-bench` runs, then writes a Markdown summary plus raw logs under
+`power-results/`. Transcript text, fixture filenames, and local paths are
+redacted by default; pass `--show-transcripts` or `--show-paths` only for
+local reports you do not intend to share. `powermetrics` values are
+estimates, so use them only for same-machine comparisons across backends,
+dependency versions, or model changes.
+
+For a quick no-sudo check of argument parsing, path redaction, and report
+generation:
+
+```sh
+./bench-power.sh --self-test
+```
+
 ## Results
 
 Mac mini M4, 10 cores, 16 GB, macOS 26.4.1, Xcode/Swift 6.3.
@@ -71,8 +134,9 @@ Mac mini M4, 10 cores, 16 GB, macOS 26.4.1, Xcode/Swift 6.3.
   measurable improvement but not a felt one — both finish before the
   user has finished releasing the dictation key.
 - **The likely real win for `fluid` is power, not latency.** ANE
-  draws materially less power than GPU. This benchmark doesn't
-  quantify that — `powermetrics` integration is a future addition.
+  draws materially less power than GPU. Use `bench-power.sh` for
+  same-machine power comparisons when evaluating backend or dependency
+  changes.
 
 **Transcript samples (best of 5 per backend):**
 
@@ -159,13 +223,11 @@ were trained on. To get real accuracy numbers, drop your own
 recordings into `test-audio/` — the bench loads any 16 kHz mono WAV
 by filename.
 
-### Power not measured (yet)
+### Power measurement
 
-We measure compute latency, not energy. The latency gap is real but
-already below human perception. The argument for `fluid` rests
-mostly on power-per-inference, which we haven't quantified. A
-`powermetrics`-based companion script could capture that; it's not
-done.
+The core bench measures compute latency. Use `bench-power.sh` when the
+question is battery impact or ANE/GPU power draw. `powermetrics` is noisy,
+so compare runs on the same Mac, OS build, power source, and thermal state.
 
 ## What this benchmark drove
 
@@ -198,7 +260,5 @@ sanity check. Re-run it whenever:
   the entitlements gap so the `apple` backend runs end-to-end).
 - A future Parakeet / MLX / WhisperKit model arrives and you want
   to evaluate it against the current numbers.
-
-`powermetrics` integration would let it answer the
-power-on-battery question, which the latency numbers leave
-unanswered. Not done.
+- A latency-equivalent change might still affect battery life; use
+  `bench-power.sh` to compare power on the same machine.

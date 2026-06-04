@@ -20,7 +20,10 @@
 //
 // macOS 26 is required for `SpeechAnalyzer` / `DictationTranscriber`.
 // FluidAudio itself targets macOS 14+, so the gating factor is
-// Apple's framework, not the dependency.
+// Apple's framework, not the dependency. Keep the FluidAudio revision
+// pinned to the production app by default so benchmark numbers do not
+// drift under us; temporarily change this only when evaluating an
+// upstream FluidAudio bump.
 import PackageDescription
 
 let package = Package(
@@ -32,7 +35,8 @@ let package = Package(
         .executable(name: "parakey-bench", targets: ["parakey-bench"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", branch: "main"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git",
+                 revision: "fb8b779380a978da636253b52d6106975de293d5"),
     ],
     targets: [
         .executableTarget(

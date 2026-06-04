@@ -67,10 +67,12 @@ itself through the `--self-test` lane on the same binary. Suites:
 state machine), `paste` (suffix formatting), `history`
 (`RecentTranscriptLimit` slicing), `corrections` (transcript
 correction apply/merge), `fillers` (filler-word removal),
-`audio-level` (level metering), `audio-input` (input-device
-filtering), `model-status` (speech-model startup labels),
-`audio-route` (route-change decisions), `power-state` (sleep/wake
-recovery decisions), `model-integrity` (speech-model hash
+`audio-level` (level metering), `audio-conversion` (offline
+conversion/downmix rules), `audio-input` (input-device filtering),
+`model-status` (speech-model startup labels), `audio-route`
+(route-change decisions), `recording-lifecycle` (release/post-
+processing decisions), `power-state` (sleep/wake recovery decisions),
+`model-integrity` (speech-model hash
 verification), `update` (GitHub update parsing and update-helper
 script), `hostile-env` (model-registry override detection),
 `logging` (log-path redaction + private append), `diagnostics`
@@ -82,8 +84,13 @@ ApplicationServices, IOKit, QuartzCore, and FluidAudio — there is
 nothing meaningful left to mock. CI
 (`.github/workflows/check.yml`) runs the self-test suite plus
 repo-hygiene syntax checks for shell, plist, XML/SVG, YAML, JSON,
-and HTML on `macos-26`; the full build/notarise path lives in
-`ship-swift.sh` on the maintainer's Mac.
+and HTML on `macos-26`. It also runs the packaged-app smoke test,
+release-script self-test, model-manifest self-test, log-privacy guard,
+and benchmark helper self-tests
+(`experiments/swift-bench/bench-power.sh --self-test` and
+`experiments/swift-bench/run-real-dictation-regression.sh --self-test`);
+the full build/notarise path lives in `ship-swift.sh` on the
+maintainer's Mac.
 
 If you need to validate ASR latency or correctness, use
 `experiments/swift-bench/` against the WAVs in `test-audio/`.
@@ -432,10 +439,12 @@ git clone https://github.com/rcourtman/homebrew-parakey ../homebrew-parakey
   bit for modifier hotkeys and `nil` for plain keys (e.g. F-keys).
   The menu is built from the list automatically.
 - **Change the bundled FluidAudio version**: `swift/Package.swift`
-  dependency declaration. After bumping, run `swift package update`,
-  rebuild, and re-run the bench in `experiments/swift-bench/` to
-  confirm latency didn't regress. Commit `Package.resolved` alongside
-  `Package.swift`.
+  dependency declaration. Mirror the same revision in
+  `experiments/swift-bench/Package.swift` so benchmark numbers remain
+  tied to the production dependency. After bumping, run
+  `swift package update`, rebuild, and re-run the bench in
+  `experiments/swift-bench/` to confirm latency didn't regress.
+  Commit `Package.resolved` alongside `Package.swift`.
 - **Add a model swap or streaming mode**: route every FluidAudio
   call through `TranscriptionWorker`. Never instantiate `AsrManager`
   outside that actor.

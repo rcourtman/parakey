@@ -106,10 +106,39 @@ struct HotkeyChoice: Equatable {
     let modifierFlag: CGEventFlags?
 }
 
+let RIGHT_MODIFIER_HOTKEY_CHOICES: [HotkeyChoice] = [
+    HotkeyChoice(name: "Right Control", keycode: 62, isModifier: true, modifierFlag: .maskControl),
+    HotkeyChoice(name: "Right Option", keycode: 61, isModifier: true, modifierFlag: .maskAlternate),
+    HotkeyChoice(name: "Right Command", keycode: 54, isModifier: true, modifierFlag: .maskCommand),
+]
+
+let FUNCTION_KEY_NAMES_BY_KEYCODE: [CGKeyCode: String] = [
+    122: "F1",
+    120: "F2",
+    99: "F3",
+    118: "F4",
+    96: "F5",
+    97: "F6",
+    98: "F7",
+    100: "F8",
+    101: "F9",
+    109: "F10",
+    103: "F11",
+    111: "F12",
+    105: "F13",
+    107: "F14",
+    113: "F15",
+    106: "F16",
+    64: "F17",
+    79: "F18",
+    80: "F19",
+    90: "F20",
+]
+
 let HOTKEY_CHOICES: [HotkeyChoice] = [
-    HotkeyChoice(name: "Right Control", keycode: 62,  isModifier: true,  modifierFlag: .maskControl),
-    HotkeyChoice(name: "Right Option",  keycode: 61,  isModifier: true,  modifierFlag: .maskAlternate),
-    HotkeyChoice(name: "Right Command", keycode: 54,  isModifier: true,  modifierFlag: .maskCommand),
+    RIGHT_MODIFIER_HOTKEY_CHOICES[0],
+    RIGHT_MODIFIER_HOTKEY_CHOICES[1],
+    RIGHT_MODIFIER_HOTKEY_CHOICES[2],
     HotkeyChoice(name: "F5",            keycode: 96,  isModifier: false, modifierFlag: nil),
     HotkeyChoice(name: "F6",            keycode: 97,  isModifier: false, modifierFlag: nil),
     HotkeyChoice(name: "F13",           keycode: 105, isModifier: false, modifierFlag: nil),
@@ -117,8 +146,18 @@ let HOTKEY_CHOICES: [HotkeyChoice] = [
     HotkeyChoice(name: "F19",           keycode: 80,  isModifier: false, modifierFlag: nil),
 ]
 
+func recordableHotkeyChoice(forKeycode keycode: CGKeyCode) -> HotkeyChoice? {
+    if let choice = RIGHT_MODIFIER_HOTKEY_CHOICES.first(where: { $0.keycode == keycode }) {
+        return choice
+    }
+    if let name = FUNCTION_KEY_NAMES_BY_KEYCODE[keycode] {
+        return HotkeyChoice(name: name, keycode: keycode, isModifier: false, modifierFlag: nil)
+    }
+    return nil
+}
+
 func hotkeyChoice(forKeycode keycode: CGKeyCode) -> HotkeyChoice {
-    HOTKEY_CHOICES.first(where: { $0.keycode == keycode })
+    recordableHotkeyChoice(forKeycode: keycode)
         ?? HOTKEY_CHOICES.first(where: { $0.keycode == DEFAULT_HOTKEY_KEYCODE })!
 }
 
@@ -135,7 +174,7 @@ func normalizedHotkeyKeycode(storedValue value: Any?) -> CGKeyCode? {
     guard let raw,
           raw >= 0,
           raw <= Int(CGKeyCode.max),
-          HOTKEY_CHOICES.contains(where: { Int($0.keycode) == raw }) else {
+          recordableHotkeyChoice(forKeycode: CGKeyCode(raw)) != nil else {
         return nil
     }
     return CGKeyCode(raw)
@@ -885,6 +924,26 @@ func normalizedTranscriptCorrections(_ corrections: [TranscriptCorrection]) -> [
     }
 
     return result
+}
+
+private func utf8ClippedPrefix(_ text: String, maxBytes: Int) -> String {
+    guard maxBytes > 0 else { return "" }
+    var result = ""
+    var usedBytes = 0
+    for character in text {
+        let byteCount = String(character).utf8.count
+        guard usedBytes + byteCount <= maxBytes else { break }
+        result.append(character)
+        usedBytes += byteCount
+    }
+    return result
+}
+
+func correctionSourcePrefill(from transcript: String) -> String {
+    let flat = transcript
+        .split(whereSeparator: { $0.isWhitespace })
+        .joined(separator: " ")
+    return utf8ClippedPrefix(flat, maxBytes: MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES)
 }
 
 func normalizedAudioLevel(from samples: [Float]) -> Float {
@@ -1748,6 +1807,72 @@ private struct HotkeyEventSnapshot: Sendable {
     }
 }
 
+private enum HotkeyRecordingDecision: Equatable {
+    case accept(HotkeyChoice)
+    case reject(String)
+    case ignore
+}
+
+private enum HotkeyPreferenceUpdateResult: Equatable {
+    case saved(HotkeyChoice)
+    case rejected(String)
+    case rolledBack(previous: HotkeyChoice, message: String)
+}
+
+private func hotkeyPreferenceUpdateResult(
+    requested: HotkeyChoice,
+    previous: HotkeyChoice,
+    persistedKeycode: CGKeyCode
+) -> HotkeyPreferenceUpdateResult {
+    guard let recordable = recordableHotkeyChoice(forKeycode: requested.keycode) else {
+        return .rejected("That key cannot be used for dictation.")
+    }
+
+    guard persistedKeycode == recordable.keycode else {
+        return .rolledBack(
+            previous: previous,
+            message: "Parakey could not save that hotkey, so it kept \(previous.name)."
+        )
+    }
+
+    return .saved(recordable)
+}
+
+private enum HotkeyRecorderRestartAction: Equatable {
+    case none
+    case restoredListener
+    case recordFailure
+}
+
+private func hotkeyRecorderRestartAction(
+    shouldRestoreHotkeyTap: Bool,
+    isTerminating: Bool,
+    restartSucceeded: Bool
+) -> HotkeyRecorderRestartAction {
+    guard shouldRestoreHotkeyTap, !isTerminating else { return .none }
+    return restartSucceeded ? .restoredListener : .recordFailure
+}
+
+private func hotkeyRecordingDecision(for event: HotkeyEventSnapshot) -> HotkeyRecordingDecision {
+    if event.isAutoRepeat { return .ignore }
+
+    if event.typeRawValue == CGEventType.flagsChanged.rawValue {
+        guard let choice = RIGHT_MODIFIER_HOTKEY_CHOICES.first(where: { $0.keycode == event.keycode }),
+              let mask = choice.modifierFlag,
+              event.flags.contains(mask) else {
+            return .ignore
+        }
+        return .accept(choice)
+    }
+
+    guard event.typeRawValue == CGEventType.keyDown.rawValue else { return .ignore }
+    guard let choice = recordableHotkeyChoice(forKeycode: event.keycode),
+          !choice.isModifier else {
+        return .reject("Choose a right-side modifier key or an F-key. Typing keys are not safe because Parakey suppresses its dictation key globally.")
+    }
+    return .accept(choice)
+}
+
 private enum HotkeyTransitionAction: Equatable, Sendable {
     case press
     case release
@@ -2003,13 +2128,95 @@ final class HotkeyListener {
 // instead guard mutable state with NSLock and let the tap callback
 // run wherever AVFoundation calls it.
 
+private struct CapturedAudioSegments {
+    let segments: [[Float]]
+    let sampleCount: Int
+
+    func flattened() -> [Float] {
+        guard sampleCount > 0 else { return [] }
+        var out: [Float] = []
+        out.reserveCapacity(sampleCount)
+        for segment in segments {
+            out.append(contentsOf: segment)
+        }
+        return out
+    }
+}
+
+private struct AudioSampleAccumulator {
+    private var segments: [[Float]] = []
+    private(set) var sampleCount = 0
+
+    mutating func append(_ segment: [Float]) {
+        guard !segment.isEmpty else { return }
+        segments.append(segment)
+        sampleCount += segment.count
+    }
+
+    mutating func removeAll(keepingCapacity: Bool) {
+        segments.removeAll(keepingCapacity: keepingCapacity)
+        sampleCount = 0
+    }
+
+    mutating func drain() -> CapturedAudioSegments {
+        let captured = CapturedAudioSegments(segments: segments,
+                                             sampleCount: sampleCount)
+        segments.removeAll(keepingCapacity: true)
+        sampleCount = 0
+        return captured
+    }
+}
+
+func selectedMonoMixChannelIndices(channelRMS: [Double]) -> [Int] {
+    let peak = channelRMS.max() ?? 0
+    let active = channelRMS.enumerated()
+        .filter { pair in peak > 0 && pair.element >= peak * 0.25 }
+        .map { $0.offset }
+    return active.isEmpty ? [0] : active
+}
+
+func channelRMSValues(channels: UnsafePointer<UnsafeMutablePointer<Float>>,
+                      channelCount: Int,
+                      frameCount: Int) -> [Double] {
+    guard channelCount > 0, frameCount > 0 else { return [] }
+    var rms = Array(repeating: 0.0, count: channelCount)
+    for channelIndex in 0..<channelCount {
+        var sumSquares = 0.0
+        let source = channels[channelIndex]
+        for frameIndex in 0..<frameCount {
+            let sample = source[frameIndex]
+            guard sample.isFinite else { continue }
+            let clamped = max(-1, min(1, sample))
+            sumSquares += Double(clamped * clamped)
+        }
+        rms[channelIndex] = sqrt(sumSquares / Double(frameCount))
+    }
+    return rms
+}
+
+func writeMonoMix(channels: UnsafePointer<UnsafeMutablePointer<Float>>,
+                  selectedChannels: [Int],
+                  frameCount: Int,
+                  to mono: UnsafeMutablePointer<Float>) {
+    guard frameCount > 0 else { return }
+    let selectedChannels = selectedChannels.isEmpty ? [0] : selectedChannels
+    let scale = Float(1.0 / Double(selectedChannels.count))
+    for frameIndex in 0..<frameCount {
+        var mixed: Float = 0
+        for channelIndex in selectedChannels {
+            mixed += channels[channelIndex][frameIndex] * scale
+        }
+        mono[frameIndex] = mixed
+    }
+}
+
 final class AudioCapture: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
     private var manuallyMixInputToMono = false
     private let lock = NSLock()
-    private var samples: [Float] = []
+    private var samples = AudioSampleAccumulator()
     private var _isRunning = false
     private var latestLevel: Float = 0
     private var latestLevelSequence: UInt64 = 0
@@ -2109,14 +2316,14 @@ final class AudioCapture: @unchecked Sendable {
 
     /// Stops recording and returns the captured samples.
     func endRecording() -> [Float] {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         _isRunning = false
         latestLevel = 0
         latestLevelSequence &+= 1
         recordingGeneration &+= 1
-        let captured = samples
-        samples.removeAll(keepingCapacity: true)
-        return captured
+        let captured = samples.drain()
+        lock.unlock()
+        return captured.flattened()
     }
 
     func latestRecordingLevelSnapshot() -> (level: Float, sequence: UInt64) {
@@ -2177,7 +2384,7 @@ final class AudioCapture: @unchecked Sendable {
         // frames out of the next clip.
         lock.lock()
         if _isRunning && recordingGeneration == generation {
-            samples.append(contentsOf: arr)
+            samples.append(arr)
             latestLevel = level
             latestLevelSequence &+= 1
         }
@@ -2211,33 +2418,13 @@ final class AudioCapture: @unchecked Sendable {
             return nil
         }
 
-        var channelRMS = Array(repeating: 0.0, count: channelCount)
-        for channelIndex in 0..<channelCount {
-            var sumSquares = 0.0
-            let source = channels[channelIndex]
-            for frameIndex in 0..<frameCount {
-                let sample = source[frameIndex]
-                guard sample.isFinite else { continue }
-                let clamped = max(-1, min(1, sample))
-                sumSquares += Double(clamped * clamped)
-            }
-            channelRMS[channelIndex] = sqrt(sumSquares / Double(frameCount))
-        }
-
-        let peak = channelRMS.max() ?? 0
-        let activeChannels = channelRMS.enumerated()
-            .filter { pair in peak > 0 && pair.element >= peak * 0.25 }
-            .map { $0.offset }
-        let selectedChannels = activeChannels.isEmpty ? [0] : activeChannels
-        let scale = Float(1.0 / Double(selectedChannels.count))
-
-        for frameIndex in 0..<frameCount {
-            var mixed: Float = 0
-            for channelIndex in selectedChannels {
-                mixed += channels[channelIndex][frameIndex] * scale
-            }
-            mono[frameIndex] = mixed
-        }
+        let rms = channelRMSValues(channels: channels,
+                                   channelCount: channelCount,
+                                   frameCount: frameCount)
+        writeMonoMix(channels: channels,
+                     selectedChannels: selectedMonoMixChannelIndices(channelRMS: rms),
+                     frameCount: frameCount,
+                     to: mono)
         out.frameLength = AVAudioFrameCount(frameCount)
         return out
     }
@@ -2468,6 +2655,46 @@ enum FillerWordRemover {
 
         return (result, matches.count)
     }
+}
+
+// MARK: - Recording lifecycle decisions
+
+private enum RecordingReleaseAction: Equatable {
+    case discardTooShort(duration: Double)
+    case transcribe(duration: Double)
+}
+
+private func recordingReleaseAction(capturedSampleCount: Int,
+                                    sampleRate: Double = SAMPLE_RATE,
+                                    minimumClipSeconds: Double = MIN_CLIP_SECONDS) -> RecordingReleaseAction {
+    let duration = sampleRate > 0 ? Double(max(0, capturedSampleCount)) / sampleRate : 0
+    return duration < minimumClipSeconds
+        ? .discardTooShort(duration: duration)
+        : .transcribe(duration: duration)
+}
+
+private struct DictationTextProcessingResult: Equatable {
+    let text: String
+    let appliedCorrectionCount: Int
+    let removedFillerWordCount: Int
+}
+
+private func processedDictationText(rawTranscript: String,
+                                    corrections: [TranscriptCorrection],
+                                    removeFillerWords: Bool) -> DictationTextProcessingResult {
+    let trimmed = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+    let corrected = TranscriptCorrector.apply(to: trimmed, corrections: corrections)
+
+    guard removeFillerWords else {
+        return DictationTextProcessingResult(text: corrected.text,
+                                             appliedCorrectionCount: corrected.appliedCount,
+                                             removedFillerWordCount: 0)
+    }
+
+    let stripped = FillerWordRemover.apply(to: corrected.text)
+    return DictationTextProcessingResult(text: stripped.text,
+                                         appliedCorrectionCount: corrected.appliedCount,
+                                         removedFillerWordCount: stripped.removedCount)
 }
 
 // MARK: - Text insertion
@@ -4754,12 +4981,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         unmuteIfWeMuted()
 
         let samples = audio.endRecording()
-        let dur = Double(samples.count) / SAMPLE_RATE
-        if dur < MIN_CLIP_SECONDS {
+        let dur: Double
+        switch recordingReleaseAction(capturedSampleCount: samples.count) {
+        case .discardTooShort(let duration):
+            dur = duration
             log("release: clip too short (\(String(format: "%.2f", dur)) s), discarding")
             setMenuBarState(.idle)
             rebuildMenu()
             return
+        case .transcribe(let duration):
+            dur = duration
         }
         isBusy = true
         setMenuBarState(.busy)
@@ -4782,26 +5013,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                         enterPermissionBlockedState(missing: missing, reason: "transcription complete")
                         return
                     }
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let corrected = TranscriptCorrector.apply(to: trimmed, corrections: settings.transcriptCorrections)
-                    if corrected.appliedCount > 0 {
-                        log("transcript corrections applied: \(corrected.appliedCount)")
+                    let processed = processedDictationText(rawTranscript: text,
+                                                           corrections: settings.transcriptCorrections,
+                                                           removeFillerWords: settings.removeFillerWords)
+                    if processed.appliedCorrectionCount > 0 {
+                        log("transcript corrections applied: \(processed.appliedCorrectionCount)")
                     }
-                    // Filler removal runs *after* corrections so the
-                    // user's explicit replacements always win — if a
-                    // correction maps "uhh" to something on purpose, it
-                    // gets applied first and the filler pass never sees
-                    // the literal "uhh".
-                    let cleaned: String
-                    if settings.removeFillerWords {
-                        let stripped = FillerWordRemover.apply(to: corrected.text)
-                        if stripped.removedCount > 0 {
-                            log("filler words removed: \(stripped.removedCount)")
-                        }
-                        cleaned = stripped.text
-                    } else {
-                        cleaned = corrected.text
+                    if processed.removedFillerWordCount > 0 {
+                        log("filler words removed: \(processed.removedFillerWordCount)")
                     }
+                    let cleaned = processed.text
                     log("\(String(format: "%.2f", dur)) s audio → \(String(format: "%.2f", dt)) s → \(cleaned.count) chars")
                     if !cleaned.isEmpty {
                         let missing = missingPermissions()
@@ -5809,15 +6030,37 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let hkParent = NSMenuItem(title: "Hotkey", action: nil, keyEquivalent: "")
         let hkSub = NSMenu()
         hkSub.autoenablesItems = false
+        let current = hotkey.hotkey
+
+        if !HOTKEY_CHOICES.contains(where: { $0.keycode == current.keycode }) {
+            let currentItem = NSMenuItem(title: current.name,
+                                         action: nil,
+                                         keyEquivalent: "")
+            currentItem.state = .on
+            currentItem.toolTip = "Recorded custom hotkey"
+            hkSub.addItem(currentItem)
+            hkSub.addItem(.separator())
+        }
+
         for choice in HOTKEY_CHOICES {
             let item = NSMenuItem(title: choice.name,
                                   action: #selector(selectHotkey(_:)),
                                   keyEquivalent: "")
             item.target = self
-            item.state = (choice.keycode == hotkey.hotkey.keycode) ? .on : .off
+            item.state = (choice.keycode == current.keycode) ? .on : .off
             item.representedObject = Int(choice.keycode)
             hkSub.addItem(item)
         }
+
+        hkSub.addItem(.separator())
+
+        let record = NSMenuItem(title: "Record Hotkey…",
+                                action: #selector(recordHotkeyClicked(_:)),
+                                keyEquivalent: "")
+        record.target = self
+        record.isEnabled = !isRecording && !isBusy && !isTerminating
+        hkSub.addItem(record)
+
         hkParent.submenu = hkSub
         return hkParent
     }
@@ -6042,6 +6285,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         add.target = self
         sub.addItem(add)
 
+        let addFromLast = NSMenuItem(title: "Add Correction from Last Transcript…",
+                                     action: #selector(addCorrectionFromLastTranscriptClicked(_:)),
+                                     keyEquivalent: "")
+        addFromLast.target = self
+        addFromLast.isEnabled = history.first != nil
+        if let newest = history.first {
+            addFromLast.toolTip = previewLine(for: newest)
+        }
+        sub.addItem(addFromLast)
+
         sub.addItem(.separator())
 
         let importItem = NSMenuItem(title: "Import Corrections…",
@@ -6151,6 +6404,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func addCorrectionClicked(_ sender: NSMenuItem) {
         guard let correction = showCorrectionEditor(existing: nil) else { return }
+        saveCorrection(correction)
+    }
+
+    @objc private func addCorrectionFromLastTranscriptClicked(_ sender: NSMenuItem) {
+        guard let newest = history.first else { return }
+        let prefill = correctionSourcePrefill(from: newest)
+        guard !prefill.isEmpty else { return }
+        guard let correction = showCorrectionEditor(existing: nil, prefillSource: prefill) else { return }
         saveCorrection(correction)
     }
 
@@ -6671,46 +6932,72 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
-        let viewWidth: CGFloat = 360
-        let labelWidth: CGFloat = 70
-        let fieldWidth: CGFloat = viewWidth - labelWidth - 10
-        let rowHeight: CGFloat = 24
-        let viewHeight: CGFloat = 58
+        let viewWidth: CGFloat = 520
+        let labelHeight: CGFloat = 18
+        let fieldHeight: CGFloat = 76
+        let viewHeight: CGFloat = (labelHeight * 2) + (fieldHeight * 2) + 24
         let accessory = NSView(frame: NSRect(x: 0, y: 0, width: viewWidth, height: viewHeight))
 
         let sourceLabel = NSTextField(labelWithString: "Typed")
-        sourceLabel.alignment = .right
-        sourceLabel.frame = NSRect(x: 0, y: 34, width: labelWidth, height: rowHeight)
+        sourceLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        sourceLabel.frame = NSRect(x: 0, y: viewHeight - labelHeight, width: viewWidth, height: labelHeight)
 
-        let sourceField = NSTextField(frame: NSRect(x: labelWidth + 10, y: 34, width: fieldWidth, height: rowHeight))
-        sourceField.stringValue = existing?.source ?? prefillSource.trimmingCharacters(in: .whitespacesAndNewlines)
-        sourceField.placeholderString = "clawed"
+        let sourceEditor = correctionTextEditor(
+            frame: NSRect(x: 0, y: viewHeight - labelHeight - fieldHeight, width: viewWidth, height: fieldHeight),
+            text: existing?.source ?? prefillSource.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
 
         let replacementLabel = NSTextField(labelWithString: "Paste")
-        replacementLabel.alignment = .right
-        replacementLabel.frame = NSRect(x: 0, y: 0, width: labelWidth, height: rowHeight)
+        replacementLabel.font = .systemFont(ofSize: 12, weight: .medium)
+        replacementLabel.frame = NSRect(x: 0, y: fieldHeight + 6, width: viewWidth, height: labelHeight)
 
-        let replacementField = NSTextField(frame: NSRect(x: labelWidth + 10, y: 0, width: fieldWidth, height: rowHeight))
-        replacementField.stringValue = existing?.replacement ?? ""
-        replacementField.placeholderString = "Claude"
+        let replacementEditor = correctionTextEditor(
+            frame: NSRect(x: 0, y: 0, width: viewWidth, height: fieldHeight),
+            text: existing?.replacement ?? ""
+        )
 
         accessory.addSubview(sourceLabel)
-        accessory.addSubview(sourceField)
+        accessory.addSubview(sourceEditor.scrollView)
         accessory.addSubview(replacementLabel)
-        accessory.addSubview(replacementField)
+        accessory.addSubview(replacementEditor.scrollView)
         alert.accessoryView = accessory
-        alert.window.initialFirstResponder = sourceField
+        alert.window.initialFirstResponder = sourceEditor.textView
 
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
 
-        let source = sourceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let replacement = replacementField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = sourceEditor.textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replacement = replacementEditor.textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !source.isEmpty, !replacement.isEmpty else {
             showCorrectionValidationError()
             return nil
         }
 
         return TranscriptCorrection(source: source, replacement: replacement)
+    }
+
+    private func correctionTextEditor(frame: NSRect, text: String) -> (scrollView: NSScrollView, textView: NSTextView) {
+        let scroll = NSScrollView(frame: frame)
+        scroll.borderType = .bezelBorder
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: frame.width, height: frame.height))
+        textView.font = .systemFont(ofSize: 13)
+        textView.string = text
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = true
+        textView.textContainerInset = NSSize(width: 6, height: 5)
+        textView.minSize = NSSize(width: 0, height: frame.height)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                  height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: frame.width,
+                                                       height: CGFloat.greatestFiniteMagnitude)
+        scroll.documentView = textView
+        return (scroll, textView)
     }
 
     private func showCorrectionValidationError() {
@@ -6746,10 +7033,151 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func selectHotkey(_ sender: NSMenuItem) {
         guard let kc = sender.representedObject as? Int else { return }
-        let choice = hotkeyChoice(forKeycode: CGKeyCode(kc))
-        settings.hotkeyKeycode = choice.keycode
-        hotkey.setHotkey(choice)
-        rebuildMenu()
+        _ = applyHotkeyChoice(hotkeyChoice(forKeycode: CGKeyCode(kc)))
+    }
+
+    @objc private func recordHotkeyClicked(_ sender: NSMenuItem) {
+        showHotkeyRecorder()
+    }
+
+    private func applyHotkeyChoice(_ choice: HotkeyChoice) -> Bool {
+        let previous = hotkey.hotkey
+
+        guard let recordable = recordableHotkeyChoice(forKeycode: choice.keycode) else {
+            if case .rejected(let message) = hotkeyPreferenceUpdateResult(
+                requested: choice,
+                previous: previous,
+                persistedKeycode: previous.keycode
+            ) {
+                showHotkeyRecordError(message)
+            }
+            return false
+        }
+
+        settings.hotkeyKeycode = recordable.keycode
+        hotkey.setHotkey(recordable)
+        hotkeyTestSucceeded = false
+
+        switch hotkeyPreferenceUpdateResult(
+            requested: recordable,
+            previous: previous,
+            persistedKeycode: settings.hotkeyKeycode
+        ) {
+        case .saved:
+            rebuildMenu()
+            updateSetupChecklist()
+            return true
+        case .rejected(let message):
+            showHotkeyRecordError(message)
+            return false
+        case .rolledBack(let previous, let message):
+            settings.hotkeyKeycode = previous.keycode
+            hotkey.setHotkey(previous)
+            showHotkeyRecordError(message)
+            rebuildMenu()
+            return false
+        }
+    }
+
+    private func showHotkeyRecorder() {
+        guard !isRecording, !isBusy, !isTerminating else { return }
+        showAppForModal()
+
+        let alert = NSAlert()
+        alert.messageText = "Record Hotkey"
+        alert.informativeText = "Press a right-side modifier key or an F-key."
+        alert.addButton(withTitle: "Use Selected")
+        alert.addButton(withTitle: "Cancel")
+        let useButton = alert.buttons[0]
+        useButton.isEnabled = false
+
+        let status = NSTextField(labelWithString: "Waiting for key…")
+        status.font = .systemFont(ofSize: 13)
+        status.textColor = .secondaryLabelColor
+        status.lineBreakMode = .byWordWrapping
+        status.maximumNumberOfLines = 0
+        status.frame = NSRect(x: 0, y: 0, width: 380, height: 42)
+        alert.accessoryView = status
+
+        let shouldRestoreHotkeyTap = isReady
+        if shouldRestoreHotkeyTap {
+            hotkey.stop()
+        }
+
+        var selected: HotkeyChoice?
+        var monitor: Any?
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+            let snapshot = HotkeyEventSnapshot(
+                typeRawValue: event.type == .flagsChanged
+                    ? CGEventType.flagsChanged.rawValue
+                    : CGEventType.keyDown.rawValue,
+                keycode: CGKeyCode(event.keyCode),
+                flagsRawValue: event.cgEvent?.flags.rawValue ?? 0,
+                isAutoRepeat: event.isARepeat
+            )
+            switch hotkeyRecordingDecision(for: snapshot) {
+            case .accept(let choice):
+                selected = choice
+                status.stringValue = "Selected: \(choice.name)"
+                useButton.isEnabled = true
+                NSApp.stopModal(withCode: .alertFirstButtonReturn)
+                return nil
+            case .reject(let message):
+                status.stringValue = message
+                NSSound.beep()
+                return nil
+            case .ignore:
+                return nil
+            }
+        }
+        defer {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            let restartSucceeded: Bool
+            if shouldRestoreHotkeyTap && !isTerminating {
+                restartSucceeded = hotkey.start()
+            } else {
+                restartSucceeded = false
+            }
+            switch hotkeyRecorderRestartAction(
+                shouldRestoreHotkeyTap: shouldRestoreHotkeyTap,
+                isTerminating: isTerminating,
+                restartSucceeded: restartSucceeded
+            ) {
+            case .none, .restoredListener:
+                break
+            case .recordFailure:
+                recordStartupFailure(
+                    stage: .hotkeyListener,
+                    error: NSError(
+                        domain: "Parakey",
+                        code: -5,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: "The hotkey listener could not restart after recording a hotkey."
+                        ]
+                    ),
+                    reason: "hotkey recorder"
+                )
+            }
+        }
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn,
+              let selected else { return }
+        if applyHotkeyChoice(selected) {
+            log("HotkeyListener: recorded hotkey → \(selected.name)")
+        }
+    }
+
+    private func showHotkeyRecordError(_ message: String) {
+        showAppForModal()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Hotkey Not Changed"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func selectTriggerMode(_ sender: NSMenuItem) {
@@ -7389,12 +7817,16 @@ private enum ParakeySelfTest {
             return runSuite("fillers", testFillerWordRemoval)
         case "audio-level":
             return runSuite("audio-level", testAudioLevelMetering)
+        case "audio-conversion":
+            return runSuite("audio-conversion", testAudioConversion)
         case "audio-input":
             return runSuite("audio-input", testAudioInputDeviceFiltering)
         case "model-status":
             return runSuite("model-status", testSpeechModelStartupStatus)
         case "audio-route":
             return runSuite("audio-route", testAudioRouteChangeDecision)
+        case "recording-lifecycle":
+            return runSuite("recording-lifecycle", testRecordingLifecycle)
         case "power-state":
             return runSuite("power-state", testPowerStateRecoveryDecision)
         case "model-integrity":
@@ -7438,9 +7870,11 @@ private enum ParakeySelfTest {
         try testTranscriptCorrections()
         try testFillerWordRemoval()
         try testAudioLevelMetering()
+        try testAudioConversion()
         try testAudioInputDeviceFiltering()
         try testSpeechModelStartupStatus()
         try testAudioRouteChangeDecision()
+        try testRecordingLifecycle()
         try testPowerStateRecoveryDecision()
         try testModelIntegrity()
         try testUpdate()
@@ -7624,6 +8058,8 @@ private enum ParakeySelfTest {
 
     private static func testHotkey() throws {
         try testHotkeyPreferenceNormalization()
+        try testHotkeyPreferenceUpdateResults()
+        try testHotkeyRecorderRestartActions()
         try testHandledHotkeySuppression()
         try testFKeyAutoRepeatSuppressesWithoutAction()
         try testRightModifierReleaseWithLeftFlagStillSet()
@@ -7644,6 +8080,16 @@ private enum ParakeySelfTest {
             "stored hotkey normalization should accept legacy string keycodes"
         )
         try expect(
+            normalizedHotkeyKeycode(storedValue: NSNumber(value: 98)),
+            equals: CGKeyCode(98),
+            "stored hotkey normalization should accept recorded F-key keycodes"
+        )
+        try expect(
+            hotkeyChoice(forKeycode: CGKeyCode(98)),
+            equals: HotkeyChoice(name: "F7", keycode: 98, isModifier: false, modifierFlag: nil),
+            "recorded F-key choices should get a stable display name"
+        )
+        try expect(
             normalizedHotkeyKeycode(storedValue: NSNumber(value: 999)),
             equals: nil,
             "stored hotkey normalization should reject unsupported keycodes"
@@ -7657,6 +8103,108 @@ private enum ParakeySelfTest {
             hotkeyChoice(forKeycode: CGKeyCode(999)),
             equals: hotkeyChoice(forKeycode: DEFAULT_HOTKEY_KEYCODE),
             "unknown hotkey choices should fall back to the default"
+        )
+
+        try expect(
+            hotkeyRecordingDecision(for: event(.keyDown, keycode: 98)),
+            equals: .accept(HotkeyChoice(name: "F7", keycode: 98, isModifier: false, modifierFlag: nil)),
+            "hotkey recorder should accept F-key presses outside the quick-pick list"
+        )
+        try expect(
+            hotkeyRecordingDecision(for: event(.keyDown, keycode: 0)),
+            equals: .reject("Choose a right-side modifier key or an F-key. Typing keys are not safe because Parakey suppresses its dictation key globally."),
+            "hotkey recorder should reject typing keys"
+        )
+        try expect(
+            hotkeyRecordingDecision(for: event(.keyDown, keycode: 98, isAutoRepeat: true)),
+            equals: .ignore,
+            "hotkey recorder should ignore auto-repeat"
+        )
+        try expect(
+            hotkeyRecordingDecision(for: event(.flagsChanged,
+                                               keycode: 61,
+                                               flags: CGEventFlags.maskAlternate.rawValue)),
+            equals: .accept(HotkeyChoice(name: "Right Option",
+                                         keycode: 61,
+                                         isModifier: true,
+                                         modifierFlag: .maskAlternate)),
+            "hotkey recorder should accept right-side modifier presses"
+        )
+    }
+
+    private static func testHotkeyPreferenceUpdateResults() throws {
+        let f5 = hotkeyChoice(forKeycode: 96)
+        let f7 = hotkeyChoice(forKeycode: 98)
+        let invalid = HotkeyChoice(name: "A", keycode: 0, isModifier: false, modifierFlag: nil)
+
+        try expect(
+            hotkeyPreferenceUpdateResult(
+                requested: f7,
+                previous: f5,
+                persistedKeycode: f7.keycode
+            ),
+            equals: .saved(f7),
+            "hotkey preference update should save supported keys after persistence confirms them"
+        )
+        try expect(
+            hotkeyPreferenceUpdateResult(
+                requested: invalid,
+                previous: f5,
+                persistedKeycode: f5.keycode
+            ),
+            equals: .rejected("That key cannot be used for dictation."),
+            "hotkey preference update should reject unsupported keys before mutating settings"
+        )
+        try expect(
+            hotkeyPreferenceUpdateResult(
+                requested: f7,
+                previous: f5,
+                persistedKeycode: f5.keycode
+            ),
+            equals: .rolledBack(
+                previous: f5,
+                message: "Parakey could not save that hotkey, so it kept F5."
+            ),
+            "hotkey preference update should roll back when persisted settings disagree"
+        )
+    }
+
+    private static func testHotkeyRecorderRestartActions() throws {
+        try expect(
+            hotkeyRecorderRestartAction(
+                shouldRestoreHotkeyTap: false,
+                isTerminating: false,
+                restartSucceeded: false
+            ),
+            equals: .none,
+            "hotkey recorder should not start a listener that was not active"
+        )
+        try expect(
+            hotkeyRecorderRestartAction(
+                shouldRestoreHotkeyTap: true,
+                isTerminating: true,
+                restartSucceeded: false
+            ),
+            equals: .none,
+            "hotkey recorder should not restart the listener during termination"
+        )
+        try expect(
+            hotkeyRecorderRestartAction(
+                shouldRestoreHotkeyTap: true,
+                isTerminating: false,
+                restartSucceeded: true
+            ),
+            equals: .restoredListener,
+            "hotkey recorder should treat a successful restart as recovered"
+        )
+        try expect(
+            hotkeyRecorderRestartAction(
+                shouldRestoreHotkeyTap: true,
+                isTerminating: false,
+                restartSucceeded: false
+            ),
+            equals: .recordFailure,
+            "hotkey recorder should surface restart failure after an active listener was paused"
         )
     }
 
@@ -7859,6 +8407,27 @@ private enum ParakeySelfTest {
     }
 
     private static func testAudioLevelMetering() throws {
+        var accumulator = AudioSampleAccumulator()
+        accumulator.append([])
+        accumulator.append([1, 2])
+        accumulator.append([3, 4, 5])
+        try expect(
+            accumulator.sampleCount,
+            equals: 5,
+            "segmented audio accumulator should track total sample count"
+        )
+        let captured = accumulator.drain()
+        try expect(
+            accumulator.sampleCount,
+            equals: 0,
+            "segmented audio accumulator should reset after drain"
+        )
+        try expect(
+            captured.flattened(),
+            equals: [1, 2, 3, 4, 5],
+            "segmented audio accumulator should preserve sample order when flattened"
+        )
+
         try expect(
             normalizedAudioLevel(from: Array(repeating: 0, count: 128)),
             equals: 0,
@@ -7907,7 +8476,104 @@ private enum ParakeySelfTest {
         )
     }
 
+    private static func testAudioConversion() throws {
+        guard let stereoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                               sampleRate: 48_000,
+                                               channels: 2,
+                                               interleaved: false),
+              let monoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                             sampleRate: 48_000,
+                                             channels: 1,
+                                             interleaved: false),
+              let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                               sampleRate: 16_000,
+                                               channels: 1,
+                                               interleaved: false),
+              let stereo = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: 480),
+              let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: 480),
+              let stereoChannels = stereo.floatChannelData,
+              let monoChannel = mono.floatChannelData?[0] else {
+            throw SelfTestFailure.failed("could not create audio conversion test buffers")
+        }
+        stereo.frameLength = 480
+        for i in 0..<480 {
+            stereoChannels[0][i] = 0.5
+            stereoChannels[1][i] = 0.02
+        }
+
+        let rms = channelRMSValues(channels: stereoChannels, channelCount: 2, frameCount: 480)
+        try expect(
+            selectedMonoMixChannelIndices(channelRMS: rms),
+            equals: [0],
+            "manual mono mix should select the active close-mic channel when another channel is near-silent"
+        )
+        writeMonoMix(channels: stereoChannels,
+                     selectedChannels: selectedMonoMixChannelIndices(channelRMS: rms),
+                     frameCount: 480,
+                     to: monoChannel)
+        mono.frameLength = 480
+        try expect(
+            monoChannel[0],
+            equals: 0.5,
+            "manual mono mix should preserve the selected active channel"
+        )
+
+        for i in 0..<480 {
+            stereoChannels[0][i] = 0.5
+            stereoChannels[1][i] = -0.5
+        }
+        let balancedRMS = channelRMSValues(channels: stereoChannels, channelCount: 2, frameCount: 480)
+        try expect(
+            selectedMonoMixChannelIndices(channelRMS: balancedRMS),
+            equals: [0, 1],
+            "manual mono mix should average multiple similarly active channels"
+        )
+        writeMonoMix(channels: stereoChannels,
+                     selectedChannels: selectedMonoMixChannelIndices(channelRMS: balancedRMS),
+                     frameCount: 480,
+                     to: monoChannel)
+        try expect(
+            monoChannel[0],
+            equals: 0,
+            "manual mono mix should average selected channels with equal weight"
+        )
+
+        guard let converted = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: 320),
+              let converter = AVAudioConverter(from: monoFormat, to: targetFormat) else {
+            throw SelfTestFailure.failed("could not create audio converter")
+        }
+        var error: NSError?
+        let inputProvider = AudioConverterInputProvider(buffer: mono)
+        let status = converter.convert(to: converted, error: &error) { _, outStatus in
+            inputProvider.provide(outStatus: outStatus)
+        }
+        if status == .error {
+            throw SelfTestFailure.failed("audio conversion failed: \(error?.localizedDescription ?? "?")")
+        }
+        guard converted.format.channelCount == 1,
+              Int(converted.format.sampleRate) == 16_000,
+              converted.frameLength > 0 else {
+            throw SelfTestFailure.failed("audio conversion should produce 16 kHz mono samples")
+        }
+    }
+
     private static func testTranscriptCorrections() throws {
+        try expect(
+            correctionSourcePrefill(from: "  first line\n\nsecond\tline  "),
+            equals: "first line second line",
+            "correction source prefill should collapse transcript whitespace"
+        )
+        try expect(
+            correctionSourcePrefill(from: String(repeating: "a", count: MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES + 4)).utf8.count,
+            equals: MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES,
+            "correction source prefill should stay inside correction source byte limits"
+        )
+        try expect(
+            correctionSourcePrefill(from: String(repeating: "é", count: MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES)).utf8.count,
+            equals: MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES,
+            "correction source prefill should clip at character boundaries"
+        )
+
         let normalized = normalizedTranscriptCorrections([
             TranscriptCorrection(source: "  Yeti   Nano  ", replacement: "  Blue mic  "),
             TranscriptCorrection(source: "yeti nano", replacement: "USB mic"),
@@ -9127,6 +9793,56 @@ private enum ParakeySelfTest {
         )
     }
 
+    private static func testRecordingLifecycle() throws {
+        try expect(
+            recordingReleaseAction(capturedSampleCount: 3_999,
+                                   sampleRate: 16_000,
+                                   minimumClipSeconds: 0.25),
+            equals: .discardTooShort(duration: 0.2499375),
+            "release decision should discard clips under the minimum duration"
+        )
+        try expect(
+            recordingReleaseAction(capturedSampleCount: 4_000,
+                                   sampleRate: 16_000,
+                                   minimumClipSeconds: 0.25),
+            equals: .transcribe(duration: 0.25),
+            "release decision should transcribe clips at the minimum duration"
+        )
+        try expect(
+            recordingReleaseAction(capturedSampleCount: 4_000,
+                                   sampleRate: 0,
+                                   minimumClipSeconds: 0.25),
+            equals: .discardTooShort(duration: 0),
+            "release decision should handle invalid sample rates defensively"
+        )
+
+        let processed = processedDictationText(
+            rawTranscript: "  Um, parakeet is fast.  ",
+            corrections: [TranscriptCorrection(source: "parakeet", replacement: "Parakey")],
+            removeFillerWords: true
+        )
+        try expect(
+            processed,
+            equals: DictationTextProcessingResult(text: "Parakey is fast.",
+                                                  appliedCorrectionCount: 1,
+                                                  removedFillerWordCount: 1),
+            "dictation text processing should trim, apply corrections, then remove fillers"
+        )
+
+        let preservedFillers = processedDictationText(
+            rawTranscript: "  Um, parakeet is fast.  ",
+            corrections: [TranscriptCorrection(source: "parakeet", replacement: "Parakey")],
+            removeFillerWords: false
+        )
+        try expect(
+            preservedFillers,
+            equals: DictationTextProcessingResult(text: "Um, Parakey is fast.",
+                                                  appliedCorrectionCount: 1,
+                                                  removedFillerWordCount: 0),
+            "dictation text processing should preserve fillers when the setting is off"
+        )
+    }
+
     private static func testPowerStateRecoveryDecision() throws {
         try expect(
             shouldResumeRuntimeAfterSystemSleep(isTerminating: true,
@@ -9205,6 +9921,7 @@ private enum ParakeySelfTest {
     private static func testHandledHotkeySuppression() throws {
         var state = HotkeyTransitionState()
         let f5 = hotkeyChoice(forKeycode: 96)
+        let f7 = hotkeyChoice(forKeycode: 98)
 
         try expect(
             state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .hold, isRecording: false),
@@ -9220,6 +9937,12 @@ private enum ParakeySelfTest {
             state.transition(for: event(.keyUp, keycode: f5.keycode), hotkey: f5, triggerMode: .hold, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
             "F-key keyUp should suppress and release"
+        )
+
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f7.keycode), hotkey: f7, triggerMode: .hold, isRecording: false),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
+            "recorded F-key keyDown should suppress and press"
         )
     }
 
