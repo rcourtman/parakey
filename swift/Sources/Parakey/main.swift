@@ -2973,15 +2973,90 @@ enum SystemAudio {
         return result.booleanValue
     }
 
-    static func mute() {
+    @discardableResult
+    static func mute() -> Bool {
         var err: NSDictionary?
         _ = NSAppleScript(source: "set volume with output muted")?.executeAndReturnError(&err)
+        return err == nil && isMuted()
     }
 
-    static func unmute() {
+    @discardableResult
+    static func unmute() -> Bool {
         var err: NSDictionary?
         _ = NSAppleScript(source: "set volume without output muted")?.executeAndReturnError(&err)
+        return err == nil && !isMuted()
     }
+}
+
+private func parakeyApplicationSupportDirectory() -> URL {
+    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Parakey", isDirectory: true)
+}
+
+private func systemAudioMuteMarkerURL() -> URL {
+    parakeyApplicationSupportDirectory()
+        .appendingPathComponent("system-audio-muted", isDirectory: false)
+}
+
+private func systemAudioMuteMarkerText(pid: pid_t = getpid(), date: Date = Date()) -> String {
+    """
+    pid=\(pid)
+    created=\(ISO8601DateFormatter().string(from: date))
+    """
+}
+
+private func systemAudioMuteMarkerProcessID(from text: String) -> pid_t? {
+    for line in text.split(separator: "\n") {
+        guard line.hasPrefix("pid="),
+              let raw = Int32(line.dropFirst(4)),
+              raw > 0 else { continue }
+        return raw
+    }
+    return nil
+}
+
+private func writeSystemAudioMuteMarker(to url: URL = systemAudioMuteMarkerURL(),
+                                        text: String = systemAudioMuteMarkerText()) throws {
+    let fm = FileManager.default
+    let directory = url.deletingLastPathComponent()
+    try fm.createDirectory(at: directory,
+                           withIntermediateDirectories: true,
+                           attributes: [.posixPermissions: 0o700])
+
+    let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0o600)
+    guard fd >= 0 else { throw currentPOSIXError() }
+    defer { Darwin.close(fd) }
+    try text.withCString { raw in
+        let data = UnsafeRawPointer(raw)
+        let count = strlen(raw)
+        var written = 0
+        while written < count {
+            let n = Darwin.write(fd, data.advanced(by: written), count - written)
+            guard n >= 0 else { throw currentPOSIXError() }
+            written += n
+        }
+    }
+    _ = Darwin.fchmod(fd, 0o600)
+}
+
+private func removeSystemAudioMuteMarker(at url: URL = systemAudioMuteMarkerURL()) {
+    try? FileManager.default.removeItem(at: url)
+}
+
+private func systemAudioMuteWatchdogScript() -> String {
+    #"""
+    PID="$1"
+    MARKER="$2"
+
+    while /bin/kill -0 "$PID" 2>/dev/null; do
+        /bin/sleep 0.5
+    done
+
+    if [ -e "$MARKER" ]; then
+        /usr/bin/osascript -e 'set volume without output muted' >/dev/null 2>&1 || true
+        /bin/rm -f "$MARKER"
+    fi
+    """#
 }
 
 // MARK: - Sounds
@@ -4163,6 +4238,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var recordingHUDAnimationToken = 0
     private var delayedBusyHUDWorkItem: DispatchWorkItem?
     private var errorFlashWorkItem: DispatchWorkItem?
+    private var systemAudioMuteWatchdog: Process?
 
     /// Last N transcripts, newest first. Shown in the History submenu.
     private var history: [String] = []
@@ -4257,6 +4333,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         recoverStaleTCCAfterUpgrade()
         let previousExitNotice = previousExitNoticeAction(previousRunWasActive: settings.hasActiveRunMarker)
+        recoverStaleSystemAudioMuteIfNeeded()
         settings.hasActiveRunMarker = true
 
         NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
@@ -4307,6 +4384,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         cleanupPendingSharedCorrections(reason: "terminate")
         audio.onConfigurationChange = nil
         cancelRecordingForTermination()
+        if !didMuteThisRecording {
+            stopSystemAudioMuteWatchdog()
+        }
     }
 
     private func installWorkspacePowerObservers() {
@@ -5194,18 +5274,86 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func muteIfNeededForRecording() {
         guard settings.muteWhileRecording else { return }
         // Only mute if we wouldn't be stomping a user-set mute.
-        if !SystemAudio.isMuted() {
-            SystemAudio.mute()
+        guard !SystemAudio.isMuted() else { return }
+
+        do {
+            try writeSystemAudioMuteMarker()
+            try startSystemAudioMuteWatchdog()
+        } catch {
+            removeSystemAudioMuteMarker()
+            stopSystemAudioMuteWatchdog()
+            log("output mute skipped: recovery watchdog unavailable (\(error.localizedDescription))")
+            return
+        }
+
+        if SystemAudio.mute() {
             didMuteThisRecording = true
             log("output muted")
+        } else {
+            removeSystemAudioMuteMarker()
+            stopSystemAudioMuteWatchdog()
+            log("output mute failed")
         }
     }
 
     private func unmuteIfWeMuted() {
         guard didMuteThisRecording else { return }
-        didMuteThisRecording = false
-        SystemAudio.unmute()
-        log("output unmuted")
+        if SystemAudio.unmute() {
+            didMuteThisRecording = false
+            removeSystemAudioMuteMarker()
+            stopSystemAudioMuteWatchdog()
+            log("output unmuted")
+        } else {
+            log("output unmute failed; crash-recovery marker left in place")
+        }
+    }
+
+    private func startSystemAudioMuteWatchdog() throws {
+        stopSystemAudioMuteWatchdog()
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = [
+            "-c",
+            systemAudioMuteWatchdogScript(),
+            "parakey-audio-watchdog",
+            "\(getpid())",
+            systemAudioMuteMarkerURL().path,
+        ]
+        proc.environment = systemToolProcessEnvironment()
+        try proc.run()
+        systemAudioMuteWatchdog = proc
+    }
+
+    private func stopSystemAudioMuteWatchdog() {
+        guard let proc = systemAudioMuteWatchdog else { return }
+        if proc.isRunning {
+            proc.terminate()
+        }
+        systemAudioMuteWatchdog = nil
+    }
+
+    private func recoverStaleSystemAudioMuteIfNeeded() {
+        let marker = systemAudioMuteMarkerURL()
+        guard FileManager.default.fileExists(atPath: marker.path) else { return }
+
+        if let text = try? String(contentsOf: marker, encoding: .utf8),
+           let pid = systemAudioMuteMarkerProcessID(from: text),
+           pid != getpid(),
+           Darwin.kill(pid, 0) == 0 {
+            log("output mute recovery deferred: marker belongs to active process \(pid)")
+            return
+        }
+
+        if SystemAudio.isMuted() {
+            if SystemAudio.unmute() {
+                log("output unmuted after interrupted recording")
+            } else {
+                log("output unmute after interrupted recording failed")
+            }
+        } else {
+            log("stale output mute marker removed")
+        }
+        removeSystemAudioMuteMarker(at: marker)
     }
 
     private func scheduleMaxDurationAutoRelease() {
@@ -9997,6 +10145,75 @@ private enum ParakeySelfTest {
                                                   appliedCorrectionCount: 1,
                                                   removedFillerWordCount: 0),
             "dictation text processing should preserve fillers when the setting is off"
+        )
+
+        let markerText = systemAudioMuteMarkerText(pid: 12345,
+                                                   date: Date(timeIntervalSince1970: 0))
+        try expect(
+            systemAudioMuteMarkerProcessID(from: markerText),
+            equals: Optional(pid_t(12345)),
+            "system audio mute marker should preserve the owning pid"
+        )
+        try expect(
+            systemAudioMuteMarkerProcessID(from: "created=bad\n"),
+            equals: pid_t?.none,
+            "system audio mute marker parsing should ignore missing pids"
+        )
+
+        let script = systemAudioMuteWatchdogScript()
+        for fragment in [
+            #"PID="$1""#,
+            #"MARKER="$2""#,
+            #"/bin/kill -0 "$PID""#,
+            "/usr/bin/osascript -e 'set volume without output muted'",
+            #"/bin/rm -f "$MARKER""#,
+        ] {
+            guard script.contains(fragment) else {
+                throw SelfTestFailure.failed("system audio mute watchdog script missing fragment: \(fragment)")
+            }
+        }
+
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("parakey-mute-marker-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: root) }
+
+        let marker = root.appendingPathComponent("system-audio-muted")
+        try writeSystemAudioMuteMarker(to: marker, text: markerText)
+        var markerStat = stat()
+        guard lstat(marker.path, &markerStat) == 0 else {
+            throw SelfTestFailure.failed("system audio mute marker should exist")
+        }
+        try expect((markerStat.st_mode & S_IFMT) == S_IFREG,
+                   equals: true,
+                   "system audio mute marker should be a regular file")
+        try expect(Int(markerStat.st_mode & mode_t(0o777)),
+                   equals: 0o600,
+                   "system audio mute marker should be private")
+        try expect(
+            String(data: try Data(contentsOf: marker), encoding: .utf8),
+            equals: markerText,
+            "system audio mute marker should contain the expected pid"
+        )
+
+        let target = root.appendingPathComponent("target-marker")
+        try Data("target\n".utf8).write(to: target)
+        let symlink = root.appendingPathComponent("linked-marker")
+        try fm.createSymbolicLink(at: symlink, withDestinationURL: target)
+        var symlinkRejected = false
+        do {
+            try writeSystemAudioMuteMarker(to: symlink, text: "bad\n")
+        } catch {
+            symlinkRejected = true
+        }
+        try expect(symlinkRejected,
+                   equals: true,
+                   "system audio mute marker should reject leaf symlinks")
+        try expect(
+            String(data: try Data(contentsOf: target), encoding: .utf8),
+            equals: "target\n",
+            "system audio mute marker should leave symlink targets untouched"
         )
     }
 

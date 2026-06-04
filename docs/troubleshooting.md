@@ -45,6 +45,17 @@ one-time model download and optional update checks.
 - Confirm Input Monitoring is granted in System Settings.
 - Open **Support -> Setup Checklist...** and retry the Hotkey row.
 
+## System Audio Stays Muted
+
+When **Mute system audio while recording** is enabled, Parakey writes a
+local recovery marker and starts a small local watchdog before muting. If
+Parakey crashes or is force-quit during a recording, the watchdog should
+unmute the Mac as soon as the app process disappears. The next launch also
+checks for a stale marker and repairs the mute state if needed.
+
+If the Mac still stays muted, unmute it from Control Center or Sound
+settings, then use **Support -> Copy Diagnostics** when filing an issue.
+
 ## Unexpected Exit Notice
 
 If Parakey says it reopened after an unexpected exit, it found a local marker
