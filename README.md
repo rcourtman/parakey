@@ -135,6 +135,10 @@ swift run Parakey --self-test all
 ./ship-swift.sh --dry-run
 ```
 
+Before publishing a release, run the manual checklist in
+`docs/manual-qa.md`. Permission and model-cache recovery notes live in
+`docs/troubleshooting.md`.
+
 Key files:
 
 - `swift/Sources/Parakey/main.swift` — app implementation

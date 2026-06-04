@@ -1334,6 +1334,7 @@ final class Settings: @unchecked Sendable {
     private static let keyTranscriptCorrectionsSyncFile = "transcript_corrections_sync_file"
     private static let keyDictationLanguage = "dictation_language"
     private static let keyRemoveFillerWords = "remove_filler_words"
+    private static let keyActiveRunMarker = "active_run_marker"
 
     private let defaults: UserDefaults
 
@@ -1537,6 +1538,17 @@ final class Settings: @unchecked Sendable {
         get { defaults.bool(forKey: Self.keyRemoveFillerWords) }
         set { defaults.set(newValue, forKey: Self.keyRemoveFillerWords) }
     }
+
+    var hasActiveRunMarker: Bool {
+        get { defaults.bool(forKey: Self.keyActiveRunMarker) }
+        set {
+            if newValue {
+                defaults.set(true, forKey: Self.keyActiveRunMarker)
+            } else {
+                defaults.removeObject(forKey: Self.keyActiveRunMarker)
+            }
+        }
+    }
 }
 
 // MARK: - Permissions
@@ -1646,6 +1658,67 @@ private struct StartupFailure {
 
     var statusTitle: String { stage.statusTitle }
     var retryTitle: String { stage.retryTitle }
+}
+
+private enum PreviousExitNoticeAction: Equatable {
+    case none
+    case showNotice
+}
+
+private func previousExitNoticeAction(previousRunWasActive: Bool) -> PreviousExitNoticeAction {
+    previousRunWasActive ? .showNotice : .none
+}
+
+private func speechModelFailureDetail(errorDescription: String) -> String {
+    let lower = errorDescription.lowercased()
+    let looksLikeIntegrityFailure = [
+        "sha",
+        "hash",
+        "integrity",
+        "verification",
+        "verified",
+        "corrupt",
+        "incomplete",
+    ].contains { lower.contains($0) }
+    let looksLikeNetworkFailure = [
+        "download",
+        "network",
+        "internet",
+        "offline",
+        "timed out",
+        "timeout",
+        "could not connect",
+        "cannot connect",
+        "not connected",
+        "host",
+        "url",
+    ].contains { lower.contains($0) }
+
+    if looksLikeIntegrityFailure {
+        return """
+        \(errorDescription)
+
+        The local speech model cache may be incomplete or corrupt. Use Support → Reset Speech Model Cache… to delete it and download a fresh verified copy.
+        """
+    }
+    if looksLikeNetworkFailure {
+        return """
+        \(errorDescription)
+
+        Parakey needs a one-time download of the local speech model. Check your network connection and retry; audio is not uploaded.
+        """
+    }
+    return """
+    \(errorDescription)
+
+    If this keeps happening, use Support → Reset Speech Model Cache… to download a fresh verified copy, then Copy Diagnostics for a GitHub issue.
+    """
+}
+
+private func startupFailureDetail(stage: StartupFailureStage, errorDescription: String) -> String {
+    stage == .speechModel
+        ? speechModelFailureDetail(errorDescription: errorDescription)
+        : errorDescription
 }
 
 private struct SetupChecklistRowState: Equatable {
@@ -4183,6 +4256,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         recoverStaleTCCAfterUpgrade()
+        let previousExitNotice = previousExitNoticeAction(previousRunWasActive: settings.hasActiveRunMarker)
+        settings.hasActiveRunMarker = true
 
         NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
 
@@ -4208,10 +4283,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             self?.maybeShowSetupChecklist(reason: "launch")
         }
+        if previousExitNotice == .showNotice {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                self?.showPreviousExitNoticeIfAppropriate()
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        settings.hasActiveRunMarker = false
         startupTask?.cancel()
         startupTask = nil
         updateCheckLoopTask?.cancel()
@@ -4395,7 +4476,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             audio.stopEngine()
         }
 
-        let detail = error.localizedDescription
+        let detail = startupFailureDetail(stage: stage,
+                                          errorDescription: error.localizedDescription)
         startupFailure = StartupFailure(stage: stage, detail: detail)
         log("startup failed (\(reason), \(stage)): \(error)")
         setMenuBarState(.error)
@@ -5192,11 +5274,43 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func copyDiagnosticsClicked(_ sender: NSMenuItem) {
+        copyDiagnosticsToClipboard()
+    }
+
+    private func copyDiagnosticsToClipboard() {
         let text = diagnosticsText()
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
         log("diagnostics copied to clipboard")
+    }
+
+    private func openDiagnosticLog() {
+        NSWorkspace.shared.open(Logger.shared.fileURL)
+        log("diagnostics log opened")
+    }
+
+    private func showPreviousExitNoticeIfAppropriate() {
+        guard !isTerminating else { return }
+        showAppForModal()
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Parakey Reopened After an Unexpected Exit"
+        alert.informativeText = """
+            Parakey appears to have exited last time without a normal shutdown. Nothing was sent anywhere.
+
+            You can copy a privacy-safe diagnostics report or open the local log if you want to file an issue.
+            """
+        alert.addButton(withTitle: "Copy Diagnostics")
+        alert.addButton(withTitle: "Open Log")
+        alert.addButton(withTitle: "Not Now")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            copyDiagnosticsToClipboard()
+        } else if response == .alertSecondButtonReturn {
+            openDiagnosticLog()
+        }
     }
 
     @objc private func saveDiagnosticsClicked(_ sender: NSMenuItem) {
@@ -6060,6 +6174,17 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         record.target = self
         record.isEnabled = !isRecording && !isBusy && !isTerminating
         hkSub.addItem(record)
+
+        let reset = NSMenuItem(title: "Reset Hotkey to Default",
+                               action: #selector(resetHotkeyClicked(_:)),
+                               keyEquivalent: "")
+        reset.target = self
+        reset.isEnabled = current.keycode != DEFAULT_HOTKEY_KEYCODE
+            && !isRecording
+            && !isBusy
+            && !isTerminating
+        reset.toolTip = "Use Right Option for dictation."
+        hkSub.addItem(reset)
 
         hkParent.submenu = hkSub
         return hkParent
@@ -7038,6 +7163,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func recordHotkeyClicked(_ sender: NSMenuItem) {
         showHotkeyRecorder()
+    }
+
+    @objc private func resetHotkeyClicked(_ sender: NSMenuItem) {
+        if applyHotkeyChoice(hotkeyChoice(forKeycode: DEFAULT_HOTKEY_KEYCODE)) {
+            log("HotkeyListener: reset hotkey to default")
+        }
     }
 
     private func applyHotkeyChoice(_ choice: HotkeyChoice) -> Bool {
@@ -8306,6 +8437,32 @@ private enum ParakeySelfTest {
                                            status: "Detected",
                                            buttonTitle: nil),
             "setup checklist should show detected hotkey state"
+        )
+
+        try expect(
+            previousExitNoticeAction(previousRunWasActive: false),
+            equals: .none,
+            "clean previous exits should not show the abnormal-exit notice"
+        )
+        try expect(
+            previousExitNoticeAction(previousRunWasActive: true),
+            equals: .showNotice,
+            "active run markers should show the abnormal-exit notice on next launch"
+        )
+        try expect(
+            speechModelFailureDetail(errorDescription: "SHA-256 mismatch").contains("Reset Speech Model Cache"),
+            equals: true,
+            "speech model integrity failures should point to cache reset"
+        )
+        try expect(
+            speechModelFailureDetail(errorDescription: "download timed out").contains("audio is not uploaded"),
+            equals: true,
+            "speech model download failures should preserve the local-audio privacy boundary"
+        )
+        try expect(
+            startupFailureDetail(stage: .audioInput, errorDescription: "no input device"),
+            equals: "no input device",
+            "non-model startup failures should keep their original detail"
         )
     }
 
