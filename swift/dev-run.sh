@@ -49,11 +49,17 @@ say "Signing with Developer ID + hardened runtime..."
 CERT_HASH="$(security find-identity -v -p codesigning 2>/dev/null \
     | awk '/Developer ID Application:/ { print $2; exit }')"
 [[ -n "$CERT_HASH" ]] || { echo "no Developer ID cert in keychain" >&2; exit 1; }
-codesign --force --deep --sign "$CERT_HASH" \
+# Capture codesign output so a failure under `set -e` still explains
+# itself instead of dying silently.
+if ! SIGN_OUTPUT="$(codesign --force --deep --sign "$CERT_HASH" \
     --options runtime \
     --entitlements "$REPO/entitlements.plist" \
     --timestamp \
-    "$APP" >/dev/null 2>&1
+    "$APP" 2>&1)"; then
+    printf '%s\n' "$SIGN_OUTPUT" >&2
+    echo "codesign failed" >&2
+    exit 1
+fi
 
 say "Checking signed entitlements..."
 EMBEDDED_ENTITLEMENTS="$(codesign -d --entitlements - "$APP" 2>&1)"
@@ -76,8 +82,21 @@ sleep 0.5
 
 say "Launching..."
 open "$APP"
-sleep 1
-ps aux | grep -E "Parakey-dev.app|Parakey.app" | grep -v grep | awk '{print "  pid="$2, $11}'
+# `open` returns before the process exists; poll instead of racing a
+# fixed sleep. The script promises a relaunch, so a process that never
+# appears is a hard failure.
+LAUNCHED_PID=""
+for _ in $(seq 1 25); do
+    LAUNCHED_PID="$(pgrep -f "Parakey-dev.app" | head -n 1 || true)"
+    [[ -n "$LAUNCHED_PID" ]] && break
+    sleep 0.2
+done
+if [[ -z "$LAUNCHED_PID" ]]; then
+    echo "Parakey-dev did not appear within ~5s of 'open'." >&2
+    echo "Check ~/Library/Logs/Parakey.log for a startup crash." >&2
+    exit 1
+fi
+echo "  pid=$LAUNCHED_PID $APP/Contents/MacOS/Parakey"
 echo
 echo "  log: tail -f ~/Library/Logs/Parakey.log"
 echo "  stop: pkill -f Parakey-dev.app"

@@ -1,14 +1,19 @@
 name: pages
 
+# Deploys docs/ to GitHub Pages only after the `check` workflow has
+# succeeded for the same commit on main (workflow_run gate). The
+# manual workflow_dispatch path stays available and deploys the
+# current tip of the default branch.
+
 on:
-  push:
+  workflow_run:
+    workflows: [check]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -16,17 +21,28 @@ concurrency:
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Deploy the exact commit check passed on; empty for
+          # workflow_dispatch, which falls back to the default branch.
+          ref: ${{ github.event.workflow_run.head_sha }}
       - name: Docs freshness
         run: python3 scripts/sync-docs.py --check
-      - uses: actions/configure-pages@v6
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
