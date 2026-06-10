@@ -14,6 +14,8 @@
 #   ./ship-swift.sh --version 0.2.5 # explicit
 #   ./ship-swift.sh --dry-run       # build everything, skip git/tag/release/cask
 #   ./ship-swift.sh --no-cask       # ship binary + GitHub release, skip Cask bump
+#   ./ship-swift.sh --skip-qa       # emergencies only: skip self-tests, smoke test, CI-green gate
+#   ./ship-swift.sh --cask-only 0.2.5 # resume: redo only the Cask stage for a published release
 #   ./ship-swift.sh --self-test     # exercise release helper checks, no build/release
 #
 # Pre-flight requires:
@@ -27,7 +29,9 @@
 # Recovery: if anything after the build fails, swift/Info.plist and
 # synced docs metadata may be locally mutated. Reset with `git checkout
 # swift/Info.plist README.md docs/` and try again. Built artefacts in
-# swift/dist/ are safe to delete.
+# swift/dist/ are safe to delete. If the GitHub release published but
+# the Cask stage failed, resume with `./ship-swift.sh --cask-only
+# <version>` instead of re-running the full flow.
 
 set -euo pipefail
 
@@ -41,16 +45,15 @@ NOTARY_PROFILE="parakey-notary"
 CASK_TAP="${PARAKEY_HOMEBREW_TAP:-$PROJECT_DIR/../homebrew-parakey}"
 CASK_FILE="$CASK_TAP/Casks/parakey.rb"
 CASK_TOKEN="rcourtman/parakey/parakey"
+# Directory-level superset of SYNCED_PATHS in scripts/sync-docs.py
+# (every synced file lives at README.md or under docs/). Deliberately
+# coarse: a path added to SYNCED_PATHS alone is still committed and
+# rolled back here without this list needing a matching edit. Pre-flight
+# rejects untracked files under these paths so `git add docs` cannot
+# sweep strays into the release commit.
 DOC_SYNC_PATHS=(
     README.md
-    docs/index.html
-    docs/install.html
-    docs/install/agents.md
-    docs/faq.html
-    docs/llms.txt
-    docs/llms-full.txt
-    docs/sitemap.xml
-    docs/site-metadata.json
+    docs
 )
 NO_ATTRIBUTION_CHECKER="${NO_ATTRIBUTION_CHECKER:-/Users/rcourtman/.codex/skills/github-no-attribution/scripts/check_no_attribution.py}"
 ROLLBACK_RELEASE_MUTATIONS=0
@@ -61,6 +64,9 @@ TARGET=""
 DRY_RUN=0
 NO_CASK=0
 SELF_TEST=0
+SKIP_QA=0
+CASK_ONLY=0
+CASK_ONLY_VERSION=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --patch)   BUMP=patch; shift ;;
@@ -69,6 +75,10 @@ while [[ $# -gt 0 ]]; do
         --version) TARGET="$2"; BUMP=explicit; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
         --no-cask) NO_CASK=1; shift ;;
+        --skip-qa) SKIP_QA=1; shift ;;
+        --cask-only)
+            [[ $# -ge 2 ]] || { echo "--cask-only needs a version argument (X.Y.Z)" >&2; exit 1; }
+            CASK_ONLY=1; CASK_ONLY_VERSION="$2"; shift 2 ;;
         --self-test) SELF_TEST=1; shift ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | sed 's|^# \{0,1\}||'
@@ -76,6 +86,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown arg: $1" >&2; exit 1 ;;
     esac
 done
+
+if [[ "$CASK_ONLY" -eq 1 && ( "$DRY_RUN" -eq 1 || "$NO_CASK" -eq 1 ) ]]; then
+    echo "--cask-only cannot be combined with --dry-run or --no-cask" >&2
+    exit 1
+fi
 
 say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
@@ -247,6 +262,85 @@ path.write_text(src)
 PY
 }
 
+# Takes GitHub check-runs JSON (the commits/<sha>/check-runs payload) as
+# $1 and prints exactly one of: success | failing | pending | missing.
+check_runs_overall_state() {
+    /usr/bin/python3 - "$1" <<'PY'
+import json
+import sys
+
+runs = json.loads(sys.argv[1]).get("check_runs", [])
+if not runs:
+    print("missing")
+elif any(run.get("status") != "completed" for run in runs):
+    print("pending")
+elif any(run.get("conclusion") not in ("success", "neutral", "skipped") for run in runs):
+    print("failing")
+else:
+    print("success")
+PY
+}
+
+# Shared by the full release flow and --cask-only. Sets $tap_branch.
+cask_preflight() {
+    command -v brew >/dev/null || die "'brew' CLI not installed (needed to verify the published Cask)"
+    [[ -f "$CASK_FILE" ]] || die "cask not found at $CASK_FILE — set PARAKEY_HOMEBREW_TAP or use --no-cask"
+    tap_branch="$(git -C "$CASK_TAP" rev-parse --abbrev-ref HEAD)"
+    git -C "$CASK_TAP" update-index --refresh >/dev/null 2>&1 || true
+    if ! git -C "$CASK_TAP" diff-index --quiet HEAD --; then
+        die "Homebrew tap has uncommitted changes at $CASK_TAP
+   A previous cask stage may have died mid-rewrite. Inspect the tap, then
+   discard the half-applied rewrite (git -C \"$CASK_TAP\" checkout -- .)
+   before re-running ./ship-swift.sh --cask-only <version>."
+    fi
+}
+
+# Cask update + verification against an already-published GitHub release.
+# Used by the tail of the full release flow and by --cask-only resume.
+# Requires cask_preflight to have set $tap_branch.
+run_cask_stage() {
+    local version="$1"
+    local zip_sha="$2"
+    local resume_hint="fix the issue, then resume with: ./ship-swift.sh --cask-only $version"
+
+    say "Updating Homebrew Cask at $CASK_FILE"
+    rewrite_cask_file "$CASK_FILE" "$version" "$zip_sha"
+    grep -q "version \"$version\"" "$CASK_FILE" || die "cask rewrite failed (version) -- $resume_hint"
+    grep -q "sha256 \"$zip_sha\""  "$CASK_FILE" || die "cask rewrite failed (sha256) -- $resume_hint"
+
+    git -C "$CASK_TAP" add Casks/parakey.rb
+    local cask_commit_message="parakey $version"
+    check_no_attribution_text "cask commit message" "$cask_commit_message"
+    if git -C "$CASK_TAP" diff --cached --quiet; then
+        # Resume case: a previous run already committed this rewrite.
+        say "Cask file already at v$version; nothing new to commit"
+    else
+        git -C "$CASK_TAP" commit -m "$cask_commit_message" \
+            || die "tap commit failed -- $resume_hint"
+    fi
+    git -C "$CASK_TAP" push origin "$tap_branch" \
+        || die "tap push failed -- $resume_hint"
+
+    say "Verifying published Homebrew Cask"
+    local remote_tap_head local_tap_head
+    remote_tap_head="$(git -C "$CASK_TAP" ls-remote origin "refs/heads/$tap_branch" | awk '{print $1}')"
+    local_tap_head="$(git -C "$CASK_TAP" rev-parse HEAD)"
+    [[ "$remote_tap_head" == "$local_tap_head" ]] \
+        || die "tap push did not publish HEAD ($local_tap_head) -- $resume_hint"
+
+    brew tap rcourtman/parakey >/dev/null || die "brew tap rcourtman/parakey failed -- $resume_hint"
+    brew update >/dev/null || die "brew update failed after Cask push -- $resume_hint"
+
+    local published_version
+    published_version="$(brew info --cask "$CASK_TOKEN" 2>/dev/null | awk 'NR == 1 { print $NF; exit }')"
+    [[ "$published_version" == "$version" ]] \
+        || die "Homebrew sees $CASK_TOKEN as '$published_version', expected '$version' -- $resume_hint"
+
+    brew fetch --cask --force "$CASK_TOKEN" \
+        || die "brew fetch failed for $CASK_TOKEN v$version -- $resume_hint"
+    say "Homebrew Cask OK ($CASK_TOKEN v$version)"
+}
+
 assert_self_test_equals() {
     local actual="$1"
     local expected="$2"
@@ -298,6 +392,19 @@ run_release_script_self_test() {
     assert_self_test_fails "accepted malformed build number" \
         increment_build_number "04"
 
+    assert_self_test_equals \
+        "$(check_runs_overall_state '{"check_runs": []}')" \
+        "missing" "empty check-run list should report missing"
+    assert_self_test_equals \
+        "$(check_runs_overall_state '{"check_runs": [{"status": "completed", "conclusion": "success"}, {"status": "completed", "conclusion": "skipped"}]}')" \
+        "success" "green check runs should report success"
+    assert_self_test_equals \
+        "$(check_runs_overall_state '{"check_runs": [{"status": "completed", "conclusion": "success"}, {"status": "in_progress", "conclusion": null}]}')" \
+        "pending" "in-progress check run should report pending"
+    assert_self_test_equals \
+        "$(check_runs_overall_state '{"check_runs": [{"status": "completed", "conclusion": "failure"}]}')" \
+        "failing" "failed check run should report failing"
+
     local cask_file
     cask_file="$tmpdir/parakey.rb"
     local old_sha new_sha
@@ -336,6 +443,40 @@ if [[ "$SELF_TEST" -eq 1 ]]; then
     exit 0
 fi
 
+# ---- 0.5 Cask-only resume ---------------------------------------------------
+# Recovers a half-released state: the GitHub release published but the
+# Cask stage failed. Validates the release + asset exist, recomputes the
+# zip sha256 from the published asset, then re-runs only the Cask stage.
+if [[ "$CASK_ONLY" -eq 1 ]]; then
+    is_release_version "$CASK_ONLY_VERSION" \
+        || die "--cask-only needs X.Y.Z without leading zeroes, got '$CASK_ONLY_VERSION'"
+    command -v gh >/dev/null || die "'gh' CLI not installed (brew install gh)"
+    gh auth status >/dev/null 2>&1 || die "'gh' is not authenticated (gh auth login)"
+    cask_preflight
+
+    say "Validating published release v$CASK_ONLY_VERSION"
+    release_assets="$(gh release view "v$CASK_ONLY_VERSION" --repo rcourtman/parakey \
+        --json assets --jq '.assets[].name')" \
+        || die "release v$CASK_ONLY_VERSION not found on GitHub -- --cask-only resumes an already-published release"
+    grep -qx 'Parakey.zip' <<<"$release_assets" \
+        || die "release v$CASK_ONLY_VERSION has no Parakey.zip asset -- upload it (gh release upload) before resuming the Cask"
+
+    say "Downloading published Parakey.zip to compute sha256"
+    cask_only_tmp="$(mktemp -d)"
+    gh release download "v$CASK_ONLY_VERSION" --repo rcourtman/parakey \
+        --pattern Parakey.zip --dir "$cask_only_tmp" \
+        || die "could not download Parakey.zip from release v$CASK_ONLY_VERSION"
+    cask_only_sha="$(shasum -a 256 "$cask_only_tmp/Parakey.zip" | awk '{print $1}')"
+    rm -rf "$cask_only_tmp"
+
+    run_cask_stage "$CASK_ONLY_VERSION" "$cask_only_sha"
+    say "Cask resume complete for v$CASK_ONLY_VERSION"
+    echo
+    echo "  Cask:     brew update && brew upgrade --cask $CASK_TOKEN"
+    echo
+    exit 0
+fi
+
 # ---- 1. Pre-flight --------------------------------------------------------
 say "Pre-flight checks"
 
@@ -350,19 +491,28 @@ if ! git -C "$PROJECT_DIR" diff-index --quiet HEAD --; then
     die "working tree has uncommitted changes — commit or stash before shipping"
 fi
 
+# The release `git add` below is directory-level (README.md, docs/), so
+# refuse untracked strays there that would get swept into the commit.
+untracked_synced="$(git -C "$PROJECT_DIR" ls-files --others --exclude-standard -- "${DOC_SYNC_PATHS[@]}")"
+[[ -z "$untracked_synced" ]] \
+    || die "untracked files under synced-docs paths would be committed by the release: $untracked_synced"
+
+head_sha="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+
 if [[ "$DRY_RUN" -eq 0 ]]; then
     command -v gh >/dev/null || die "'gh' CLI not installed (brew install gh)"
     gh auth status >/dev/null 2>&1 || die "'gh' is not authenticated (gh auth login)"
+
+    say "Fetching origin to verify branch + tag state"
+    git -C "$PROJECT_DIR" fetch origin || die "git fetch origin failed"
+    remote_main="$(git -C "$PROJECT_DIR" rev-parse origin/main)"
+    if [[ "$head_sha" != "$remote_main" ]]; then
+        die "local main ($head_sha) != origin/main ($remote_main) -- push (or pull/rebase) so they match before shipping"
+    fi
 fi
 
 if [[ "$NO_CASK" -eq 0 && "$DRY_RUN" -eq 0 ]]; then
-    command -v brew >/dev/null || die "'brew' CLI not installed (needed to verify the published Cask)"
-    [[ -f "$CASK_FILE" ]] || die "cask not found at $CASK_FILE — set PARAKEY_HOMEBREW_TAP or use --no-cask"
-    tap_branch="$(git -C "$CASK_TAP" rev-parse --abbrev-ref HEAD)"
-    git -C "$CASK_TAP" update-index --refresh >/dev/null 2>&1 || true
-    if ! git -C "$CASK_TAP" diff-index --quiet HEAD --; then
-        die "Homebrew tap has uncommitted changes at $CASK_TAP"
-    fi
+    cask_preflight
 fi
 
 # ---- 2. Compute target version --------------------------------------------
@@ -376,8 +526,46 @@ new_build="$(increment_build_number "$current_build")"
 
 say "Version: $current_version (build $current_build) -> $new_version (build $new_build)"
 
-if git -C "$PROJECT_DIR" rev-parse "v$new_version" >/dev/null 2>&1; then
-    die "tag v$new_version already exists -- pick a different version"
+if git -C "$PROJECT_DIR" rev-parse -q --verify "refs/tags/v$new_version" >/dev/null; then
+    die "tag v$new_version already exists locally -- pick a different version (or delete the stale local tag first)"
+fi
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    remote_tag_ref="$(git -C "$PROJECT_DIR" ls-remote --tags origin "refs/tags/v$new_version")" \
+        || die "git ls-remote failed while checking origin for tag v$new_version"
+    [[ -z "$remote_tag_ref" ]] \
+        || die "tag v$new_version already exists on origin -- pick a different version"
+fi
+
+# ---- 2.5 QA gates -----------------------------------------------------------
+# Cheap-to-medium checks before the expensive notarisation round-trip:
+# CI must be green for HEAD, the debug self-test suite must pass (same
+# invocation as .github/workflows/check.yml), and the packaging contract
+# must hold (scripts/smoke-packaged-app.sh builds + checks its own
+# throwaway debug bundle, so it needs no input from this script).
+if [[ "$SKIP_QA" -eq 1 ]]; then
+    warn "Skipping QA gates (--skip-qa): CI status, self-test suite, packaged smoke test"
+else
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        say "Checking CI status for HEAD ($head_sha)"
+        ci_json="$(gh api "repos/rcourtman/parakey/commits/$head_sha/check-runs?per_page=100")" \
+            || die "could not query CI check-runs for $head_sha"
+        ci_state="$(check_runs_overall_state "$ci_json")"
+        case "$ci_state" in
+            success) say "CI is green for HEAD" ;;
+            missing) die "no CI check-runs found for HEAD ($head_sha) -- wait for CI to start/finish, or --skip-qa in an emergency" ;;
+            pending) die "CI is still running for HEAD ($head_sha) -- wait for green, or --skip-qa in an emergency" ;;
+            failing) die "CI is red for HEAD ($head_sha) -- fix CI before shipping, or --skip-qa in an emergency" ;;
+            *)       die "unexpected CI state '$ci_state' for HEAD ($head_sha)" ;;
+        esac
+    fi
+
+    say "Running debug self-test suite (same as CI)"
+    ( cd "$SWIFT_DIR" && swift run -c debug Parakey --self-test all ) \
+        || die "swift self-test suite failed -- fix before shipping, or --skip-qa in an emergency"
+
+    say "Running packaged-app smoke test"
+    "$PROJECT_DIR/scripts/smoke-packaged-app.sh" \
+        || die "packaged-app smoke test failed -- fix before shipping, or --skip-qa in an emergency"
 fi
 
 # ---- 3. Build release-optimised binary ------------------------------------
@@ -406,9 +594,11 @@ cp "$BIN" "$APP/Contents/MacOS/Parakey"
 cp "$INFO_PLIST" "$APP/Contents/Info.plist"
 cp "$SWIFT_DIR/Resources/parakey-menubar.png"    "$APP/Contents/Resources/"
 cp "$SWIFT_DIR/Resources/parakey-menubar@2x.png" "$APP/Contents/Resources/"
-if [[ -f "$PROJECT_DIR/icon/Parakey.icns" ]]; then
-    cp "$PROJECT_DIR/icon/Parakey.icns" "$APP/Contents/Resources/Parakey.icns"
-fi
+# Hard requirement: scripts/smoke-packaged-app.sh fails CI on a missing
+# icon, so the release packaging must hold the same contract.
+[[ -f "$PROJECT_DIR/icon/Parakey.icns" ]] \
+    || die "icon/Parakey.icns missing -- the packaged app must ship with an icon"
+cp "$PROJECT_DIR/icon/Parakey.icns" "$APP/Contents/Resources/Parakey.icns"
 
 # ---- 6. Codesign ----------------------------------------------------------
 CODESIGN_IDENTITY="${PARAKEY_CODESIGN_IDENTITY:-}"
@@ -523,13 +713,21 @@ fi
 git -C "$PROJECT_DIR" add "$INFO_PLIST" "${DOC_SYNC_PATHS[@]}"
 git -C "$PROJECT_DIR" commit -m "$release_commit_message"
 ROLLBACK_RELEASE_MUTATIONS=0
-git -C "$PROJECT_DIR" tag "v$new_version"
+# Annotated, not lightweight: `git push --follow-tags` only pushes
+# annotated tags, and we push the tag ref explicitly anyway so the
+# remote tag exists before `gh release create` references it.
+git -C "$PROJECT_DIR" tag -a "v$new_version" -m "$release_commit_message"
 
 say "Pushing main + tag"
-git -C "$PROJECT_DIR" push origin main --follow-tags
+git -C "$PROJECT_DIR" push origin main "refs/tags/v$new_version"
 
 # ---- 10. GitHub release ---------------------------------------------------
 say "Creating GitHub release v$new_version"
+
+# At this point main and the tag are already on origin; only the GitHub
+# release itself is missing. `gh release create` on an existing pushed
+# tag attaches to that tag, so re-running it manually is safe.
+release_failure_msg="gh release create failed -- commit and tag v$new_version ARE pushed to origin; no GitHub release exists yet. Re-run: gh release create v$new_version $ZIP_OUT --repo rcourtman/parakey --title $release_title --notes ... (it will reuse the pushed tag), then finish with ./ship-swift.sh --cask-only $new_version"
 
 if [[ "$USE_NOTES_FILE" -eq 1 ]]; then
     say "Using hand-written release notes from $NOTES_FILE"
@@ -537,45 +735,20 @@ if [[ "$USE_NOTES_FILE" -eq 1 ]]; then
         --repo rcourtman/parakey \
         --title "$release_title" \
         --notes-file "$NOTES_FILE" \
-        || die "gh release create failed -- tag is pushed; re-run gh release manually"
+        || die "$release_failure_msg"
 else
     gh release create "v$new_version" "$ZIP_OUT" \
         --repo rcourtman/parakey \
         --title "$release_title" \
         --notes "$notes" \
-        || die "gh release create failed -- tag is pushed; re-run gh release manually"
+        || die "$release_failure_msg"
 fi
 
 # ---- 11. Homebrew Cask bump -----------------------------------------------
 if [[ "$NO_CASK" -eq 1 ]]; then
     say "Skipping Cask bump (--no-cask)"
 else
-    say "Updating Homebrew Cask at $CASK_FILE"
-    rewrite_cask_file "$CASK_FILE" "$new_version" "$ZIP_SHA"
-    grep -q "version \"$new_version\"" "$CASK_FILE" || die "cask rewrite failed (version)"
-    grep -q "sha256 \"$ZIP_SHA\""      "$CASK_FILE" || die "cask rewrite failed (sha256)"
-
-    git -C "$CASK_TAP" add Casks/parakey.rb
-    cask_commit_message="parakey $new_version"
-    check_no_attribution_text "cask commit message" "$cask_commit_message"
-    git -C "$CASK_TAP" commit -m "$cask_commit_message"
-    git -C "$CASK_TAP" push origin "$tap_branch"
-
-    say "Verifying published Homebrew Cask"
-    remote_tap_head="$(git -C "$CASK_TAP" ls-remote origin "refs/heads/$tap_branch" | awk '{print $1}')"
-    local_tap_head="$(git -C "$CASK_TAP" rev-parse HEAD)"
-    [[ "$remote_tap_head" == "$local_tap_head" ]] || die "tap push did not publish HEAD ($local_tap_head)"
-
-    brew tap rcourtman/parakey >/dev/null || die "brew tap rcourtman/parakey failed"
-    brew update >/dev/null || die "brew update failed after Cask push"
-
-    published_version="$(brew info --cask "$CASK_TOKEN" 2>/dev/null | awk 'NR == 1 { print $NF; exit }')"
-    [[ "$published_version" == "$new_version" ]] \
-        || die "Homebrew sees $CASK_TOKEN as '$published_version', expected '$new_version'"
-
-    brew fetch --cask --force "$CASK_TOKEN" \
-        || die "brew fetch failed for $CASK_TOKEN v$new_version"
-    say "Homebrew Cask OK ($CASK_TOKEN v$new_version)"
+    run_cask_stage "$new_version" "$ZIP_SHA"
 fi
 
 # ---- 12. Done -------------------------------------------------------------

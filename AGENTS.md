@@ -55,7 +55,8 @@ cd swift
 swift run Parakey --self-test all
 
 # Release dry-run: build + sign + entitlement check + zip; skips notarise/staple and git/tag/release/cask
-./ship-swift.sh --dry-run
+# (ship-swift.sh lives at the repo root; this block is still in swift/)
+../ship-swift.sh --dry-run
 
 # Tail logs (same file for dev + Cask install — bundle ids match)
 tail -f ~/Library/Logs/Parakey.log
@@ -357,37 +358,46 @@ When the user does ask for a release, the mechanics are:
 ./ship-swift.sh --major         # 0.x.x → 1.0.0
 ./ship-swift.sh --version 0.2.5 # explicit
 ./ship-swift.sh --dry-run       # build + sign + entitlement check + package, skip notarise/staple/git/tag/release/cask
+./ship-swift.sh --skip-qa       # emergencies only: skip CI-green gate, self-test suite, packaged smoke test
+./ship-swift.sh --cask-only 0.2.5 # resume a half-released state: redo only the Cask stage against the published release
 ```
 
 `ship-swift.sh` does in order:
 
-1. Pre-flight (clean tree on `main`, `gh` auth, sibling tap present)
+1. Pre-flight (clean tree on `main`, `gh` auth, sibling tap present;
+   fetches origin and requires local `main` == `origin/main`; rejects
+   untracked files under `README.md`/`docs/`)
 2. Read current version from `swift/Info.plist`, compute target, refuse
-   if a tag for the target version already exists
-3. `swift build -c release`
-4. Rewrite `CFBundleShortVersionString` and `CFBundleVersion` in
+   if a tag for the target version already exists locally **or on
+   origin** (`git ls-remote`)
+3. QA gates (skippable with `--skip-qa`): CI check-runs for HEAD must
+   be green (`gh api .../check-runs`), `swift run -c debug Parakey
+   --self-test all`, and `scripts/smoke-packaged-app.sh`
+4. `swift build -c release`
+5. Rewrite `CFBundleShortVersionString` and `CFBundleVersion` in
    `swift/Info.plist` (the latter monotonically increments). If
    `plutil -lint` rejects the rewrite, the change is reverted.
-5. Wrap binary + `Info.plist` + menu-bar PNGs + `.icns` in a fresh
+6. Wrap binary + `Info.plist` + menu-bar PNGs + `.icns` in a fresh
    `swift/dist/Parakey.app`
-6. Codesign with Developer ID + hardened runtime + `entitlements.plist`
-7. Assert that `com.apple.security.device.audio-input` and
+7. Codesign with Developer ID + hardened runtime + `entitlements.plist`
+8. Assert that `com.apple.security.device.audio-input` and
    `com.apple.security.device.microphone` are present in the signed
    binary's embedded entitlements; fail loudly if not
-8. `notarytool submit --wait` (on a temp zip) + `xcrun stapler staple`
-9. `ditto -c -k --keepParent` the stapled bundle into
-   `swift/dist/Parakey.zip` (versioning lives in the GitHub release
-   tag, not the filename)
-10. Commit the version bump, tag `vX.Y.Z`, push `main` + tag
-11. `gh release create` with the zip as the asset. Release notes
+9. `notarytool submit --wait` (on a temp zip) + `xcrun stapler staple`
+10. `ditto -c -k --keepParent` the stapled bundle into
+    `swift/dist/Parakey.zip` (versioning lives in the GitHub release
+    tag, not the filename)
+11. Commit the version bump, create an **annotated** tag `vX.Y.Z`,
+    push `main` and the tag ref explicitly
+12. `gh release create` with the zip as the asset. Release notes
     come from `swift/release-notes/v<new_version>.md` if that file
     exists (preferred for releases with migration steps, breaking
     changes, or any narrative content); otherwise they're
     auto-generated from `git log <prev-tag>..<new-tag>`. Write the
     file before running `ship-swift.sh` to control the release body.
-12. Rewrite `version` + `sha256` in the sibling Homebrew tap's
+13. Rewrite `version` + `sha256` in the sibling Homebrew tap's
     `Casks/parakey.rb`, commit, push
-13. Refresh Homebrew metadata, assert
+14. Refresh Homebrew metadata, assert
     `brew info --cask rcourtman/parakey/parakey` reports the new
     version, and run `brew fetch --cask --force
     rcourtman/parakey/parakey` to verify the published URL + sha256
@@ -396,17 +406,28 @@ With `--dry-run`, the script still builds, signs, checks embedded
 entitlements, packages `swift/dist/Parakey.zip`, removes the temporary
 `swift/dist/Parakey.app` bundle before exit, and reverts the temporary
 Info.plist bump, but it skips notarytool submission, stapling,
-git/tag/release work, and the Homebrew Cask update.
+git/tag/release work, and the Homebrew Cask update. Dry-run also runs
+the debug self-test suite and the packaged smoke test (`--skip-qa`
+skips them here too); the CI-status, fetch/divergence, and remote-tag
+checks are skipped since they need network and a pushed HEAD.
 
 The tap lives at `../homebrew-parakey` by default; override with
 `PARAKEY_HOMEBREW_TAP=/path/to/tap` if your layout differs.
 
-**Recovery**: if any step fails, `ship-swift.sh` reverts the
-`swift/Info.plist` edit so the working tree is clean again. If a
-later step (push, gh release, cask) fails after the build succeeded,
-the artefact is still in `swift/dist/`; re-run the failed step
-manually rather than re-running `ship-swift.sh` (which would try to
-bump the version a second time).
+**Recovery**: if any step fails before the version-bump commit,
+`ship-swift.sh` reverts the `swift/Info.plist` edit (and any synced
+docs) so the working tree is clean again. After that point the
+artefact is still in `swift/dist/` and the commit + annotated tag are
+already on origin. If `gh release create` failed, re-run
+`gh release create v<version> swift/dist/Parakey.zip ...` manually —
+it attaches to the existing pushed tag — then run
+`./ship-swift.sh --cask-only <version>`. If the GitHub release
+published but the Cask stage failed, run
+`./ship-swift.sh --cask-only <version>` — it validates the release
+and asset, recomputes the zip sha256 from the published asset, and
+re-runs only the Cask update/verification (idempotent if the tap
+commit already landed). Don't re-run a bare `ship-swift.sh` in these
+states — it would try to bump the version a second time.
 
 **One-time setup** (only needed on a fresh machine):
 
