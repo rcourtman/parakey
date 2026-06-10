@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,7 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "swift" / "Sources" / "Parakey" / "main.swift"
 
 DEFAULT_REPO = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
-DEFAULT_REVISION = "aed02740059203c4a87495924f685de3722ae9ce"
+# The pinned revision is NOT duplicated here: main.swift's
+# parakeetV3RepositoryCommit is the single source of truth, parsed at
+# runtime when --revision is not passed (see revision_from_source).
 DEFAULT_BUNDLES = [
     "Decoder.mlmodelc",
     "Encoder.mlmodelc",
@@ -54,10 +57,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirect)
 
+LINK_HEADER_RE = re.compile(r"<([^<>]+)>([^<]*)")
+LINK_REL_NEXT_RE = re.compile(r'rel\s*=\s*"?next"?')
+MAX_TREE_PAGES = 100
 
-def urlopen_json(url: str) -> object:
+
+def next_page_url(link_header: str | None) -> str | None:
+    if not link_header:
+        return None
+    for match in LINK_HEADER_RE.finditer(link_header):
+        if LINK_REL_NEXT_RE.search(match.group(2)):
+            return match.group(1)
+    return None
+
+
+def fetch_tree_page(url: str) -> tuple[object, str | None]:
     with urllib.request.urlopen(url, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+        payload = json.loads(response.read().decode("utf-8"))
+        next_url = next_page_url(response.headers.get("Link"))
+    return payload, next_url
 
 
 def quoted_repo(repo: str) -> str:
@@ -105,10 +123,30 @@ def resolve_url(repo: str, revision: str, path: str) -> str:
     return f"https://huggingface.co/{quoted_repo(repo)}/resolve/{revision}/{quoted_path(path)}"
 
 
-def listed_model_files(repo: str, revision: str, bundles: list[str], extra_files: list[str]) -> list[str]:
-    tree = urlopen_json(tree_url(repo, revision))
-    if not isinstance(tree, list):
-        raise ManifestError("unexpected Hugging Face tree response")
+def tree_entries(repo: str, revision: str, fetch_page) -> list[object]:
+    entries: list[object] = []
+    url = tree_url(repo, revision)
+    for _ in range(MAX_TREE_PAGES):
+        page, next_url = fetch_page(url)
+        if not isinstance(page, list):
+            raise ManifestError("unexpected Hugging Face tree response")
+        entries.extend(page)
+        if next_url is None:
+            return entries
+        if not next_url.startswith("https://huggingface.co/"):
+            raise ManifestError(f"unsafe Hugging Face tree pagination URL: {next_url!r}")
+        url = next_url
+    raise ManifestError(f"Hugging Face tree listing exceeded {MAX_TREE_PAGES} pages")
+
+
+def listed_model_files(
+    repo: str,
+    revision: str,
+    bundles: list[str],
+    extra_files: list[str],
+    fetch_page=fetch_tree_page,
+) -> list[str]:
+    tree = tree_entries(repo, revision, fetch_page)
 
     bundle_prefixes = tuple(f"{bundle}/" for bundle in bundles)
     wanted = []
@@ -209,6 +247,13 @@ def swift_constant(source: str, pattern: re.Pattern[str], label: str) -> str:
     return match.group(2)
 
 
+def revision_from_source(path: Path) -> str:
+    source = path.read_text(encoding="utf-8")
+    revision = swift_constant(source, SWIFT_REVISION_RE, "repository commit")
+    validate_revision(revision)
+    return revision
+
+
 def replace_swift_constant(source: str, pattern: re.Pattern[str], label: str, value: str) -> str:
     def replacement(match: re.Match[str]) -> str:
         return f"{match.group(1)}{value}{match.group(3)}"
@@ -262,6 +307,7 @@ def assert_raises(func, message: str) -> None:
 
 def run_self_test() -> None:
     digest = "a" * 64
+    revision = "b" * 40
     manifest = render_manifest(["Toy.mlmodelc/model.mil"], {"Toy.mlmodelc/model.mil": digest})
     source = """enum ModelIntegrity {
     static let parakeetV3Repository = "old/repo"
@@ -274,11 +320,61 @@ def run_self_test() -> None:
     ]
 }
 """
-    updated = update_source(source, manifest, DEFAULT_REPO, DEFAULT_REVISION)
-    if not source_matches(updated, manifest, DEFAULT_REPO, DEFAULT_REVISION):
+    updated = update_source(source, manifest, DEFAULT_REPO, revision)
+    if not source_matches(updated, manifest, DEFAULT_REPO, revision):
         raise ManifestError("self-test source update did not round-trip")
     if current_generated_block(updated) != manifest:
         raise ManifestError("self-test manifest block mismatch")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture = Path(tmp) / "main.swift"
+        fixture.write_text(updated, encoding="utf-8")
+        if revision_from_source(fixture) != revision:
+            raise ManifestError("self-test did not read pinned revision from Swift source")
+        fixture.write_text("enum ModelIntegrity {}\n", encoding="utf-8")
+        assert_raises(lambda: revision_from_source(fixture),
+                      "self-test accepted Swift source without revision constant")
+        fixture.write_text('static let parakeetV3RepositoryCommit = "../main"\n', encoding="utf-8")
+        assert_raises(lambda: revision_from_source(fixture),
+                      "self-test accepted malformed revision constant")
+
+    page_one = [{"type": "file", "path": "Toy.mlmodelc/model.mil"}]
+    page_two = [{"type": "file", "path": "vocab.json"}]
+    first_url = tree_url(DEFAULT_REPO, revision)
+    second_url = f"https://huggingface.co/api/models/{DEFAULT_REPO}/tree/{revision}?recursive=true&cursor=abc"
+
+    def paged_fetch(url: str) -> tuple[object, str | None]:
+        if url == first_url:
+            return page_one, second_url
+        if url == second_url:
+            return page_two, None
+        raise ManifestError(f"self-test fetched unexpected URL: {url!r}")
+
+    paths = listed_model_files(DEFAULT_REPO, revision, ["Toy.mlmodelc"], ["vocab.json"], paged_fetch)
+    if paths != ["Toy.mlmodelc/model.mil", "vocab.json"]:
+        raise ManifestError(f"self-test pagination dropped tree entries: {paths!r}")
+
+    if next_page_url('<https://huggingface.co/page2>; rel="next"') != "https://huggingface.co/page2":
+        raise ManifestError("self-test did not parse Link rel=next header")
+    if next_page_url('<https://huggingface.co/page0>; rel="prev"') is not None:
+        raise ManifestError("self-test treated rel=prev as a next page")
+    if next_page_url(None) is not None:
+        raise ManifestError("self-test invented a next page for a missing Link header")
+
+    assert_raises(
+        lambda: tree_entries(DEFAULT_REPO, revision,
+                             lambda url: ([], "https://evil.example/tree")),
+        "self-test accepted pagination URL outside huggingface.co",
+    )
+    assert_raises(
+        lambda: tree_entries(DEFAULT_REPO, revision,
+                             lambda url: ([], first_url)),
+        "self-test accepted unbounded pagination",
+    )
+    assert_raises(
+        lambda: tree_entries(DEFAULT_REPO, revision, lambda url: ({}, None)),
+        "self-test accepted non-list tree response",
+    )
 
     assert_raises(lambda: validate_model_path("../model.mil"),
                   "self-test accepted parent traversal in model path")
@@ -301,7 +397,11 @@ def run_self_test() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=DEFAULT_REPO)
-    parser.add_argument("--revision", default=DEFAULT_REVISION)
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="Hugging Face revision; defaults to parakeetV3RepositoryCommit parsed from --source",
+    )
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--write", action="store_true", help="rewrite the generated manifest block in main.swift")
     parser.add_argument("--check", action="store_true", help="fail if main.swift is not already up to date")
@@ -314,6 +414,9 @@ def main() -> int:
     if args.self_test:
         run_self_test()
         return 0
+
+    if args.revision is None:
+        args.revision = revision_from_source(args.source)
 
     manifest = build_manifest(args)
 

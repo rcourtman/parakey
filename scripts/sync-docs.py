@@ -15,6 +15,7 @@ import json
 import plistlib
 import re
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -382,7 +383,10 @@ def sync_llms_full(path: Path, metadata: dict[str, object]) -> str:
 def sync_sitemap(path: Path, metadata: dict[str, object]) -> str:
     text = read_text(path)
     last_updated = str(metadata["last_updated"])
-    text = re.sub(r"<lastmod>\d{4}-\d{2}-\d{2}</lastmod>", f"<lastmod>{last_updated}</lastmod>", text)
+    pattern = r"<lastmod>\d{4}-\d{2}-\d{2}</lastmod>"
+    text, count = re.subn(pattern, f"<lastmod>{last_updated}</lastmod>", text)
+    if count == 0:
+        raise SyncError(f"{path}: expected at least one match for {pattern!r}, found 0")
     return text
 
 
@@ -442,14 +446,41 @@ def diff_text(path: Path, current: str, expected: str) -> str:
     )
 
 
+def run_self_test() -> None:
+    metadata: dict[str, object] = {"last_updated": "2026-01-02"}
+    with tempfile.TemporaryDirectory() as tmp:
+        sitemap = Path(tmp) / "sitemap.xml"
+        sitemap.write_text(
+            "<url><lastmod>2025-12-30</lastmod></url>\n<url><lastmod>2025-12-31</lastmod></url>\n",
+            encoding="utf-8",
+        )
+        updated = sync_sitemap(sitemap, metadata)
+        if updated.count("<lastmod>2026-01-02</lastmod>") != 2:
+            raise SyncError("self-test: sitemap lastmod entries were not all rewritten")
+
+        sitemap.write_text("<urlset></urlset>\n", encoding="utf-8")
+        try:
+            sync_sitemap(sitemap, metadata)
+        except SyncError:
+            pass
+        else:
+            raise SyncError("self-test: sitemap without <lastmod> entries did not fail loudly")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if docs are not already synced")
     parser.add_argument("--release-zip", help="release zip whose byte size should be written to docs")
     parser.add_argument("--date", help="override last_updated date as YYYY-MM-DD")
+    parser.add_argument("--self-test", action="store_true", help="run offline sync self-tests")
     args = parser.parse_args()
 
     try:
+        if args.self_test:
+            run_self_test()
+            print("sync-docs self-test passed")
+            return 0
+
         metadata = build_metadata(args)
         expected = expected_files(metadata)
         errors: list[str] = []
