@@ -12,7 +12,7 @@ Core facts:
 - Diagnostics: Copy Diagnostics and Save Diagnostics produce a privacy-safe local report with metadata and bounded recent logs, not transcript or correction contents.
 - Clipboard: pasted text goes through the system pasteboard and stays there until overwritten; Parakey deliberately does not restore the previous clipboard contents.
 - Network surface: model download from huggingface.co (first launch, integrity-failure re-download, or user-triggered Reset Speech Model Cache), optional update check that only notifies (fixed User-Agent `parakey-update-check`, no version, device, or user identifiers), and user-triggered update apply through Homebrew (formulae.brew.sh, the GitHub APIs, the tap repository, and the GitHub release download).
-- Release size: about 2.4 MB signed zip; model cache is about 600 MB on first launch.
+- Release size: about 2.5 MB signed zip; model cache is about 600 MB on first launch.
 - Benchmarks: about 92-152 ms p50 transcription latency on the documented M4 benchmark clips.
 
 Important pages:

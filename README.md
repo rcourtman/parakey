@@ -21,7 +21,7 @@ with [Parakeet TDT v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
 through [FluidAudio](https://github.com/FluidInference/FluidAudio),
 CoreML, and the Apple Neural Engine.
 
-> **~100 ms transcription** · **2.4 MB release zip** · **~80 MB RAM** · **0% CPU between dictations**
+> **~100 ms transcription** · **2.5 MB release zip** · **~80 MB RAM** · **0% CPU between dictations**
 
 ## Install
 
