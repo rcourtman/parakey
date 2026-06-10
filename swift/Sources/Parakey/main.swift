@@ -46,6 +46,7 @@ let MIN_CLIP_SECONDS: Double = 0.25
 let MAX_RECORDING_SECONDS: TimeInterval = 120   // auto-release if held longer
 let UPDATE_CHECK_FIRST_DELAY_SECONDS: TimeInterval = 30
 let UPDATE_CHECK_INTERVAL_SECONDS: TimeInterval = 6 * 3600  // 6h
+let UPDATE_REMIND_LATER_SECONDS: TimeInterval = 24 * 3600  // 24h
 let GITHUB_LATEST_RELEASE_URL = URL(string: "https://api.github.com/repos/rcourtman/parakey/releases/latest")!
 let GITHUB_REPOSITORY_PAGE = URL(string: "https://github.com/rcourtman/parakey")!
 let GITHUB_RELEASES_PAGE = URL(string: "https://github.com/rcourtman/parakey/releases/latest")!
@@ -330,6 +331,98 @@ func normalizedSkippedUpdateVersions(_ values: [String]) -> [String] {
     return result.reversed()
 }
 
+enum UpdateCheckSource: String, Equatable {
+    case automatic
+    case manual
+    /// Check fired because the user re-enabled "Check for Updates" in
+    /// the settings menu — user-initiated like .manual but silent like
+    /// .automatic, so diagnostics record it as its own source.
+    case settingsToggle = "settings_toggle"
+
+    var diagnosticLabel: String {
+        switch self {
+        case .automatic: return "automatic"
+        case .manual: return "manual"
+        case .settingsToggle: return "settings toggle"
+        }
+    }
+}
+
+enum UpdateCheckResult: String, Equatable {
+    case failed = "failed"
+    case upToDate = "up_to_date"
+    case available = "available"
+    case skipped = "skipped"
+
+    var diagnosticLabel: String {
+        switch self {
+        case .failed: return "failed or unavailable"
+        case .upToDate: return "up to date"
+        case .available: return "update available"
+        case .skipped: return "skipped version available"
+        }
+    }
+}
+
+func updateCheckResult(for release: GitHubRelease?,
+                       currentVersion: String,
+                       skippedVersions: [String]) -> UpdateCheckResult {
+    guard let release else { return .failed }
+    guard isNewer(release.version, than: currentVersion) else { return .upToDate }
+    return skippedVersions.contains(release.version) ? .skipped : .available
+}
+
+func shouldSuppressUpdateForReminder(version: String,
+                                     reminderVersion: String?,
+                                     reminderUntil: Date?,
+                                     now: Date) -> Bool {
+    guard let reminderVersion,
+          let reminderUntil,
+          reminderVersion == version else {
+        return false
+    }
+    return now < reminderUntil
+}
+
+/// True when a fetched release makes a stored "Remind me later" pause
+/// stale: either the pause expired for the same version (it is about
+/// to be re-shown), or a NEWER release superseded the paused one.
+/// Without the newer-version case, pausing v0.3.0 and seeing v0.3.1
+/// ship within 24 h left diagnostics showing both "Pending update:
+/// v0.3.1" and "Reminder paused: v0.3.0 until …". An OLDER fetched
+/// version (e.g. a retracted release) keeps the pause.
+func shouldClearUpdateReminderPause(fetchedVersion: String, pausedVersion: String?) -> Bool {
+    guard let pausedVersion else { return false }
+    return fetchedVersion == pausedVersion || isNewer(fetchedVersion, than: pausedVersion)
+}
+
+/// Validates a persisted "Remind me later" expiry read back from
+/// UserDefaults. Non-Date values and dates further in the future than
+/// one full pause window are treated as corrupt and degrade to nil,
+/// so a tampered or clock-skewed value re-arms the reminder instead
+/// of suppressing updates indefinitely. Past dates pass through —
+/// an expired pause is legitimate state that the suppress logic and
+/// `shouldClearUpdateReminderPause` handle.
+func normalizedUpdateReminderPauseExpiry(storedValue value: Any?,
+                                         now: Date = Date(),
+                                         maxPauseSeconds: TimeInterval = UPDATE_REMIND_LATER_SECONDS) -> Date? {
+    guard let date = value as? Date else { return nil }
+    guard date.timeIntervalSince(now) <= maxPauseSeconds else { return nil }
+    return date
+}
+
+func updateCheckDiagnosticText(checkedAt: Date?,
+                               source: UpdateCheckSource?,
+                               result: UpdateCheckResult?,
+                               releaseVersion: String) -> String {
+    guard let checkedAt else { return "never" }
+    let timestamp = ISO8601DateFormatter().string(from: checkedAt)
+    let sourceText = source?.diagnosticLabel ?? "unknown source"
+    let resultText = result?.diagnosticLabel ?? "unknown result"
+    let versionText = releaseVersion.isEmpty ? "" : " (latest v\(releaseVersion))"
+    return "\(timestamp), \(sourceText), \(resultText)\(versionText)"
+}
+
 struct AudioInputDevice: Equatable {
     let id: AudioDeviceID
     let uid: String
@@ -381,7 +474,15 @@ enum TranscriptCorrectionsTransferError: LocalizedError {
 
 enum TranscriptCorrectionsTransfer {
     static let schemaVersion = 1
-    static let maxFileBytes = 2 * 1024 * 1024
+    /// Hard cap for corrections files and in-memory transfers.
+    /// Derivation: the worst-case legal set is MAX_TRANSCRIPT_CORRECTIONS
+    /// (512) entries at the per-field caps (512 B source + 4096 B
+    /// replacement) ≈ 2.25 MiB of raw field bytes, ~2.4 MB once JSON
+    /// keys, quoting, and pretty-printing are added — already over the
+    /// old 2 MiB cap, which made a full legal set silently unsaveable.
+    /// 4 MiB fits that worst case with headroom for JSON escaping while
+    /// still rejecting runaway files.
+    static let maxFileBytes = 4 * 1024 * 1024
 
     static var contentType: UTType {
         UTType(filenameExtension: CORRECTIONS_FILE_EXTENSION)
@@ -401,7 +502,20 @@ enum TranscriptCorrectionsTransfer {
         return try encoder.encode(document)
     }
 
+    /// Decode result that also reports how many entries the file held
+    /// BEFORE normalization, so the import dialog can disclose
+    /// truncation (over-cap, invalid, or duplicate entries) instead of
+    /// presenting the capped count as the file's content.
+    struct CountedDecodeResult: Sendable, Equatable {
+        let corrections: [TranscriptCorrection]
+        let originalCount: Int
+    }
+
     static func decode(_ data: Data) throws -> [TranscriptCorrection] {
+        try decodeCounted(data).corrections
+    }
+
+    static func decodeCounted(_ data: Data) throws -> CountedDecodeResult {
         try validateTransferSize(data.count)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -410,13 +524,20 @@ enum TranscriptCorrectionsTransfer {
             guard document.schemaVersion == schemaVersion else {
                 throw TranscriptCorrectionsDocumentError.unsupportedSchema(document.schemaVersion)
             }
-            return normalizedTranscriptCorrections(document.corrections)
+            return CountedDecodeResult(
+                corrections: normalizedTranscriptCorrections(document.corrections),
+                originalCount: document.corrections.count
+            )
         }
 
         // Early internal builds stored the bare array. Keeping the
         // fallback costs almost nothing and makes hand-authored files
         // forgiving while the public file format settles.
-        return normalizedTranscriptCorrections(try decoder.decode([TranscriptCorrection].self, from: data))
+        let legacy = try decoder.decode([TranscriptCorrection].self, from: data)
+        return CountedDecodeResult(
+            corrections: normalizedTranscriptCorrections(legacy),
+            originalCount: legacy.count
+        )
     }
 
     static func validateTransferSize(_ bytes: Int) throws {
@@ -425,17 +546,27 @@ enum TranscriptCorrectionsTransfer {
         }
     }
 
-    static func write(_ corrections: [TranscriptCorrection], to url: URL) throws {
+    /// Writes the encoded document and returns the exact bytes that
+    /// landed on disk, so callers can fingerprint what was written
+    /// without re-reading the file (a re-read races with sync
+    /// providers replacing the file behind us).
+    @discardableResult
+    static func write(_ corrections: [TranscriptCorrection], to url: URL) throws -> Data {
         let data = try encode(corrections)
         try validateTransferSize(data.count)
         try validateWritablePath(url)
         let parent = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try data.write(to: url, options: .atomic)
+        return data
     }
 
     static func read(from url: URL) throws -> [TranscriptCorrection] {
         try decode(try readData(from: url))
+    }
+
+    static func readCounted(from url: URL) throws -> CountedDecodeResult {
+        try decodeCounted(try readData(from: url))
     }
 
     private static func readData(from url: URL) throws -> Data {
@@ -926,6 +1057,30 @@ func normalizedTranscriptCorrections(_ corrections: [TranscriptCorrection]) -> [
     return result
 }
 
+/// First line of the import-confirmation dialog. When the file holds
+/// more entries than survive normalization (over the
+/// MAX_TRANSCRIPT_CORRECTIONS cap, or invalid/duplicate entries), the
+/// dialog must state the file's real count and how many will actually
+/// be kept — normalization runs before the dialog, so without this the
+/// user is told an oversized file "contains 512 corrections".
+func correctionImportCountText(sourceName: String, originalCount: Int, keptCount: Int) -> String {
+    guard originalCount > keptCount else {
+        return "\(sourceName) contains \(keptCount) corrections."
+    }
+    return "\(sourceName) contains \(originalCount) entries; only the first \(keptCount) valid corrections (Parakey keeps at most \(MAX_TRANSCRIPT_CORRECTIONS)) will be imported."
+}
+
+/// Appended to the import dialog when choosing Merge would push the
+/// combined set over the correction cap. The merge path drops over-cap
+/// entries silently, so the dialog has to warn before the user picks.
+func correctionImportMergeCapWarningText(existingCount: Int,
+                                         newCount: Int,
+                                         cap: Int = MAX_TRANSCRIPT_CORRECTIONS) -> String? {
+    let mergedCount = existingCount + newCount
+    guard mergedCount > cap else { return nil }
+    return "Merging would produce \(mergedCount) corrections; Parakey keeps at most \(cap), so \(mergedCount - cap) would be dropped."
+}
+
 private func utf8ClippedPrefix(_ text: String, maxBytes: Int) -> String {
     guard maxBytes > 0 else { return "" }
     var result = ""
@@ -1000,6 +1155,24 @@ func correctionSyncFingerprint(for url: URL) -> CorrectionSyncFileFingerprint? {
     } catch {
         return nil
     }
+}
+
+/// Fingerprint for bytes this process just wrote to `url`. Content
+/// hash and size come from the in-memory data — never from re-reading
+/// the file, which races with a sync provider replacing it in the
+/// write-to-fingerprint window and would swallow that remote change
+/// until the next local edit. Only the modification date is read
+/// back; if even that races, the SHA mismatch on the next scan still
+/// detects the remote change.
+func correctionSyncFingerprint(forWrittenData data: Data, at url: URL) -> CorrectionSyncFileFingerprint {
+    var hasher = SHA256()
+    hasher.update(data: data)
+    let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    let modifiedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+        .contentModificationDate
+    return CorrectionSyncFileFingerprint(modifiedAt: modifiedAt,
+                                         size: data.count,
+                                         sha256: digest)
 }
 
 private func correctionSyncFileSHA256Hex(_ url: URL) throws -> String {
@@ -1328,6 +1501,12 @@ final class Settings: @unchecked Sendable {
     private static let keyShowInDock = "show_in_dock"
     private static let keyInputDevice = "input_device"
     private static let keyCheckForUpdates = "check_for_updates"
+    private static let keyLastUpdateCheckAt = "last_update_check_at"
+    private static let keyLastUpdateCheckSource = "last_update_check_source"
+    private static let keyLastUpdateCheckResult = "last_update_check_result"
+    private static let keyLastUpdateCheckVersion = "last_update_check_version"
+    private static let keyUpdateReminderPausedVersion = "update_reminder_paused_version"
+    private static let keyUpdateReminderPausedUntil = "update_reminder_paused_until"
     private static let keyLastSeenVersion = "last_seen_version"
     private static let keySkippedVersions = "skipped_versions"
     private static let keyTranscriptCorrections = "transcript_corrections"
@@ -1447,6 +1626,104 @@ final class Settings: @unchecked Sendable {
         set { defaults.set(newValue, forKey: Self.keyCheckForUpdates) }
     }
 
+    var lastUpdateCheckAt: Date? {
+        get { defaults.object(forKey: Self.keyLastUpdateCheckAt) as? Date }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Self.keyLastUpdateCheckAt)
+            } else {
+                defaults.removeObject(forKey: Self.keyLastUpdateCheckAt)
+            }
+        }
+    }
+
+    var lastUpdateCheckSource: UpdateCheckSource? {
+        get {
+            guard let raw = defaults.string(forKey: Self.keyLastUpdateCheckSource) else {
+                return nil
+            }
+            return UpdateCheckSource(rawValue: raw)
+        }
+        set {
+            if let newValue {
+                defaults.set(newValue.rawValue, forKey: Self.keyLastUpdateCheckSource)
+            } else {
+                defaults.removeObject(forKey: Self.keyLastUpdateCheckSource)
+            }
+        }
+    }
+
+    var lastUpdateCheckResult: UpdateCheckResult? {
+        get {
+            guard let raw = defaults.string(forKey: Self.keyLastUpdateCheckResult) else {
+                return nil
+            }
+            return UpdateCheckResult(rawValue: raw)
+        }
+        set {
+            if let newValue {
+                defaults.set(newValue.rawValue, forKey: Self.keyLastUpdateCheckResult)
+            } else {
+                defaults.removeObject(forKey: Self.keyLastUpdateCheckResult)
+            }
+        }
+    }
+
+    var lastUpdateCheckVersion: String {
+        get {
+            guard let raw = defaults.string(forKey: Self.keyLastUpdateCheckVersion),
+                  let normalized = normalizedStoredAppVersion(raw) else {
+                return ""
+            }
+            return normalized
+        }
+        set {
+            if let normalized = normalizedStoredAppVersion(newValue) {
+                defaults.set(normalized, forKey: Self.keyLastUpdateCheckVersion)
+            } else {
+                defaults.removeObject(forKey: Self.keyLastUpdateCheckVersion)
+            }
+        }
+    }
+
+    /// "Remind me later" pause state, persisted so a relaunch inside
+    /// the 24 h window does not re-prompt ~30 s after launch. Both
+    /// halves are validated independently and corrupt stored values
+    /// degrade to nil; ParakeyApp treats a missing half as "no pause"
+    /// and clears the leftover at startup.
+    var updateReminderPausedVersion: String? {
+        get {
+            guard let raw = defaults.string(forKey: Self.keyUpdateReminderPausedVersion),
+                  let normalized = normalizedStoredAppVersion(raw) else {
+                return nil
+            }
+            return normalized
+        }
+        set {
+            if let newValue, let normalized = normalizedStoredAppVersion(newValue) {
+                defaults.set(normalized, forKey: Self.keyUpdateReminderPausedVersion)
+            } else {
+                defaults.removeObject(forKey: Self.keyUpdateReminderPausedVersion)
+            }
+        }
+    }
+
+    var updateReminderPausedUntil: Date? {
+        get {
+            normalizedUpdateReminderPauseExpiry(
+                storedValue: defaults.object(forKey: Self.keyUpdateReminderPausedUntil)
+            )
+        }
+        set {
+            if let newValue,
+               normalizedUpdateReminderPauseExpiry(storedValue: newValue) != nil {
+                defaults.set(newValue, forKey: Self.keyUpdateReminderPausedUntil)
+            } else {
+                defaults.removeObject(forKey: Self.keyUpdateReminderPausedUntil)
+            }
+        }
+    }
+
     var lastSeenVersion: String {
         get {
             guard let raw = defaults.string(forKey: Self.keyLastSeenVersion),
@@ -1490,19 +1767,31 @@ final class Settings: @unchecked Sendable {
                 return []
             }
         }
-        set {
-            let corrections = normalizedTranscriptCorrections(newValue)
-            guard !corrections.isEmpty else {
-                defaults.removeObject(forKey: Self.keyTranscriptCorrections)
-                return
-            }
-            do {
-                let data = try JSONEncoder().encode(corrections)
-                try TranscriptCorrectionsTransfer.validateTransferSize(data.count)
-                defaults.set(data, forKey: Self.keyTranscriptCorrections)
-            } catch {
-                log("settings: transcript correction encode failed: \(error)")
-            }
+        set { storeTranscriptCorrections(newValue) }
+    }
+
+    /// Persists corrections and reports failure to the caller instead
+    /// of swallowing it. With the per-field/per-count caps the encoded
+    /// set always fits maxFileBytes in practice (see its derivation
+    /// comment), but if encoding or the size guard ever fails the
+    /// user's edit must not silently vanish — UI entry points alert on
+    /// a non-nil return. The property setter above keeps the
+    /// fire-and-forget shape (and the log below) for internal callers.
+    @discardableResult
+    func storeTranscriptCorrections(_ newValue: [TranscriptCorrection]) -> Error? {
+        let corrections = normalizedTranscriptCorrections(newValue)
+        guard !corrections.isEmpty else {
+            defaults.removeObject(forKey: Self.keyTranscriptCorrections)
+            return nil
+        }
+        do {
+            let data = try JSONEncoder().encode(corrections)
+            try TranscriptCorrectionsTransfer.validateTransferSize(data.count)
+            defaults.set(data, forKey: Self.keyTranscriptCorrections)
+            return nil
+        } catch {
+            log("settings: transcript correction encode failed: \(error)")
+            return error
         }
     }
 
@@ -1975,11 +2264,17 @@ private struct HotkeyTransitionState {
         toggleActive = false
     }
 
+    /// `canStartRecording` mirrors the app-side guard on handlePress
+    /// (ready, not recording, not busy, not terminating). Toggle mode
+    /// consults it before flipping state — see the `.toggle` case.
+    /// Defaults to true so hold-mode behaviour and existing callers
+    /// are unchanged.
     mutating func transition(
         for event: HotkeyEventSnapshot,
         hotkey: HotkeyChoice,
         triggerMode: TriggerMode,
-        isRecording: Bool
+        isRecording: Bool,
+        canStartRecording: Bool = true
     ) -> HotkeyTransitionResult {
         if event.keycode == ESCAPE_KEYCODE {
             return transitionEscape(for: event, isRecording: isRecording)
@@ -2021,9 +2316,20 @@ private struct HotkeyTransitionState {
             // Toggle mode: every press flips between "start recording"
             // and "stop recording". Releases are no-ops.
             guard isPress else { return .suppressOnly }
-            let action: HotkeyTransitionAction = toggleActive ? .release : .press
-            toggleActive.toggle()
-            return HotkeyTransitionResult(suppress: true, actions: [action])
+            if toggleActive {
+                toggleActive = false
+                return HotkeyTransitionResult(suppress: true, actions: [.release])
+            }
+            // A press the app will reject (model loading, a
+            // transcription in flight, terminating) must not flip the
+            // toggle. Otherwise the rejected press strands
+            // toggleActive at true, the NEXT press emits a .release
+            // the app discards, and only the third press records —
+            // with zero feedback in between. Same gate-callback
+            // pattern Escape uses via isRecording.
+            guard canStartRecording else { return .suppressOnly }
+            toggleActive = true
+            return HotkeyTransitionResult(suppress: true, actions: [.press])
         }
     }
 
@@ -2070,6 +2376,13 @@ final class HotkeyListener {
     var onRelease: (() -> Void)?
     var onCancel: (() -> Void)?
     var isRecordingActive: (() -> Bool)?
+    /// Asks the app whether a new recording would actually start if
+    /// onPress fired right now (ready, idle, not transcribing, not
+    /// terminating). Toggle mode uses it so a press the app would
+    /// silently discard doesn't flip the toggle state and leave the
+    /// next press emitting a swallowed .release. nil (or no callback
+    /// installed) is treated as "would start".
+    var canStartRecording: (() -> Bool)?
 
     @discardableResult
     func start() -> Bool {
@@ -2158,7 +2471,8 @@ final class HotkeyListener {
         let result = transitionState.transition(for: event,
                                                 hotkey: hotkey,
                                                 triggerMode: triggerMode,
-                                                isRecording: isRecordingActive?() ?? false)
+                                                isRecording: isRecordingActive?() ?? false,
+                                                canStartRecording: canStartRecording?() ?? true)
         dispatchHotkeyActions(result.actions)
         return result.suppress
     }
@@ -2200,6 +2514,25 @@ final class HotkeyListener {
 // dispatch_assert_queue_fail (SIGTRAP) and kills the process. We
 // instead guard mutable state with NSLock and let the tap callback
 // run wherever AVFoundation calls it.
+//
+// Locking discipline: `lock` protects ALL mutable state shared with
+// the render thread — `samples`, `_isRunning`, `latestLevel`,
+// `latestLevelSequence`, `recordingGeneration`, AND the converter
+// trio (`converter`, `converterInputFormat`,
+// `manuallyMixInputToMono`). The trio is written on the main thread
+// in startEngine/stopEngine and read in handleTap on AVFoundation's
+// render thread; removeTap(onBus:) does NOT wait for in-flight tap
+// callbacks, so an unlocked read could race stopEngine nil-ing the
+// converter (an unsynchronised ARC pointer read — potential
+// use-after-free). handleTap snapshots the trio once, inside the
+// same lock acquisition that reads `_isRunning`, and works off the
+// snapshots; a straggler callback then keeps the old converter
+// alive through its own strong reference, which is safe.
+// `configurationObserver` and `onConfigurationChange` are
+// main-thread-only: the observer is registered with queue: .main so
+// the notification callback runs on the same thread that installs
+// the observer and that clears `onConfigurationChange` at
+// termination.
 
 private struct CapturedAudioSegments {
     let segments: [[Float]]
@@ -2316,10 +2649,17 @@ final class AudioCapture: @unchecked Sendable {
         ) else { throw NSError(domain: "Parakey", code: -1) }
 
         let sourceFormat = converterSourceFormat(for: inputFormat)
+        let mixToMono = inputFormat.channelCount > 1 && sourceFormat.channelCount == 1
+        let newConverter = AVAudioConverter(from: sourceFormat, to: targetFormat)
+        // Publish the converter trio under the lock — handleTap reads
+        // them on the render thread (see the locking-discipline note
+        // on the class comment).
+        lock.lock()
         converterInputFormat = sourceFormat
-        manuallyMixInputToMono = inputFormat.channelCount > 1 && sourceFormat.channelCount == 1
-        converter = AVAudioConverter(from: sourceFormat, to: targetFormat)
-        let mixLabel = manuallyMixInputToMono ? " via manual mono mix" : ""
+        manuallyMixInputToMono = mixToMono
+        converter = newConverter
+        lock.unlock()
+        let mixLabel = mixToMono ? " via manual mono mix" : ""
         log("AudioCapture: input \(inputFormat.sampleRate) Hz \(inputFormat.channelCount)ch\(mixLabel) → \(targetFormat.sampleRate) Hz mono")
 
         // Capture targetFormat by value into the closure. self is
@@ -2335,7 +2675,11 @@ final class AudioCapture: @unchecked Sendable {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
+            lock.lock()
             converter = nil
+            converterInputFormat = nil
+            manuallyMixInputToMono = false
+            lock.unlock()
             throw error
         }
         installConfigurationObserver()
@@ -2351,21 +2695,33 @@ final class AudioCapture: @unchecked Sendable {
         latestLevelSequence &+= 1
         recordingGeneration &+= 1
         samples.removeAll(keepingCapacity: true)
+        // Clear the converter trio under the same lock the render
+        // thread snapshots them with — removeTap below does not wait
+        // for an in-flight tap callback. A callback that already took
+        // its snapshot keeps the old converter alive through its own
+        // strong reference, which is safe.
+        converter = nil
+        converterInputFormat = nil
+        manuallyMixInputToMono = false
         lock.unlock()
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        converter = nil
-        converterInputFormat = nil
-        manuallyMixInputToMono = false
     }
 
     private func installConfigurationObserver() {
         removeConfigurationObserver()
+        // queue: .main — the notification can be posted from an
+        // AVFoundation worker thread, and `onConfigurationChange` is
+        // an unsynchronised var that the owner clears on the main
+        // thread at termination. Hopping to the main queue makes the
+        // read of the callback and the nil-ing write happen on the
+        // same thread, so a config change racing teardown can never
+        // observe a half-released closure.
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
-            queue: nil
+            queue: .main
         ) { [weak self] _ in
             self?.onConfigurationChange?()
         }
@@ -2405,15 +2761,25 @@ final class AudioCapture: @unchecked Sendable {
     }
 
     private func handleTap(buffer: AVAudioPCMBuffer, target: AVAudioFormat) {
-        // Snapshot the running flag under lock; bail fast if we're
-        // not recording so we don't pay conversion cost for nothing.
+        // Snapshot the running flag AND the converter trio in one
+        // lock acquisition; bail fast if we're not recording so we
+        // don't pay conversion cost for nothing. Working off the
+        // snapshots keeps this callback consistent even if
+        // stopEngine() clears the fields mid-flight — removeTap does
+        // not wait for us, and the local strong reference keeps the
+        // converter alive for the rest of this call.
         lock.lock()
         let running = _isRunning
         let generation = recordingGeneration
+        let converter = self.converter
+        let monoMixFormat = converterInputFormat
+        let mixToMono = manuallyMixInputToMono
         lock.unlock()
         guard running, let converter else { return }
 
-        let converterInput = preparedConverterInputBuffer(from: buffer) ?? buffer
+        let converterInput = preparedConverterInputBuffer(from: buffer,
+                                                          mixToMono: mixToMono,
+                                                          monoFormat: monoMixFormat) ?? buffer
         let ratio = target.sampleRate / converterInput.format.sampleRate
         let outCap = AVAudioFrameCount(Double(converterInput.frameLength) * ratio + 1024)
         guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outCap) else { return }
@@ -2475,9 +2841,16 @@ final class AudioCapture: @unchecked Sendable {
         return monoFormat
     }
 
-    private func preparedConverterInputBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard manuallyMixInputToMono else { return buffer }
-        guard let monoFormat = converterInputFormat,
+    /// `mixToMono` / `monoFormat` are the caller's lock-held
+    /// snapshots of `manuallyMixInputToMono` / `converterInputFormat`
+    /// — this runs on the render thread and must not read the shared
+    /// fields directly (see the locking-discipline note on the class
+    /// comment).
+    private func preparedConverterInputBuffer(from buffer: AVAudioPCMBuffer,
+                                              mixToMono: Bool,
+                                              monoFormat: AVAudioFormat?) -> AVAudioPCMBuffer? {
+        guard mixToMono else { return buffer }
+        guard let monoFormat,
               let channels = buffer.floatChannelData else {
             return nil
         }
@@ -2557,16 +2930,24 @@ private final class AudioConverterInputProvider: @unchecked Sendable {
 
 // MARK: - Transcription worker
 //
-// Owns the FluidAudio AsrManager. ASR work runs in the actor's
-// isolated context, so the model load + every `transcribe` call
-// happens on a single Swift concurrency executor. Necessary because
-// the Apple Neural Engine doesn't tolerate concurrent inference
-// calls against the same compiled CoreML graph — serialising
-// through the actor is what keeps that contract.
+// Owns the FluidAudio AsrManager. The Apple Neural Engine doesn't
+// tolerate concurrent inference calls against the same compiled
+// CoreML graph — but the actor alone does NOT keep that contract.
+// Actors are reentrant at suspension points: while
+// `await asr.transcribe(...)` is suspended, a second transcribe()
+// call would enter the actor and start concurrent inference. The
+// real guard is ParakeyApp.isBusy, which ensures the app never
+// issues a second transcribe while one is in flight. The `inFlight`
+// flag below is a cheap defensive backstop should that invariant
+// ever break: it refuses (and, in DEBUG, asserts on) a re-entrant
+// call instead of corrupting ANE state.
 
 actor TranscriptionWorker {
     private var asr: AsrManager?
     private(set) var ready = false
+    /// Reentrancy backstop — see the comment above. True for the full
+    /// duration of transcribe(), including across its await.
+    private var inFlight = false
 
     func load(progressHandler: DownloadUtils.ProgressHandler? = nil) async throws {
         if ready, asr != nil {
@@ -2597,6 +2978,13 @@ actor TranscriptionWorker {
 
     func transcribe(samples: [Float], language: Language? = nil) async throws -> String {
         guard let asr else { throw NSError(domain: "Parakey", code: -2) }
+        guard !inFlight else {
+            log("ASR: transcribe re-entered while another transcription is in flight — refusing (ParakeyApp.isBusy should make this impossible)")
+            assertionFailure("TranscriptionWorker.transcribe re-entered across a suspension point")
+            throw NSError(domain: "Parakey", code: -3)
+        }
+        inFlight = true
+        defer { inFlight = false }
         var state = try TdtDecoderState()
         let result = try await asr.transcribe(samples, decoderState: &state, language: language)
         return result.text
@@ -2677,10 +3065,11 @@ enum TranscriptCorrector {
 enum FillerWordRemover {
     /// Non-word interjections only. "like" and "you know" are excluded
     /// because they have valid non-filler meanings ("I like cats", "you
-    /// know who"). Each entry is a regex fragment that allows the
+    /// know who"). Most entries are regex fragments that allow the
     /// trailing letter to repeat, since real-world fillers stretch out
     /// ("ummm", "uhhhh", "ahhh", "hmmm") and the word-boundary lookahead
-    /// would otherwise reject them.
+    /// would otherwise reject them. "er" and "erm" deliberately have no
+    /// repeat quantifier: "er+" would also match the real word "err".
     private static let fillerPatterns = ["um+", "uh+", "ah+", "er", "erm", "hm+"]
 
     static func apply(to text: String) -> (text: String, removedCount: Int) {
@@ -2711,15 +3100,23 @@ enum FillerWordRemover {
         var result = mutable as String
 
         // Clean up artifacts left behind by removal:
-        //   1. Doubled / orphan commas: "x, , y" → "x, y"
+        //   1. Comma runs left by consecutive fillers: "x, , , y" →
+        //      "x, y". Quantified so a run of ANY length collapses in
+        //      one pass — a non-overlapping ",\s*," pattern consumed
+        //      pairs and left ",," behind for two-plus fillers.
         //   2. Whitespace before punctuation: "x ." → "x."
-        //   3. Multiple consecutive spaces → single space
-        //   4. Leading punctuation / whitespace (".", ",", ";", ":")
-        //   5. Trailing whitespace
-        result = result.replacingOccurrences(of: #"\s*,\s*,"#, with: ",", options: .regularExpression)
+        //   3. Orphan comma glued onto terminal punctuation by pass 2:
+        //      "x,." → "x." ("That's all, um." must not end ",.")
+        //   4. Multiple consecutive spaces → single space
+        //   5. Leading punctuation / whitespace, including "?" and "!"
+        //      so a removed sentence-initial filler takes its terminal
+        //      punctuation with it ("Um? What?" → "What?")
+        //   6. Trailing whitespace
+        result = result.replacingOccurrences(of: #"\s*,(?:\s*,)+"#, with: ",", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\s+([.,!?;:])"#, with: "$1", options: .regularExpression)
+        result = result.replacingOccurrences(of: #",+([.!?;:])"#, with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-        result = result.replacingOccurrences(of: #"^[\s,.;:]+"#, with: "", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"^[\s,.;:!?]+"#, with: "", options: .regularExpression)
         result = result.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if firstCharWasUpper, let first = result.first, first.isLowercase {
@@ -2940,14 +3337,22 @@ private enum DirectUnicodeInserter {
     }
 
     private static func post(_ units: [UInt16], source: CGEventSource?) -> Bool {
-        guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) else {
+        // Each chunk posts a keyDown AND a matching keyUp carrying the
+        // same unicode payload — standard CGEvent unicode-typing
+        // practice. A keyDown-only stream leaves apps that track key
+        // state believing a key is still held.
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
             return false
         }
-        units.withUnsafeBufferPointer { buffer in
-            guard let base = buffer.baseAddress else { return }
-            event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
+        for event in [down, up] {
+            units.withUnsafeBufferPointer { buffer in
+                guard let base = buffer.baseAddress else { return }
+                event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
+            }
         }
-        event.post(tap: .cghidEventTap)
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
         return true
     }
 }
@@ -2959,32 +3364,194 @@ private enum DirectUnicodeInserter {
 // transcribed alongside the user's voice. Done via NSAppleScript
 // since there's no public AVFoundation knob for it. On release we
 // only unmute if WE were the ones who muted — leave alone if the
-// user had already
-// muted manually).
+// user had already muted manually.
+//
+// Threading: every AppleScript round-trip takes milliseconds at best
+// and can stall for much longer under load. The hotkey path runs
+// behind a session-wide CGEvent tap on the main run loop, where ANY
+// main-thread stall delays every keystroke system-wide and a >1 s
+// stall makes macOS disable the tap. So the recording-time mute /
+// unmute scripts execute on a dedicated serial queue (the *Async
+// wrappers below) and report back to the main actor. The serial
+// queue is also the ordering guarantee: a mute enqueued before an
+// unmute always executes before it. The synchronous isMuted() /
+// unmute() remain for launch-time stale-mute recovery, which runs
+// before the event tap exists.
+
+/// Outcome of the "set volume with output muted" command plus its
+/// follow-up verification read. The distinction matters for crash
+/// recovery: a command that succeeded but could not be VERIFIED must
+/// be assumed muted, so the recovery marker and watchdog stay armed.
+/// Treating it as a failure would dismantle every recovery mechanism
+/// for a mute that may well have happened, leaving the system muted
+/// with no way back.
+enum SystemAudioMuteCommandOutcome: Equatable, Sendable {
+    /// Command ran without error and verification confirmed the
+    /// output is muted.
+    case muted
+    /// Command ran without error but the verification read itself
+    /// failed. Assume we muted: keeping recovery armed for a mute
+    /// that didn't happen is harmless; the reverse is not.
+    case assumedMuted
+    /// The command itself failed, or verification definitively
+    /// reported the output unmuted. Nothing happened to recover from.
+    case failed
+}
+
+func systemAudioMuteCommandOutcome(commandSucceeded: Bool,
+                                   verifiedMuted: Bool?) -> SystemAudioMuteCommandOutcome {
+    guard commandSucceeded else { return .failed }
+    switch verifiedMuted {
+    case .some(true): return .muted
+    case .none: return .assumedMuted
+    case .some(false): return .failed
+    }
+}
 
 enum SystemAudio {
     // NSAppleScript isn't Sendable so we can't memoise it across
     // threads under Swift 6 strict concurrency. AppleScript compile
-    // is microseconds — happy to take the per-call cost.
-    static func isMuted() -> Bool {
+    // is microseconds — happy to take the per-call cost. Each script
+    // instance is created, executed, and discarded entirely on one
+    // thread (this serial queue or, for the launch-time sync calls,
+    // the main thread), which satisfies NSAppleScript's
+    // not-thread-safe contract.
+    private static let queue = DispatchQueue(label: "ParakeySystemAudio", qos: .userInitiated)
+
+    /// nil = the query itself failed, as opposed to a definitive
+    /// muted/unmuted answer.
+    static func mutedState() -> Bool? {
         var err: NSDictionary?
-        let script = NSAppleScript(source: "output muted of (get volume settings)")
-        guard let result = script?.executeAndReturnError(&err) else { return false }
+        guard let script = NSAppleScript(source: "output muted of (get volume settings)") else {
+            return nil
+        }
+        let result = script.executeAndReturnError(&err)
+        guard err == nil else { return nil }
         return result.booleanValue
     }
 
-    @discardableResult
-    static func mute() -> Bool {
+    static func isMuted() -> Bool { mutedState() == true }
+
+    static func mute() -> SystemAudioMuteCommandOutcome {
+        guard let script = NSAppleScript(source: "set volume with output muted") else {
+            return systemAudioMuteCommandOutcome(commandSucceeded: false, verifiedMuted: nil)
+        }
         var err: NSDictionary?
-        _ = NSAppleScript(source: "set volume with output muted")?.executeAndReturnError(&err)
-        return err == nil && isMuted()
+        script.executeAndReturnError(&err)
+        return systemAudioMuteCommandOutcome(commandSucceeded: err == nil,
+                                             verifiedMuted: mutedState())
     }
 
     @discardableResult
     static func unmute() -> Bool {
         var err: NSDictionary?
         _ = NSAppleScript(source: "set volume without output muted")?.executeAndReturnError(&err)
-        return err == nil && !isMuted()
+        // A failed verification counts as "not unmuted": the caller
+        // keeps the recovery marker + watchdog armed and retries
+        // later, which is the safe direction.
+        return err == nil && mutedState() == false
+    }
+
+    // Async wrappers — see the threading note above. Completions hop
+    // back to the main actor, where all mute-lifecycle state lives.
+    static func mutedStateAsync(_ completion: @escaping @MainActor @Sendable (Bool?) -> Void) {
+        queue.async {
+            let state = mutedState()
+            Task { @MainActor in completion(state) }
+        }
+    }
+
+    static func muteAsync(_ completion: @escaping @MainActor @Sendable (SystemAudioMuteCommandOutcome) -> Void) {
+        queue.async {
+            let outcome = mute()
+            Task { @MainActor in completion(outcome) }
+        }
+    }
+
+    static func unmuteAsync(_ completion: @escaping @MainActor @Sendable (Bool) -> Void) {
+        queue.async {
+            let unmuted = unmute()
+            Task { @MainActor in completion(unmuted) }
+        }
+    }
+}
+
+// MARK: - System audio mute lifecycle
+//
+// Pure decision functions for the recording-time mute state machine.
+// All phase transitions happen on the main actor; only the
+// AppleScript execution itself runs on SystemAudio's serial queue.
+// At most one command is in flight at a time — each phase has exactly
+// one outstanding completion, which performs the next transition.
+
+enum SystemAudioMutePhase: Equatable, Sendable {
+    /// No mute lifecycle active; marker + watchdog disarmed.
+    case idle
+    /// "is the output already muted?" probe in flight. No marker or
+    /// watchdog yet, and nothing has been muted.
+    case probing
+    /// Marker + watchdog armed; the mute command is in flight.
+    case muting
+    /// We muted the output; marker + watchdog stay armed until an
+    /// unmute succeeds (or the watchdog recovers after a crash).
+    case muted
+    /// Unmute command in flight; marker + watchdog stay armed until
+    /// it succeeds.
+    case unmuting
+}
+
+enum SystemAudioMuteProbeDecision: Equatable, Sendable {
+    /// Do not mute: the output is already muted by the user, the
+    /// probe failed (we can't risk stomping a user-set mute we can't
+    /// see), or the recording already ended. Nothing to arm or undo.
+    case standDown
+    /// The output is live and the recording still wants it muted —
+    /// arm the recovery marker + watchdog, then issue the mute.
+    case armRecoveryAndMute
+}
+
+func systemAudioMuteProbeDecision(mutedState: Bool?,
+                                  unmuteAlreadyRequested: Bool) -> SystemAudioMuteProbeDecision {
+    guard mutedState == false, !unmuteAlreadyRequested else { return .standDown }
+    return .armRecoveryAndMute
+}
+
+enum SystemAudioMuteCommandDecision: Equatable, Sendable {
+    /// The mute definitively failed — disarm the marker + watchdog.
+    case disarmRecovery
+    /// We are (or must assume we are) muted and the recording is
+    /// still running — hold the muted state.
+    case stayMuted
+    /// We muted, but the recording ended while the command ran —
+    /// unmute immediately.
+    case beginUnmute
+}
+
+func systemAudioMuteCommandDecision(outcome: SystemAudioMuteCommandOutcome,
+                                    unmuteAlreadyRequested: Bool) -> SystemAudioMuteCommandDecision {
+    switch outcome {
+    case .failed:
+        return .disarmRecovery
+    case .muted, .assumedMuted:
+        return unmuteAlreadyRequested ? .beginUnmute : .stayMuted
+    }
+}
+
+enum SystemAudioUnmuteRequestDecision: Equatable, Sendable {
+    /// We never muted (or an unmute is already in flight).
+    case nothingToDo
+    /// A probe or the mute command is still in flight — record the
+    /// request; that command's completion honours it.
+    case deferUntilCommandSettles
+    /// We hold the mute — issue the unmute now.
+    case beginUnmute
+}
+
+func systemAudioUnmuteRequestDecision(phase: SystemAudioMutePhase) -> SystemAudioUnmuteRequestDecision {
+    switch phase {
+    case .idle, .unmuting: return .nothingToDo
+    case .probing, .muting: return .deferUntilCommandSettles
+    case .muted: return .beginUnmute
     }
 }
 
@@ -3312,20 +3879,39 @@ enum TCC {
         .inputMonitoring: "ListenEvent",
     ]
 
-    static func reset(_ p: Permission, bundleID: String) {
-        guard let service = serviceName[p] else { return }
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        proc.arguments = ["reset", service, bundleID]
-        proc.environment = systemToolProcessEnvironment()
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            log("  tccutil reset \(service) \(bundleID) → exit \(proc.terminationStatus)")
-        } catch {
-            log("  tccutil reset \(service) failed: \(error)")
+    /// Serial so multiple resets (e.g. the upgrade-recovery loop)
+    /// execute in the order they were requested.
+    private static let queue = DispatchQueue(label: "ParakeyTCCReset", qos: .userInitiated)
+
+    /// Runs `tccutil reset` on a background queue. tccutil is usually
+    /// quick but waitUntilExit() on the main thread would run behind
+    /// the session-wide event tap, where any stall delays every
+    /// keystroke system-wide. `completion`, if provided, is invoked
+    /// on the main actor after the reset has finished — callers that
+    /// re-request the permission must do so from the completion, or
+    /// the request would race the scrub it depends on.
+    static func reset(_ p: Permission,
+                      bundleID: String,
+                      completion: (@MainActor @Sendable () -> Void)? = nil) {
+        guard let service = serviceName[p] else {
+            if let completion { Task { @MainActor in completion() } }
+            return
+        }
+        queue.async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            proc.arguments = ["reset", service, bundleID]
+            proc.environment = systemToolProcessEnvironment()
+            proc.standardOutput = Pipe()
+            proc.standardError = Pipe()
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                log("  tccutil reset \(service) \(bundleID) → exit \(proc.terminationStatus)")
+            } catch {
+                log("  tccutil reset \(service) failed: \(error)")
+            }
+            if let completion { Task { @MainActor in completion() } }
         }
     }
 }
@@ -3335,8 +3921,8 @@ enum TCC {
 // Hits the GitHub Releases API once at boot + every 6 h. Users can
 // also force the same lookup from the menu. When a newer version is
 // found AND it's not in the user's skipped list, a submenu inserts
-// itself at the top of the menu: What's new / Update now / Skip
-// vX.Y.Z.
+// itself at the top of the menu: What's new / Update now / Remind me
+// in 24 hours / Skip vX.Y.Z.
 
 struct GitHubRelease: Sendable, Equatable {
     let tagName: String      // 'v0.1.7'
@@ -3357,13 +3943,48 @@ private struct GitHubReleaseResponse: Decodable {
     }
 }
 
+/// Why an update check failed. Carried as a value (not a string) so
+/// the manual-check alert can explain the actual problem instead of
+/// blaming the network for everything; automatic ticks ignore it and
+/// stay silent.
+enum UpdateCheckFailure: Error, Equatable, Sendable {
+    /// The HTTPS request itself failed (offline, DNS, timeout).
+    case network
+    /// GitHub answered with a non-2xx status (403 → likely API rate
+    /// limiting).
+    case httpStatus(Int)
+    /// A response arrived but was oversized, malformed, or carried an
+    /// unusable tag.
+    case unexpectedResponse
+}
+
+/// User-facing explanation for a failed *manual* update check. Only
+/// the alert behind "Check for Updates…" uses this — automatic and
+/// settings-toggle checks never alert.
+func manualUpdateCheckFailureText(_ failure: UpdateCheckFailure) -> String {
+    switch failure {
+    case .network:
+        return "Parakey couldn't reach GitHub. Check your internet connection and try again."
+    case .httpStatus(403):
+        return "GitHub declined the update check (HTTP 403). This is usually temporary rate limiting — try again in a few minutes."
+    case .httpStatus(let code):
+        return "GitHub returned an error (HTTP \(code)). Try again later."
+    case .unexpectedResponse:
+        return "GitHub returned a response Parakey couldn't read. Try again later, or check the releases page on GitHub directly."
+    }
+}
+
 enum UpdateCheck {
     private static let githubReleaseURLPathPrefix = "/rcourtman/parakey/releases/tag/"
     static let maxReleaseResponseBytes = 512 * 1024
 
-    static func fetchLatest() async -> GitHubRelease? {
+    static func fetchLatest() async -> Result<GitHubRelease, UpdateCheckFailure> {
         var req = URLRequest(url: GITHUB_LATEST_RELEASE_URL)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        // The privacy docs promise exactly this fixed token — no
+        // version, device, or user identifiers. Must stay in sync with
+        // docs/privacy/network-calls.json.
+        req.setValue("parakey-update-check", forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 10
         let config = URLSessionConfiguration.ephemeral
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -3377,27 +3998,33 @@ enum UpdateCheck {
             let (data, response) = try await session.data(for: req)
             return parseLatest(data: data, response: response)
         } catch {
-            return nil
+            return .failure(.network)
         }
     }
 
-    static func parseLatest(data: Data, response: URLResponse) -> GitHubRelease? {
-        guard let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              data.count <= maxReleaseResponseBytes,
+    static func parseLatest(data: Data, response: URLResponse) -> Result<GitHubRelease, UpdateCheckFailure> {
+        guard let http = response as? HTTPURLResponse else {
+            return .failure(.unexpectedResponse)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            return .failure(.httpStatus(http.statusCode))
+        }
+        guard data.count <= maxReleaseResponseBytes,
               let payload = try? JSONDecoder().decode(GitHubReleaseResponse.self, from: data) else {
-            return nil
+            return .failure(.unexpectedResponse)
         }
 
         let tag = payload.tagName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let version = normalizedReleaseVersion(from: tag) else { return nil }
+        guard let version = normalizedReleaseVersion(from: tag) else {
+            return .failure(.unexpectedResponse)
+        }
 
-        return GitHubRelease(
+        return .success(GitHubRelease(
             tagName: tag,
             version: version,
             body: payload.body ?? "",
             htmlURL: sanitizedReleaseURL(payload.htmlURL, expectedTag: tag)
-        )
+        ))
     }
 
     static func normalizedReleaseVersion(from tag: String) -> String? {
@@ -4217,7 +4844,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var didTouchAudioEngine = false
     private var permissionReadinessTimer: Timer?
     private var lastPermissionReadinessMissingKey: String?
-    private var didMuteThisRecording: Bool = false
+    /// Recording-time system-audio mute state machine. Main-actor
+    /// only; transitions are driven by muteIfNeededForRecording /
+    /// unmuteIfWeMuted and the SystemAudio.*Async completions. The
+    /// pure decision logic lives in systemAudioMuteProbeDecision /
+    /// systemAudioMuteCommandDecision / systemAudioUnmuteRequestDecision.
+    private var systemAudioMutePhase: SystemAudioMutePhase = .idle
+    /// Set when the recording ends while the probe or mute command is
+    /// still in flight; the in-flight completion honours it.
+    private var systemAudioUnmuteRequested = false
     private var maxDurationWorkItem: DispatchWorkItem?
     private var isRestartingAudioInput = false
     private var pendingAudioRouteRefresh = false
@@ -4252,6 +4887,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// or user has skipped it.
     private var pendingUpdate: GitHubRelease?
     private var isCheckingForUpdates = false
+    /// True while the async brew-install preflight for "Update now"
+    /// is running; guards against a second click spawning a second
+    /// update helper.
+    private var isPreparingUpdate = false
+    private var reminderPausedUpdateVersion: String?
+    private var reminderPausedUntil: Date?
 
     private struct CorrectionImportSummary {
         let total: Int
@@ -4269,6 +4910,20 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var correctionSyncFileFingerprint: CorrectionSyncFileFingerprint?
     private var correctionSyncBaselineCorrections: [TranscriptCorrection] = []
     private var isApplyingCorrectionSyncFile = false
+    /// Serial queue for the periodic sync-file scan (validate + hash
+    /// + read). The UI recommends putting the sync file in iCloud
+    /// Drive, where open(2) on a dataless file can block for seconds
+    /// while the content downloads — far too long for the main
+    /// thread, which also services the session-wide hotkey event tap.
+    /// `correctionSyncScanInFlight` (main-actor) guarantees scans
+    /// never overlap; results hop back to the main actor, where the
+    /// existing merge/apply logic runs unchanged.
+    private static let correctionSyncScanQueue = DispatchQueue(label: "ParakeyCorrectionSyncScan",
+                                                               qos: .utility)
+    private var correctionSyncScanInFlight = false
+    /// Scan request that arrived while a scan was in flight; re-issued
+    /// (with the strongest flags seen) when the in-flight scan lands.
+    private var pendingCorrectionSyncScan: (force: Bool, presentErrors: Bool)?
     private var correctionSharePicker: NSSharingServicePicker?
     private var correctionShareCleanupDelegate: CorrectionShareCleanupDelegate?
     private var pendingSharedCorrectionsURL: URL?
@@ -4298,6 +4953,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.onRelease = { [weak self] in self?.handleRelease() }
         hotkey.onCancel = { [weak self] in self?.cancelActiveRecording(reason: "escape") }
         hotkey.isRecordingActive = { [weak self] in self?.isRecording == true }
+        // Mirrors the first guard in handlePress — if this returns
+        // false the press would be silently discarded, so toggle mode
+        // must not flip state for it. The missing-permissions case is
+        // deliberately NOT part of the gate: that press gives feedback
+        // (enterPermissionBlockedState), which also resets the toggle.
+        hotkey.canStartRecording = { [weak self] in
+            guard let self else { return false }
+            return self.isReady && !self.isRecording && !self.isBusy && !self.isTerminating
+        }
         guard hotkey.start() else {
             isReady = false
             isRecording = false
@@ -4306,6 +4970,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             hotkey.onRelease = nil
             hotkey.onCancel = nil
             hotkey.isRecordingActive = nil
+            hotkey.canStartRecording = nil
             hotkey.resetToggleState()
             hotkey.stop()
             log("readiness failed (\(reason)): hotkey listener unavailable")
@@ -4335,6 +5000,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let previousExitNotice = previousExitNoticeAction(previousRunWasActive: settings.hasActiveRunMarker)
         recoverStaleSystemAudioMuteIfNeeded()
         settings.hasActiveRunMarker = true
+        restoreUpdateReminderPause()
 
         NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
 
@@ -4384,7 +5050,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         cleanupPendingSharedCorrections(reason: "terminate")
         audio.onConfigurationChange = nil
         cancelRecordingForTermination()
-        if !didMuteThisRecording {
+        // If the mute lifecycle is mid-flight or still holding the
+        // mute, the watchdog must outlive us: the async unmute
+        // requested by cancelRecordingForTermination may not run
+        // before the process exits, and the watchdog unmutes + clears
+        // the marker once our pid disappears.
+        if systemAudioMutePhase == .idle {
             stopSystemAudioMuteWatchdog()
         }
     }
@@ -4518,6 +5189,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.onRelease = nil
         hotkey.onCancel = nil
         hotkey.isRecordingActive = nil
+        hotkey.canStartRecording = nil
         hotkey.resetToggleState()
         hotkey.stop()
         if didTouchAudioEngine {
@@ -4550,6 +5222,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.onRelease = nil
         hotkey.onCancel = nil
         hotkey.isRecordingActive = nil
+        hotkey.canStartRecording = nil
         hotkey.resetToggleState()
         hotkey.stop()
         if didTouchAudioEngine {
@@ -4614,6 +5287,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.onRelease = nil
         hotkey.onCancel = nil
         hotkey.isRecordingActive = nil
+        hotkey.canStartRecording = nil
         hotkey.resetToggleState()
         hotkey.stop()
         audio.stopEngine()
@@ -4667,6 +5341,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.onRelease = nil
         hotkey.onCancel = nil
         hotkey.isRecordingActive = nil
+        hotkey.canStartRecording = nil
         hotkey.resetToggleState()
         hotkey.stop()
         audio.stopEngine()
@@ -4711,6 +5386,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.onRelease = nil
         hotkey.onCancel = nil
         hotkey.isRecordingActive = nil
+        hotkey.canStartRecording = nil
         hotkey.resetToggleState()
         hotkey.stop()
 
@@ -5252,10 +5928,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.onRelease = nil
         hotkey.onCancel = nil
         hotkey.isRecordingActive = nil
+        hotkey.canStartRecording = nil
         hotkey.stop()
 
         let hadActiveRecording = isRecording || audio.isRunning
-        let hadMute = didMuteThisRecording
+        let hadMute = systemAudioMutePhase != .idle
         if hadActiveRecording {
             _ = audio.endRecording()
         }
@@ -5271,39 +5948,135 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    // Trade-off: the mute is asynchronous relative to recording
+    // start. audio.beginRecording() runs immediately on the press
+    // while the probe + mute land a few milliseconds later, so a
+    // sliver of system audio can bleed into the start of the clip.
+    // That beats the alternative — the old synchronous AppleScript
+    // calls ran behind the session-wide event tap on the main run
+    // loop, stalling every keystroke system-wide (and risking macOS
+    // disabling the tap after a >1 s stall).
     private func muteIfNeededForRecording() {
         guard settings.muteWhileRecording else { return }
+        guard systemAudioMutePhase == .idle else {
+            // A previous recording's lifecycle is still settling
+            // (rapid press cycles). Skipping the mute for this
+            // recording is safe in the never-stuck sense, but the
+            // cost is not always "a few ms": if the previous probe is
+            // still in flight when this press lands, it stands down
+            // to .idle and THIS recording runs unmuted for its whole
+            // duration. Accepted: it needs a press/release/press
+            // faster than one AppleScript round-trip, and the
+            // alternative (queueing nested mute lifecycles) is far
+            // more complex than the failure it prevents.
+            log("output mute skipped: previous mute lifecycle still settling")
+            return
+        }
+        systemAudioMutePhase = .probing
+        systemAudioUnmuteRequested = false
         // Only mute if we wouldn't be stomping a user-set mute.
-        guard !SystemAudio.isMuted() else { return }
+        SystemAudio.mutedStateAsync { [weak self] mutedState in
+            self?.continueMuteAfterProbe(mutedState: mutedState)
+        }
+    }
 
+    private func continueMuteAfterProbe(mutedState: Bool?) {
+        guard systemAudioMutePhase == .probing else {
+            log("output mute probe completion ignored: unexpected phase")
+            return
+        }
+        switch systemAudioMuteProbeDecision(mutedState: mutedState,
+                                            unmuteAlreadyRequested: systemAudioUnmuteRequested) {
+        case .standDown:
+            systemAudioMutePhase = .idle
+            systemAudioUnmuteRequested = false
+            return
+        case .armRecoveryAndMute:
+            break
+        }
+
+        // Crash-recovery invariant: the marker + watchdog must exist
+        // BEFORE the mute command can execute, so a crash at any
+        // point after the mute leaves a recovery path. Both are armed
+        // here on the main actor; the mute is only enqueued after
+        // they exist, and SystemAudio's serial queue preserves that
+        // order.
         do {
             try writeSystemAudioMuteMarker()
             try startSystemAudioMuteWatchdog()
         } catch {
             removeSystemAudioMuteMarker()
             stopSystemAudioMuteWatchdog()
+            systemAudioMutePhase = .idle
+            systemAudioUnmuteRequested = false
             log("output mute skipped: recovery watchdog unavailable (\(error.localizedDescription))")
             return
         }
+        systemAudioMutePhase = .muting
+        SystemAudio.muteAsync { [weak self] outcome in
+            self?.finishMuteCommand(outcome: outcome)
+        }
+    }
 
-        if SystemAudio.mute() {
-            didMuteThisRecording = true
-            log("output muted")
-        } else {
+    private func finishMuteCommand(outcome: SystemAudioMuteCommandOutcome) {
+        guard systemAudioMutePhase == .muting else {
+            log("output mute completion ignored: unexpected phase")
+            return
+        }
+        switch systemAudioMuteCommandDecision(outcome: outcome,
+                                              unmuteAlreadyRequested: systemAudioUnmuteRequested) {
+        case .disarmRecovery:
             removeSystemAudioMuteMarker()
             stopSystemAudioMuteWatchdog()
+            systemAudioMutePhase = .idle
+            systemAudioUnmuteRequested = false
             log("output mute failed")
+        case .stayMuted:
+            systemAudioMutePhase = .muted
+            log(outcome == .assumedMuted
+                ? "output muted (verification failed; assuming muted, recovery stays armed)"
+                : "output muted")
+        case .beginUnmute:
+            // The recording ended while the mute command ran.
+            systemAudioUnmuteRequested = false
+            beginSystemAudioUnmute()
         }
     }
 
     private func unmuteIfWeMuted() {
-        guard didMuteThisRecording else { return }
-        if SystemAudio.unmute() {
-            didMuteThisRecording = false
+        switch systemAudioUnmuteRequestDecision(phase: systemAudioMutePhase) {
+        case .nothingToDo:
+            return
+        case .deferUntilCommandSettles:
+            systemAudioUnmuteRequested = true
+        case .beginUnmute:
+            beginSystemAudioUnmute()
+        }
+    }
+
+    private func beginSystemAudioUnmute() {
+        systemAudioMutePhase = .unmuting
+        SystemAudio.unmuteAsync { [weak self] unmuted in
+            self?.finishUnmuteCommand(unmuted: unmuted)
+        }
+    }
+
+    private func finishUnmuteCommand(unmuted: Bool) {
+        guard systemAudioMutePhase == .unmuting else {
+            log("output unmute completion ignored: unexpected phase")
+            return
+        }
+        if unmuted {
+            systemAudioMutePhase = .idle
+            systemAudioUnmuteRequested = false
             removeSystemAudioMuteMarker()
             stopSystemAudioMuteWatchdog()
             log("output unmuted")
         } else {
+            // Stay "muted": the marker + watchdog remain armed, the
+            // next recording's release retries the unmute, and the
+            // watchdog recovers if we exit first.
+            systemAudioMutePhase = .muted
             log("output unmute failed; crash-recovery marker left in place")
         }
     }
@@ -5332,6 +6105,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         systemAudioMuteWatchdog = nil
     }
 
+    // Uses the synchronous SystemAudio calls deliberately: this runs
+    // once from applicationDidFinishLaunching, before the event tap
+    // exists, so a main-thread AppleScript round-trip cannot stall
+    // keystrokes here.
     private func recoverStaleSystemAudioMuteIfNeeded() {
         let marker = systemAudioMuteMarkerURL()
         guard FileManager.default.fileExists(atPath: marker.path) else { return }
@@ -5630,7 +6407,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         checkUpdates.isEnabled = !isCheckingForUpdates && !isTerminating
         sub.addItem(checkUpdates)
 
-        let checkToggle = NSMenuItem(title: "Check for updates automatically",
+        let checkToggle = NSMenuItem(title: "Check for updates and notify me",
                                      action: #selector(toggleCheckForUpdates(_:)),
                                      keyEquivalent: "")
         checkToggle.target = self
@@ -5741,6 +6518,20 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ? ["Available inputs: none reported"]
             : ["Available inputs (\(devices.count)):"] + devices.map { "  \($0.name)" }
         let pendingUpdateText = pendingUpdate.map { "v\($0.version)" } ?? "none"
+        let lastUpdateCheckText = updateCheckDiagnosticText(
+            checkedAt: settings.lastUpdateCheckAt,
+            source: settings.lastUpdateCheckSource,
+            result: settings.lastUpdateCheckResult,
+            releaseVersion: settings.lastUpdateCheckVersion
+        )
+        let updateReminderText: String
+        if let version = reminderPausedUpdateVersion,
+           let until = reminderPausedUntil,
+           Date() < until {
+            updateReminderText = "v\(version) until \(ISO8601DateFormatter().string(from: until))"
+        } else {
+            updateReminderText = "none"
+        }
         let memoryLines: [String]
         if let memory = currentAppMemoryUsage() {
             memoryLines = [
@@ -5805,9 +6596,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 "Launch at Login: \(launchAtLoginText)",
             ],
             updateLines: [
-                "Automatic update checks: \(settings.checkForUpdates)",
+                "Update notifications: \(settings.checkForUpdates)",
+                "Last update check: \(lastUpdateCheckText)",
                 "Manual update check active: \(isCheckingForUpdates)",
                 "Pending update: \(pendingUpdateText)",
+                "Reminder paused: \(updateReminderText)",
                 "Update helper log: \((UPDATE_HELPER_LOG_PATH as NSString).abbreviatingWithTildeInPath)",
             ],
             microphoneLines: ["Selected: \(inputLabel)"] + availableInputLines,
@@ -6177,9 +6970,20 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if clicks >= 2 {
             // Click #2+: scrub TCC before re-requesting. The most
             // common cause of "I clicked Grant but nothing happened"
-            // is a stuck TCC entry that survived an upgrade.
+            // is a stuck TCC entry that survived an upgrade. The
+            // re-request happens in the reset's completion — issuing
+            // it before tccutil finished would race the scrub it
+            // depends on.
             log("  resetting TCC for \(p.rawValue) before retry")
-            TCC.reset(p, bundleID: Bundle.main.bundleIdentifier ?? "com.local.parakey")
+            TCC.reset(p, bundleID: Bundle.main.bundleIdentifier ?? "com.local.parakey") { [weak self] in
+                guard let self, !self.isTerminating else { return }
+                Permissions.request(p)
+                self.startPermissionReadinessMonitor(reason: "permission grant")
+                self.updateSetupChecklist()
+                self.rebuildMenu()
+            }
+            rebuildMenu()
+            return
         }
         Permissions.request(p)
         startPermissionReadinessMonitor(reason: "permission grant")
@@ -6804,7 +7608,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func syncCorrectionsNowClicked(_ sender: NSMenuItem) {
         guard correctionSyncFileURL() != nil else { return }
-        _ = refreshCorrectionSyncFromDisk(force: true, presentErrors: true)
+        scheduleCorrectionSyncScan(force: true, presentErrors: true)
     }
 
     @objc private func stopSyncingCorrectionsClicked(_ sender: NSMenuItem) {
@@ -6834,15 +7638,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func importCorrectionsFromUserSelectedFile(_ url: URL) -> Bool {
         showAppForModal()
         do {
-            let imported = try TranscriptCorrectionsTransfer.read(from: url)
-            guard let choice = chooseCorrectionImportMode(imported: imported,
+            let imported = try TranscriptCorrectionsTransfer.readCounted(from: url)
+            guard let choice = chooseCorrectionImportMode(imported: imported.corrections,
+                                                          originalCount: imported.originalCount,
                                                           sourceName: url.lastPathComponent,
                                                           allowsEmptyReplace: false) else {
                 return false
             }
-            let next = corrections(afterApplying: imported, mode: choice)
+            let next = corrections(afterApplying: imported.corrections, mode: choice)
             updateTranscriptCorrections(next)
-            log("correction import read \(imported.count) corrections")
+            log("correction import read \(imported.corrections.count) corrections")
             return true
         } catch {
             showCorrectionTransferError(title: "Import Failed", error: error)
@@ -6884,13 +7689,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         do {
-            let imported = try TranscriptCorrectionsTransfer.read(from: url)
-            guard let choice = chooseCorrectionImportMode(imported: imported,
+            let imported = try TranscriptCorrectionsTransfer.readCounted(from: url)
+            guard let choice = chooseCorrectionImportMode(imported: imported.corrections,
+                                                          originalCount: imported.originalCount,
                                                           sourceName: url.lastPathComponent,
                                                           allowsEmptyReplace: true) else {
                 return
             }
-            let next = corrections(afterApplying: imported, mode: choice)
+            let next = corrections(afterApplying: imported.corrections, mode: choice)
             settings.transcriptCorrectionsSyncFile = url.path
             updateTranscriptCorrections(next, writeToSync: false)
             if choice == .merge {
@@ -6904,13 +7710,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 correctionSyncBaselineCorrections = normalizedTranscriptCorrections(next)
             }
             startCorrectionSyncIfConfigured()
-            log("correction sync linked file with \(imported.count) corrections")
+            log("correction sync linked file with \(imported.corrections.count) corrections")
         } catch {
             showCorrectionTransferError(title: "Sync Setup Failed", error: error)
         }
     }
 
     private func chooseCorrectionImportMode(imported: [TranscriptCorrection],
+                                            originalCount: Int,
                                             sourceName: String,
                                             allowsEmptyReplace: Bool) -> CorrectionImportChoice? {
         let imported = normalizedTranscriptCorrections(imported)
@@ -6928,14 +7735,21 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         let summary = correctionImportSummary(for: imported)
+        let countText = correctionImportCountText(sourceName: sourceName,
+                                                  originalCount: originalCount,
+                                                  keptCount: summary.total)
+        let mergeCapWarning = correctionImportMergeCapWarningText(
+            existingCount: settings.transcriptCorrections.count,
+            newCount: summary.newCount
+        )
         let alert = NSAlert()
         alert.messageText = "Import Text Corrections?"
         alert.informativeText = """
-            \(sourceName) contains \(summary.total) corrections.
+            \(countText)
 
             \(summary.newCount) new, \(summary.updatedCount) will update existing corrections, \(summary.unchangedCount) already match.
 
-            Merge keeps local corrections that are not in the file. Replace All makes this Mac match the file exactly.
+            Merge keeps local corrections that are not in the file. Replace All makes this Mac match the file exactly.\(mergeCapWarning.map { "\n\n" + $0 } ?? "")
             """
         alert.addButton(withTitle: "Merge")
         alert.addButton(withTitle: "Replace All")
@@ -7008,7 +7822,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func updateTranscriptCorrections(_ corrections: [TranscriptCorrection],
                                              writeToSync: Bool = true) {
-        settings.transcriptCorrections = normalizedTranscriptCorrections(corrections)
+        if let error = settings.storeTranscriptCorrections(normalizedTranscriptCorrections(corrections)) {
+            // The previous value is still in place. Surface the failed
+            // save like export/sync-write failures do — silently
+            // dropping the user's edit looked like data loss.
+            showCorrectionTransferError(title: "Saving Corrections Failed", error: error)
+            rebuildMenu()
+            return
+        }
         if writeToSync, !isApplyingCorrectionSyncFile {
             writeCorrectionsToSyncFile(presentErrors: false)
         }
@@ -7030,8 +7851,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
-        _ = refreshCorrectionSyncFromDisk(force: true, presentErrors: false)
-        guard correctionSyncFileURL() != nil else { return }
+        scheduleCorrectionSyncScan(force: true, presentErrors: false)
+        // The timer always starts; if the initial async scan rejects
+        // the path it stops the sync (and this timer) from its
+        // main-actor completion.
         correctionSyncTimer = Timer.scheduledTimer(timeInterval: 4,
                                                    target: self,
                                                    selector: #selector(correctionSyncTimerFired(_:)),
@@ -7041,44 +7864,135 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func correctionSyncTimerFired(_ timer: Timer) {
-        _ = refreshCorrectionSyncFromDisk(force: false, presentErrors: false)
+        scheduleCorrectionSyncScan(force: false, presentErrors: false)
     }
 
-    @discardableResult
-    private func refreshCorrectionSyncFromDisk(force: Bool, presentErrors: Bool) -> Bool {
-        guard let url = correctionSyncFileURL() else { return false }
+    /// What a background sync-file scan found. Built off the main
+    /// thread, applied on the main actor — so it must be Sendable and
+    /// carry everything the apply step needs.
+    private enum CorrectionSyncScanOutcome: Sendable {
+        case rejectedPath(TranscriptCorrectionsSyncPathError)
+        case fingerprintUnavailable
+        case unchanged
+        case loaded(corrections: [TranscriptCorrection], fingerprint: CorrectionSyncFileFingerprint)
+        case readFailed(logDescription: String, alertMessage: String)
+    }
+
+    /// Runs on `correctionSyncScanQueue` (hence `nonisolated`). Pure
+    /// with respect to app state: everything it needs arrives as
+    /// parameters and the result goes back as a value.
+    private nonisolated static func performCorrectionSyncScan(url: URL,
+                                                  lastFingerprint: CorrectionSyncFileFingerprint?,
+                                                  force: Bool) -> CorrectionSyncScanOutcome {
         do {
             try validateCorrectionSyncPath(url)
+        } catch let error as TranscriptCorrectionsSyncPathError {
+            return .rejectedPath(error)
         } catch {
-            handleCorrectionSyncRejectedPath(error, presentErrors: presentErrors)
-            return false
+            // validateCorrectionSyncPath only throws
+            // TranscriptCorrectionsSyncPathError today; keep the
+            // catch-all defensive rather than crashing the scan.
+            return .readFailed(logDescription: "\(error)",
+                               alertMessage: error.localizedDescription)
         }
         guard let fingerprint = correctionSyncFingerprint(for: url) else {
+            return .fingerprintUnavailable
+        }
+        guard force || fingerprint != lastFingerprint else { return .unchanged }
+        do {
+            let corrections = try TranscriptCorrectionsTransfer.read(from: url)
+            return .loaded(corrections: corrections, fingerprint: fingerprint)
+        } catch {
+            return .readFailed(logDescription: "\(error)",
+                               alertMessage: error.localizedDescription)
+        }
+    }
+
+    private func scheduleCorrectionSyncScan(force: Bool, presentErrors: Bool) {
+        guard let url = correctionSyncFileURL() else { return }
+        // Never let scans overlap — a dataless iCloud file can block
+        // one scan for many timer periods. Requests that arrive while
+        // a scan is in flight are coalesced (strongest flags win) and
+        // re-issued when it completes, so a user's explicit
+        // "Sync Corrections Now" is never silently dropped behind a
+        // stalled timer scan.
+        guard !correctionSyncScanInFlight else {
+            let pending = pendingCorrectionSyncScan
+            pendingCorrectionSyncScan = (force: (pending?.force ?? false) || force,
+                                         presentErrors: (pending?.presentErrors ?? false) || presentErrors)
+            return
+        }
+        correctionSyncScanInFlight = true
+        let lastFingerprint = correctionSyncFileFingerprint
+        Self.correctionSyncScanQueue.async { [weak self] in
+            let outcome = Self.performCorrectionSyncScan(url: url,
+                                                         lastFingerprint: lastFingerprint,
+                                                         force: force)
+            Task { @MainActor in
+                guard let self else { return }
+                self.correctionSyncScanInFlight = false
+                self.applyCorrectionSyncScanOutcome(outcome,
+                                                    scannedURL: url,
+                                                    scanStartFingerprint: lastFingerprint,
+                                                    force: force,
+                                                    presentErrors: presentErrors)
+                if let pending = self.pendingCorrectionSyncScan {
+                    self.pendingCorrectionSyncScan = nil
+                    self.scheduleCorrectionSyncScan(force: pending.force,
+                                                    presentErrors: pending.presentErrors)
+                }
+            }
+        }
+    }
+
+    private func applyCorrectionSyncScanOutcome(_ outcome: CorrectionSyncScanOutcome,
+                                                scannedURL: URL,
+                                                scanStartFingerprint: CorrectionSyncFileFingerprint?,
+                                                force: Bool,
+                                                presentErrors: Bool) {
+        // The sync file may have been disconnected or repointed while
+        // the scan ran; results for a stale path must not touch
+        // current state.
+        guard let url = correctionSyncFileURL(), url == scannedURL else { return }
+
+        switch outcome {
+        case .rejectedPath(let error):
+            handleCorrectionSyncRejectedPath(error, presentErrors: presentErrors)
+        case .fingerprintUnavailable:
             if presentErrors {
                 showCorrectionTransferError(title: "Sync Failed",
                                             message: "Parakey could not find the selected sync file.")
             }
-            return false
-        }
-
-        guard force || fingerprint != correctionSyncFileFingerprint else { return false }
-
-        do {
-            let corrections = try TranscriptCorrectionsTransfer.read(from: url)
+        case .unchanged:
+            break
+        case .loaded(let corrections, let fingerprint):
+            // If a local edit wrote the sync file (moving the
+            // fingerprint) while the scan ran, this outcome holds
+            // pre-edit content; applying it would roll the edit back
+            // and rewind the baseline. Drop it — a forced scan is
+            // re-issued so a "Sync Now" still completes against the
+            // post-edit file.
+            guard correctionSyncFileFingerprint == scanStartFingerprint else {
+                if force {
+                    scheduleCorrectionSyncScan(force: true, presentErrors: presentErrors)
+                }
+                return
+            }
+            // Non-forced scans only apply genuinely new content
+            // (forced scans deliberately re-apply even an unchanged
+            // file — that is what "Sync Now" promises).
+            guard force || fingerprint != correctionSyncFileFingerprint else { return }
             isApplyingCorrectionSyncFile = true
             updateTranscriptCorrections(corrections, writeToSync: false)
             isApplyingCorrectionSyncFile = false
             correctionSyncFileFingerprint = fingerprint
             correctionSyncBaselineCorrections = normalizedTranscriptCorrections(corrections)
             log("correction sync read \(corrections.count) corrections")
-            return true
-        } catch {
-            isApplyingCorrectionSyncFile = false
-            log("correction sync read failed: \(error)")
+        case .readFailed(let logDescription, let alertMessage):
+            log("correction sync read failed: \(logDescription)")
             if presentErrors {
-                showCorrectionTransferError(title: "Sync Failed", error: error)
+                showCorrectionTransferError(title: "Sync Failed", message: alertMessage)
             }
-            return false
         }
     }
 
@@ -7107,12 +8021,23 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     log("correction sync stopped after \(merge.conflictingSources.count) conflicting corrections")
                     return false
                 }
-                correctionsToWrite = merge.corrections
-                settings.transcriptCorrections = correctionsToWrite
+                // Normalize (cap) the merge result BEFORE it fans out:
+                // file, settings, and baseline must all hold the same
+                // list. A raw over-cap merge result stored as baseline
+                // made capped-out entries look like local deletions on
+                // the next merge, silently removing them from the file.
+                correctionsToWrite = normalizedTranscriptCorrections(merge.corrections)
+                if let storeError = settings.storeTranscriptCorrections(correctionsToWrite) {
+                    throw storeError
+                }
             }
 
-            try TranscriptCorrectionsTransfer.write(correctionsToWrite, to: url)
-            correctionSyncFileFingerprint = correctionSyncFingerprint(for: url)
+            let writtenData = try TranscriptCorrectionsTransfer.write(correctionsToWrite, to: url)
+            // Fingerprint the exact bytes written, not a re-read of the
+            // file: a sync provider replacing the file in the re-read
+            // window would have its change fingerprinted as ours and
+            // swallowed until the next local edit.
+            correctionSyncFileFingerprint = correctionSyncFingerprint(forWrittenData: writtenData, at: url)
             correctionSyncBaselineCorrections = correctionsToWrite
             log("correction sync wrote \(correctionsToWrite.count) corrections")
             return true
@@ -7549,6 +8474,16 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func toggleCheckForUpdates(_ sender: NSMenuItem) {
         settings.checkForUpdates.toggle()
         sender.state = settings.checkForUpdates ? .on : .off
+        log("update notifications \(settings.checkForUpdates ? "enabled" : "disabled")")
+        if settings.checkForUpdates {
+            Task { [weak self] in
+                await self?.tickUpdateCheck(source: .settingsToggle)
+            }
+        } else {
+            pendingUpdate = nil
+            clearUpdateReminderPause()
+            rebuildMenu()
+        }
     }
 
     @objc private func resetSpeechModelCacheClicked(_ sender: NSMenuItem) {
@@ -7679,10 +8614,33 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func tickUpdateCheck() async {
+    /// Silent update check: failures are recorded in diagnostics but
+    /// never alerted. `source` distinguishes the periodic timer tick
+    /// from the user re-enabling the settings toggle.
+    private func tickUpdateCheck(source: UpdateCheckSource = .automatic) async {
         guard settings.checkForUpdates else { return }
-        guard let release = await UpdateCheck.fetchLatest() else { return }
-        await MainActor.run { self.handleFetchedRelease(release) }
+        let outcome = await UpdateCheck.fetchLatest()
+        await MainActor.run {
+            self.recordUpdateCheck(release: try? outcome.get(), source: source)
+            guard let release = try? outcome.get() else { return }
+            self.handleFetchedRelease(release)
+        }
+    }
+
+    private func recordUpdateCheck(release: GitHubRelease?, source: UpdateCheckSource) {
+        let skippedVersions = source == .manual ? [] : settings.skippedVersions
+        let result = updateCheckResult(
+            for: release,
+            currentVersion: currentBundleVersion(),
+            skippedVersions: skippedVersions
+        )
+        settings.lastUpdateCheckAt = Date()
+        settings.lastUpdateCheckSource = source
+        settings.lastUpdateCheckResult = result
+        settings.lastUpdateCheckVersion = release?.version ?? ""
+
+        let versionText = release.map { " v\($0.version)" } ?? ""
+        log("update check \(source.rawValue): \(result.rawValue)\(versionText)")
     }
 
     private func handleFetchedRelease(_ release: GitHubRelease) {
@@ -7691,6 +8649,25 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if settings.skippedVersions.contains(release.version) {
             log("update available (v\(release.version)) but user skipped — staying quiet")
             return
+        }
+        let now = Date()
+        if shouldSuppressUpdateForReminder(version: release.version,
+                                           reminderVersion: reminderPausedUpdateVersion,
+                                           reminderUntil: reminderPausedUntil,
+                                           now: now) {
+            if let reminderPausedUntil {
+                log("update available (v\(release.version)) but reminder is paused until \(ISO8601DateFormatter().string(from: reminderPausedUntil))")
+            }
+            return
+        }
+        // Same version → the pause expired and the update is re-shown.
+        // Newer version → it supersedes the paused one, so the stale
+        // pause must not linger in diagnostics alongside the new
+        // pending update. (An ACTIVE pause for this exact version
+        // already returned above.)
+        if shouldClearUpdateReminderPause(fetchedVersion: release.version,
+                                          pausedVersion: reminderPausedUpdateVersion) {
+            clearUpdateReminderPause()
         }
         log("update available: \(current) → v\(release.version)")
         pendingUpdate = release
@@ -7715,6 +8692,12 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                    keyEquivalent: "")
         updateNow.target = self
         sub.addItem(updateNow)
+
+        let remindLater = NSMenuItem(title: "Remind me in 24 hours",
+                                     action: #selector(remindMeLaterClicked(_:)),
+                                     keyEquivalent: "")
+        remindLater.target = self
+        sub.addItem(remindLater)
 
         let skip = NSMenuItem(title: "Skip v\(release.version)",
                               action: #selector(skipVersionClicked(_:)),
@@ -7753,6 +8736,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         startUpdate(for: release)
     }
 
+    @objc private func remindMeLaterClicked(_ sender: NSMenuItem) {
+        guard let release = pendingUpdate else { return }
+        pauseUpdateReminder(for: release)
+    }
+
     @objc private func skipVersionClicked(_ sender: NSMenuItem) {
         guard let release = pendingUpdate else { return }
         var skipped = settings.skippedVersions
@@ -7762,6 +8750,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             log("user skipped v\(release.version); suppressing until a newer release")
         }
         pendingUpdate = nil
+        clearUpdateReminderPause()
         rebuildMenu()
     }
 
@@ -7770,22 +8759,27 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         isCheckingForUpdates = true
         rebuildMenu()
         manualUpdateCheckTask = Task { [weak self] in
-            let release = await UpdateCheck.fetchLatest()
+            let outcome = await UpdateCheck.fetchLatest()
             guard !Task.isCancelled,
                   let self,
                   !self.isTerminating else { return }
             self.manualUpdateCheckTask = nil
-            self.finishManualUpdateCheck(release)
+            self.recordUpdateCheck(release: try? outcome.get(), source: .manual)
+            self.finishManualUpdateCheck(outcome)
         }
     }
 
-    private func finishManualUpdateCheck(_ release: GitHubRelease?) {
+    private func finishManualUpdateCheck(_ outcome: Result<GitHubRelease, UpdateCheckFailure>) {
         manualUpdateCheckTask = nil
         isCheckingForUpdates = false
-        guard let release else {
+        let release: GitHubRelease
+        switch outcome {
+        case .failure(let failure):
             rebuildMenu()
-            showUpdateCheckFailedAlert()
+            showUpdateCheckFailedAlert(failure)
             return
+        case .success(let fetched):
+            release = fetched
         }
 
         let current = currentBundleVersion()
@@ -7801,6 +8795,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if settings.skippedVersions.contains(release.version) {
             settings.skippedVersions = settings.skippedVersions.filter { $0 != release.version }
         }
+        clearUpdateReminderPause()
         pendingUpdate = release
         rebuildMenu()
         showUpdateAvailableAlert(for: release, currentVersion: current)
@@ -7810,16 +8805,67 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         showAppForModal()
         let alert = NSAlert()
         alert.messageText = "Parakey v\(release.version) is available"
-        alert.informativeText = "You're running v\(currentVersion)."
+        alert.informativeText = "You're running v\(currentVersion). Nothing is installed unless you choose Update Now."
         alert.addButton(withTitle: "Update Now")
         alert.addButton(withTitle: "What's New")
-        alert.addButton(withTitle: "Later")
+        // Dismissing pauses reminders for 24 h (and hides the update
+        // menu item), so the button must say so — "Later" implied a
+        // consequence-free dismissal.
+        alert.addButton(withTitle: "Remind Me in 24 Hours")
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
             startUpdate(for: release)
         } else if response == .alertSecondButtonReturn {
             showReleaseNotes(for: release)
+        } else {
+            pauseUpdateReminder(for: release)
         }
+    }
+
+    private func pauseUpdateReminder(for release: GitHubRelease) {
+        setUpdateReminderPause(version: release.version,
+                               until: Date().addingTimeInterval(UPDATE_REMIND_LATER_SECONDS))
+        pendingUpdate = nil
+        if let reminderPausedUntil {
+            log("user chose remind later for v\(release.version); paused until \(ISO8601DateFormatter().string(from: reminderPausedUntil))")
+        }
+        rebuildMenu()
+    }
+
+    // MARK: "Remind me later" pause state
+    //
+    // The in-memory fields drive menu/diagnostics decisions; the
+    // Settings copies survive relaunches. The pause used to be
+    // memory-only, so quitting inside the 24 h window re-prompted the
+    // user ~30 s after the next launch. These two helpers are the ONLY
+    // write paths so memory and defaults can never disagree.
+
+    private func setUpdateReminderPause(version: String, until: Date) {
+        reminderPausedUpdateVersion = version
+        reminderPausedUntil = until
+        settings.updateReminderPausedVersion = version
+        settings.updateReminderPausedUntil = until
+    }
+
+    private func clearUpdateReminderPause() {
+        reminderPausedUpdateVersion = nil
+        reminderPausedUntil = nil
+        settings.updateReminderPausedVersion = nil
+        settings.updateReminderPausedUntil = nil
+    }
+
+    /// Restores a persisted pause at launch. Either half missing or
+    /// corrupt (the validated Settings accessors degrade those to nil)
+    /// means no pause: clear the leftover half rather than carrying
+    /// incoherent state.
+    private func restoreUpdateReminderPause() {
+        guard let version = settings.updateReminderPausedVersion,
+              let until = settings.updateReminderPausedUntil else {
+            clearUpdateReminderPause()
+            return
+        }
+        reminderPausedUpdateVersion = version
+        reminderPausedUntil = until
     }
 
     private func showUpToDateAlert(currentVersion: String) {
@@ -7831,29 +8877,39 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.runModal()
     }
 
-    private func showUpdateCheckFailedAlert() {
+    private func showUpdateCheckFailedAlert(_ failure: UpdateCheckFailure) {
         showAppForModal()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Couldn't check for updates"
-        alert.informativeText = "Parakey couldn't reach GitHub. Check your internet connection and try again."
+        alert.informativeText = manualUpdateCheckFailureText(failure)
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
 
     private func startUpdate(for release: GitHubRelease) {
+        guard !isPreparingUpdate else {
+            log("update click ignored: update preparation already in flight")
+            return
+        }
         guard let brew = findBrew() else {
             showManualUpdateRequired(for: release, reason: "Homebrew was not found on this Mac.")
             return
         }
-        guard isBrewInstall(brewPath: brew) else {
-            showManualUpdateRequired(
-                for: release,
-                reason: "This copy of Parakey was not detected as a Homebrew-managed app in /Applications."
-            )
-            return
+        isPreparingUpdate = true
+        isBrewInstall(brewPath: brew) { [weak self] isBrewManaged in
+            guard let self else { return }
+            self.isPreparingUpdate = false
+            guard !self.isTerminating else { return }
+            guard isBrewManaged else {
+                self.showManualUpdateRequired(
+                    for: release,
+                    reason: "This copy of Parakey was not detected as a Homebrew-managed app in /Applications."
+                )
+                return
+            }
+            self.spawnUpdateHelper(brewPath: brew, targetVersion: release.version)
         }
-        spawnUpdateHelper(brewPath: brew, targetVersion: release.version)
     }
 
     private func showManualUpdateRequired(for release: GitHubRelease, reason: String) {
@@ -7895,22 +8951,38 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.runModal()
     }
 
-    private func isBrewInstall(brewPath: String) -> Bool {
-        guard Bundle.main.bundlePath == INSTALLED_APP_BUNDLE_PATH else { return false }
+    /// `brew list --cask` routinely takes seconds. With the active
+    /// session-wide event tap on the main run loop, a synchronous
+    /// waitUntilExit() here would stall every keystroke system-wide
+    /// (and a >1 s stall makes macOS disable the tap), so the check
+    /// runs on a background queue and reports back to the main actor.
+    private static let brewPreflightQueue = DispatchQueue(label: "ParakeyBrewPreflight",
+                                                          qos: .userInitiated)
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: brewPath)
-        proc.arguments = ["list", "--cask", "--versions", HOMEBREW_CASK_INSTALLED_TOKEN]
-        proc.environment = updateProcessEnvironment()
-        proc.standardOutput = Pipe()
-        proc.standardError = Pipe()
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            return proc.terminationStatus == 0
-        } catch {
-            log("update: brew install check failed: \(error)")
-            return false
+    private func isBrewInstall(brewPath: String,
+                               completion: @escaping @MainActor @Sendable (Bool) -> Void) {
+        guard Bundle.main.bundlePath == INSTALLED_APP_BUNDLE_PATH else {
+            completion(false)
+            return
+        }
+
+        Self.brewPreflightQueue.async {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: brewPath)
+            proc.arguments = ["list", "--cask", "--versions", HOMEBREW_CASK_INSTALLED_TOKEN]
+            proc.environment = updateProcessEnvironment()
+            proc.standardOutput = Pipe()
+            proc.standardError = Pipe()
+            let isBrewManaged: Bool
+            do {
+                try proc.run()
+                proc.waitUntilExit()
+                isBrewManaged = proc.terminationStatus == 0
+            } catch {
+                log("update: brew install check failed: \(error)")
+                isBrewManaged = false
+            }
+            Task { @MainActor in completion(isBrewManaged) }
         }
     }
 
@@ -8057,6 +9129,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let bundleID = Bundle.main.bundleIdentifier ?? "com.local.parakey"
         for p in Permission.allCases {
             if Permissions.isGranted(p) { continue }
+            // Fire-and-forget on TCC's serial queue: these resets are
+            // best-effort scrubbing of stale DENIED entries, nothing
+            // at launch depends on their completion, and the user's
+            // first Grant click has its own reset-and-retry path.
             TCC.reset(p, bundleID: bundleID)
         }
         settings.lastSeenVersion = current
@@ -8343,6 +9419,7 @@ private enum ParakeySelfTest {
         try testFKeyAutoRepeatSuppressesWithoutAction()
         try testRightModifierReleaseWithLeftFlagStillSet()
         try testTogglePressFlipsOnceAndReleaseIsNoOp()
+        try testToggleGatedPressDoesNotFlipToggleState()
         try testEscapePassesThroughWhenNotRecording()
         try testEscapeSuppressesCancelRepeatAndKeyUpWhileRecording()
     }
@@ -9202,6 +10279,167 @@ private enum ParakeySelfTest {
             equals: false,
             "correction sync fingerprint should detect content changes even when file size matches"
         )
+
+        // The full legal correction set must encode within the
+        // transfer cap: 512 entries at the per-field caps is ~2.4 MB
+        // encoded, which silently failed to save under the old 2 MiB
+        // cap. Also pin that it really is over 2 MiB, documenting why
+        // the cap moved to 4 MiB.
+        let worstCaseSet = (0..<MAX_TRANSCRIPT_CORRECTIONS).map { index in
+            TranscriptCorrection(
+                source: String(format: "%06d-", index)
+                    + String(repeating: "s", count: MAX_TRANSCRIPT_CORRECTION_SOURCE_BYTES - 7),
+                replacement: String(repeating: "r", count: MAX_TRANSCRIPT_CORRECTION_REPLACEMENT_BYTES)
+            )
+        }
+        let worstCaseData = try TranscriptCorrectionsTransfer.encode(worstCaseSet)
+        try expect(
+            worstCaseData.count > 2 * 1024 * 1024,
+            equals: true,
+            "worst-case legal correction set should exceed the old 2 MiB cap (why the cap is now larger)"
+        )
+        try expect(
+            worstCaseData.count <= TranscriptCorrectionsTransfer.maxFileBytes,
+            equals: true,
+            "worst-case legal correction set must fit the transfer cap with JSON-overhead headroom"
+        )
+        try expect(
+            try TranscriptCorrectionsTransfer.decode(worstCaseData).count,
+            equals: MAX_TRANSCRIPT_CORRECTIONS,
+            "worst-case legal correction set should round-trip through the transfer cap"
+        )
+
+        // Near the correction cap a merge can briefly exceed it. The
+        // sync baseline must store the same normalized (capped) list
+        // that is written to the file — a raw over-cap baseline makes
+        // the capped-out entry look like a local deletion later.
+        let sharedNearCap = (0..<(MAX_TRANSCRIPT_CORRECTIONS - 1)).map {
+            TranscriptCorrection(source: "shared-\($0)", replacement: "same")
+        }
+        let nearCapMerge = mergedTranscriptCorrectionsForSync(
+            base: sharedNearCap,
+            local: sharedNearCap + [TranscriptCorrection(source: "local-extra", replacement: "local")],
+            remote: sharedNearCap + [TranscriptCorrection(source: "remote-extra", replacement: "remote")]
+        )
+        try expect(
+            nearCapMerge.conflictingSources,
+            equals: [],
+            "near-cap merge with disjoint additions should not conflict"
+        )
+        try expect(
+            nearCapMerge.corrections.count,
+            equals: MAX_TRANSCRIPT_CORRECTIONS + 1,
+            "near-cap merge result can exceed the cap before normalization"
+        )
+        let nearCapNormalized = normalizedTranscriptCorrections(nearCapMerge.corrections)
+        try expect(
+            nearCapNormalized.count,
+            equals: MAX_TRANSCRIPT_CORRECTIONS,
+            "normalizing the near-cap merge result should drop the over-cap entry"
+        )
+        try expect(
+            nearCapNormalized.contains(TranscriptCorrection(source: "local-extra", replacement: "local")),
+            equals: true,
+            "normalization keeps the earlier (local) addition at the cap"
+        )
+        try expect(
+            nearCapNormalized.contains(TranscriptCorrection(source: "remote-extra", replacement: "remote")),
+            equals: false,
+            "the capped-out remote addition is exactly what the baseline must also drop"
+        )
+
+        // Fingerprinting the bytes we wrote must agree with a fresh
+        // disk fingerprint when nobody touched the file in between —
+        // the sync path uses the in-memory form so a provider replacing
+        // the file in the write-to-fingerprint window is still detected
+        // by the next scan.
+        let fingerprintWriteTarget = tmpDir
+            .appendingPathComponent("parakey-sync-written-fingerprint-\(UUID().uuidString).json")
+        let fingerprintWrittenData = try TranscriptCorrectionsTransfer.write(
+            [TranscriptCorrection(source: "fingerprint", replacement: "match")],
+            to: fingerprintWriteTarget
+        )
+        defer { try? fm.removeItem(at: fingerprintWriteTarget) }
+        guard let fingerprintFromDisk = correctionSyncFingerprint(for: fingerprintWriteTarget) else {
+            throw SelfTestFailure.failed("disk fingerprint should be readable right after a write")
+        }
+        try expect(
+            correctionSyncFingerprint(forWrittenData: fingerprintWrittenData, at: fingerprintWriteTarget),
+            equals: fingerprintFromDisk,
+            "fingerprint of written bytes should match the disk fingerprint of an untouched file"
+        )
+
+        // Counted decode keeps the file's pre-normalization entry count
+        // so the import dialog can disclose truncation.
+        let countedOriginal = (0..<(MAX_TRANSCRIPT_CORRECTIONS + 5)).map {
+            TranscriptCorrection(source: "counted-\($0)", replacement: "kept")
+        }
+        let countedEncoder = JSONEncoder()
+        countedEncoder.dateEncodingStrategy = .iso8601
+        let countedDocument = TranscriptCorrectionsDocument(
+            schemaVersion: TranscriptCorrectionsTransfer.schemaVersion,
+            exportedAt: Date(),
+            appVersion: currentBundleVersion(),
+            corrections: countedOriginal
+        )
+        let counted = try TranscriptCorrectionsTransfer.decodeCounted(countedEncoder.encode(countedDocument))
+        try expect(
+            counted.originalCount,
+            equals: MAX_TRANSCRIPT_CORRECTIONS + 5,
+            "counted decode should report the file's pre-normalization entry count"
+        )
+        try expect(
+            counted.corrections.count,
+            equals: MAX_TRANSCRIPT_CORRECTIONS,
+            "counted decode should still normalize down to the correction cap"
+        )
+        let countedLegacy = try TranscriptCorrectionsTransfer.decodeCounted(
+            try JSONEncoder().encode([TranscriptCorrection(source: "  legacy  ", replacement: "entry")])
+        )
+        try expect(
+            countedLegacy,
+            equals: TranscriptCorrectionsTransfer.CountedDecodeResult(
+                corrections: [TranscriptCorrection(source: "legacy", replacement: "entry")],
+                originalCount: 1
+            ),
+            "counted decode should support legacy bare-array files"
+        )
+
+        // Import dialog copy: state the original count when entries
+        // will be dropped, and warn before a cap-overflowing merge.
+        try expect(
+            correctionImportCountText(sourceName: "file.parakey-corrections",
+                                      originalCount: 3,
+                                      keptCount: 3),
+            equals: "file.parakey-corrections contains 3 corrections.",
+            "import count text should stay simple when nothing is dropped"
+        )
+        let truncatedImportText = correctionImportCountText(
+            sourceName: "big.parakey-corrections",
+            originalCount: MAX_TRANSCRIPT_CORRECTIONS + 88,
+            keptCount: MAX_TRANSCRIPT_CORRECTIONS
+        )
+        try expect(
+            truncatedImportText.contains("contains \(MAX_TRANSCRIPT_CORRECTIONS + 88) entries"),
+            equals: true,
+            "import count text should state the file's original entry count when entries are dropped"
+        )
+        try expect(
+            truncatedImportText.contains("first \(MAX_TRANSCRIPT_CORRECTIONS)"),
+            equals: true,
+            "import count text should state how many corrections will actually be kept"
+        )
+        try expect(
+            correctionImportMergeCapWarningText(existingCount: 10, newCount: 10),
+            equals: nil,
+            "merge cap warning should stay silent when the merged set fits"
+        )
+        try expect(
+            correctionImportMergeCapWarningText(existingCount: MAX_TRANSCRIPT_CORRECTIONS,
+                                                newCount: 8)?.contains("8 would be dropped"),
+            equals: true,
+            "merge cap warning should state how many corrections a merge would drop"
+        )
     }
 
     private static func testFillerWordRemoval() throws {
@@ -9281,6 +10519,51 @@ private enum ParakeySelfTest {
         let embedded = FillerWordRemover.apply(to: "An ohm is a unit.")
         try expect(embedded.text, equals: "An ohm is a unit.", "ohm must not match hm")
         try expect(embedded.removedCount, equals: 0, "ohm should produce zero removals")
+
+        // Two consecutive fillers used to leave ",," because the
+        // comma-collapse pass was single-pass/non-overlapping: it
+        // consumed one ", ," pair and the whitespace-before-punctuation
+        // pass then glued the leftover " ," into ",,".
+        let consecutive = FillerWordRemover.apply(to: "So, um, uh, yes.")
+        try expect(consecutive.text, equals: "So, yes.", "consecutive fillers should collapse to a single comma")
+        try expect(consecutive.removedCount, equals: 2, "consecutive filler removal count")
+
+        // Three consecutive fillers exercise runs longer than one
+        // collapse step.
+        let tripleRun = FillerWordRemover.apply(to: "He said, um, uh, er, no.")
+        try expect(tripleRun.text, equals: "He said, no.", "a run of three fillers should collapse to a single comma")
+        try expect(tripleRun.removedCount, equals: 3, "triple filler removal count")
+
+        // Consecutive fillers mid-sentence keep exactly one comma,
+        // matching the single-filler behavior above.
+        let midRun = FillerWordRemover.apply(to: "I think, um, uh, we should go.")
+        try expect(midRun.text, equals: "I think, we should go.", "mid-sentence consecutive fillers should keep one comma")
+        try expect(midRun.removedCount, equals: 2, "mid-sentence consecutive filler removal count")
+
+        // Trailing filler before terminal punctuation used to leave
+        // ",." because no pass cleaned a comma glued onto a period.
+        let trailing = FillerWordRemover.apply(to: "That's all, um.")
+        try expect(trailing.text, equals: "That's all.", "trailing filler should not leave a comma before the period")
+        try expect(trailing.removedCount, equals: 1, "trailing filler removal count")
+
+        let beforeQuestion = FillerWordRemover.apply(to: "Is that right, um?")
+        try expect(beforeQuestion.text, equals: "Is that right?", "filler before a question mark should not leave a comma")
+        try expect(beforeQuestion.removedCount, equals: 1, "filler before question mark removal count")
+
+        let beforeBang = FillerWordRemover.apply(to: "Stop, um!")
+        try expect(beforeBang.text, equals: "Stop!", "filler before an exclamation mark should not leave a comma")
+        try expect(beforeBang.removedCount, equals: 1, "filler before exclamation mark removal count")
+
+        // Sentence-initial filler with its own terminal punctuation:
+        // the leading-strip class must include "?" and "!" or the
+        // orphaned punctuation survives ("Um? What?" → "? What?").
+        let leadingQuestion = FillerWordRemover.apply(to: "Um? What?")
+        try expect(leadingQuestion.text, equals: "What?", "leading filler question should take its punctuation with it")
+        try expect(leadingQuestion.removedCount, equals: 1, "leading filler question removal count")
+
+        let leadingBang = FillerWordRemover.apply(to: "Ah! Careful.")
+        try expect(leadingBang.text, equals: "Careful.", "leading filler exclamation should take its punctuation with it")
+        try expect(leadingBang.removedCount, equals: 1, "leading filler exclamation removal count")
     }
 
     private static func testAudioInputDeviceFiltering() throws {
@@ -9572,6 +10855,7 @@ private enum ParakeySelfTest {
 
     private static func testUpdate() throws {
         try testUpdateCheckParsing()
+        try testUpdateCheckState()
         try testUpdateHelperScript()
         try testUpdateProgressState()
     }
@@ -9591,16 +10875,25 @@ private enum ParakeySelfTest {
 
         try expect(
             UpdateCheck.parseLatest(data: releaseData, response: ok),
-            equals: GitHubRelease(tagName: "v9.8.7",
-                                  version: "9.8.7",
-                                  body: "Notes",
-                                  htmlURL: "https://github.com/rcourtman/parakey/releases/tag/v9.8.7"),
+            equals: .success(GitHubRelease(tagName: "v9.8.7",
+                                           version: "9.8.7",
+                                           body: "Notes",
+                                           htmlURL: "https://github.com/rcourtman/parakey/releases/tag/v9.8.7")),
             "update parsing should decode typed GitHub release payloads"
         )
         try expect(
             UpdateCheck.parseLatest(data: releaseData, response: notFound),
-            equals: nil,
-            "update parsing should reject non-2xx HTTP responses"
+            equals: .failure(.httpStatus(404)),
+            "update parsing should reject non-2xx HTTP responses with the status code"
+        )
+        let rateLimited = HTTPURLResponse(url: GITHUB_LATEST_RELEASE_URL,
+                                          statusCode: 403,
+                                          httpVersion: nil,
+                                          headerFields: nil)!
+        try expect(
+            UpdateCheck.parseLatest(data: releaseData, response: rateLimited),
+            equals: .failure(.httpStatus(403)),
+            "update parsing should surface HTTP 403 distinctly (GitHub rate limiting)"
         )
         let oversizedReleaseData = Data(
             """
@@ -9614,22 +10907,22 @@ private enum ParakeySelfTest {
         )
         try expect(
             UpdateCheck.parseLatest(data: oversizedReleaseData, response: ok),
-            equals: nil,
+            equals: .failure(.unexpectedResponse),
             "update parsing should reject oversized release responses before decoding"
         )
         try expect(
             UpdateCheck.parseLatest(data: Data(#"{"tag_name":""}"#.utf8), response: ok),
-            equals: nil,
+            equals: .failure(.unexpectedResponse),
             "update parsing should reject empty release tags"
         )
         try expect(
             UpdateCheck.parseLatest(data: Data(#"{"tag_name":"latest"}"#.utf8), response: ok),
-            equals: nil,
+            equals: .failure(.unexpectedResponse),
             "update parsing should reject non-version release tags"
         )
         try expect(
             UpdateCheck.parseLatest(data: Data(#"{"tag_name":"v01.2.3"}"#.utf8), response: ok),
-            equals: nil,
+            equals: .failure(.unexpectedResponse),
             "update parsing should reject non-normal semver tags"
         )
         try expect(
@@ -9637,7 +10930,7 @@ private enum ParakeySelfTest {
                 data: Data(#"{"tag_name":"v999999999999999999999999.2.3"}"#.utf8),
                 response: ok
             ),
-            equals: nil,
+            equals: .failure(.unexpectedResponse),
             "update parsing should reject oversized numeric version parts"
         )
         try expect(
@@ -9667,10 +10960,10 @@ private enum ParakeySelfTest {
                 data: Data(#"{"tag_name":"9.8.7","html_url":"https://example.test/v9.8.7"}"#.utf8),
                 response: ok
             ),
-            equals: GitHubRelease(tagName: "9.8.7",
-                                  version: "9.8.7",
-                                  body: "",
-                                  htmlURL: GITHUB_RELEASES_PAGE.absoluteString),
+            equals: .success(GitHubRelease(tagName: "9.8.7",
+                                           version: "9.8.7",
+                                           body: "",
+                                           htmlURL: GITHUB_RELEASES_PAGE.absoluteString)),
             "update parsing should fall back from non-project release URLs"
         )
         try expect(
@@ -9678,11 +10971,33 @@ private enum ParakeySelfTest {
                 data: Data(#"{"tag_name":"v9.8.7","html_url":"https://github.com/rcourtman/parakey/releases/tag/v9.8.8"}"#.utf8),
                 response: ok
             ),
-            equals: GitHubRelease(tagName: "v9.8.7",
-                                  version: "9.8.7",
-                                  body: "",
-                                  htmlURL: GITHUB_RELEASES_PAGE.absoluteString),
+            equals: .success(GitHubRelease(tagName: "v9.8.7",
+                                           version: "9.8.7",
+                                           body: "",
+                                           htmlURL: GITHUB_RELEASES_PAGE.absoluteString)),
             "update parsing should fall back when release URL tag does not match the payload tag"
+        )
+        // Manual-check alert copy: each failure kind gets its own
+        // explanation instead of blaming the network for everything.
+        try expect(
+            manualUpdateCheckFailureText(.network).contains("internet connection"),
+            equals: true,
+            "network failure text should point at connectivity"
+        )
+        try expect(
+            manualUpdateCheckFailureText(.httpStatus(403)).contains("rate limiting"),
+            equals: true,
+            "HTTP 403 failure text should mention rate limiting"
+        )
+        try expect(
+            manualUpdateCheckFailureText(.httpStatus(500)).contains("HTTP 500"),
+            equals: true,
+            "HTTP failure text should include the status code"
+        )
+        try expect(
+            manualUpdateCheckFailureText(.unexpectedResponse).contains("couldn't read"),
+            equals: true,
+            "unexpected-response failure text should describe an unreadable response"
         )
         try expect(
             UpdateCheck.normalizedReleaseVersion(from: " V1.2.3\n"),
@@ -9721,6 +11036,139 @@ private enum ParakeySelfTest {
                                             expectedTag: "v9.8.7"),
             equals: GITHUB_RELEASES_PAGE.absoluteString,
             "release URL sanitizing should reject query strings"
+        )
+    }
+
+    private static func testUpdateCheckState() throws {
+        let release = GitHubRelease(tagName: "v1.2.4",
+                                    version: "1.2.4",
+                                    body: "",
+                                    htmlURL: GITHUB_RELEASES_PAGE.absoluteString)
+        try expect(
+            updateCheckResult(for: nil, currentVersion: "1.2.3", skippedVersions: []),
+            equals: .failed,
+            "nil update checks should be recorded as failed or unavailable"
+        )
+        try expect(
+            updateCheckResult(for: release, currentVersion: "1.2.4", skippedVersions: []),
+            equals: .upToDate,
+            "equal release versions should be recorded as up to date"
+        )
+        try expect(
+            updateCheckResult(for: release, currentVersion: "1.2.3", skippedVersions: []),
+            equals: .available,
+            "newer releases should be recorded as available"
+        )
+        try expect(
+            updateCheckResult(for: release, currentVersion: "1.2.3", skippedVersions: ["1.2.4"]),
+            equals: .skipped,
+            "skipped newer releases should be recorded distinctly"
+        )
+
+        let now = Date(timeIntervalSince1970: 1_000)
+        try expect(
+            shouldSuppressUpdateForReminder(version: "1.2.4",
+                                            reminderVersion: "1.2.4",
+                                            reminderUntil: now.addingTimeInterval(60),
+                                            now: now),
+            equals: true,
+            "active reminders should suppress the matching update version"
+        )
+        try expect(
+            shouldSuppressUpdateForReminder(version: "1.2.5",
+                                            reminderVersion: "1.2.4",
+                                            reminderUntil: now.addingTimeInterval(60),
+                                            now: now),
+            equals: false,
+            "reminders should not suppress newer versions"
+        )
+        try expect(
+            shouldSuppressUpdateForReminder(version: "1.2.4",
+                                            reminderVersion: "1.2.4",
+                                            reminderUntil: now.addingTimeInterval(-1),
+                                            now: now),
+            equals: false,
+            "expired reminders should not suppress updates"
+        )
+        try expect(
+            updateCheckDiagnosticText(checkedAt: nil,
+                                      source: nil,
+                                      result: nil,
+                                      releaseVersion: ""),
+            equals: "never",
+            "missing update-check metadata should render as never"
+        )
+
+        // Stale-pause clearing: equal version (expired pause about to
+        // be re-shown) and a newer superseding release both clear; an
+        // older fetched version or no pause leaves things alone.
+        try expect(
+            shouldClearUpdateReminderPause(fetchedVersion: "1.2.4", pausedVersion: "1.2.4"),
+            equals: true,
+            "a fetched release matching the paused version should clear the pause"
+        )
+        try expect(
+            shouldClearUpdateReminderPause(fetchedVersion: "1.2.5", pausedVersion: "1.2.4"),
+            equals: true,
+            "a newer fetched release should clear a stale pause for the superseded version"
+        )
+        try expect(
+            shouldClearUpdateReminderPause(fetchedVersion: "1.2.3", pausedVersion: "1.2.4"),
+            equals: false,
+            "an older fetched release should keep the existing pause"
+        )
+        try expect(
+            shouldClearUpdateReminderPause(fetchedVersion: "1.2.4", pausedVersion: nil),
+            equals: false,
+            "no pause means nothing to clear"
+        )
+
+        // Persisted pause expiry validation, mirroring the
+        // lastUpdateCheck* pattern: corrupt → nil, in-range round-trip,
+        // cleared/missing → nil.
+        let pauseNow = Date(timeIntervalSince1970: 2_000)
+        let validPauseUntil = pauseNow.addingTimeInterval(UPDATE_REMIND_LATER_SECONDS)
+        try expect(
+            normalizedUpdateReminderPauseExpiry(storedValue: validPauseUntil, now: pauseNow),
+            equals: validPauseUntil,
+            "a stored pause expiry inside the pause window should round-trip"
+        )
+        try expect(
+            normalizedUpdateReminderPauseExpiry(storedValue: pauseNow.addingTimeInterval(-60), now: pauseNow),
+            equals: pauseNow.addingTimeInterval(-60),
+            "an already-expired stored pause expiry is legitimate state and should round-trip"
+        )
+        try expect(
+            normalizedUpdateReminderPauseExpiry(storedValue: "not a date", now: pauseNow),
+            equals: nil,
+            "a corrupt (non-Date) stored pause expiry should degrade to nil"
+        )
+        try expect(
+            normalizedUpdateReminderPauseExpiry(storedValue: nil, now: pauseNow),
+            equals: nil,
+            "a cleared pause expiry should read back as nil"
+        )
+        try expect(
+            normalizedUpdateReminderPauseExpiry(
+                storedValue: pauseNow.addingTimeInterval(UPDATE_REMIND_LATER_SECONDS + 60),
+                now: pauseNow
+            ),
+            equals: nil,
+            "an out-of-range future pause expiry should degrade to nil instead of suppressing indefinitely"
+        )
+        // The paused-version half persists through the same validated
+        // app-version normalization tested in testUpdateCheckParsing
+        // (normalizedStoredAppVersion: corrupt → nil, round-trip).
+
+        try expect(
+            UpdateCheckSource(rawValue: "settings_toggle"),
+            equals: .settingsToggle,
+            "settings-toggle update checks should round-trip through their persisted raw value"
+        )
+        try expect(
+            UpdateCheckSource.settingsToggle.diagnosticLabel,
+            equals: "settings toggle",
+            "settings-toggle update checks should label themselves distinctly in diagnostics"
         )
     }
 
@@ -10173,6 +11621,110 @@ private enum ParakeySelfTest {
             }
         }
 
+        // Mute command outcome: command failure and verified-unmuted
+        // are definitive "not muted"; an ambiguous verification after
+        // a successful command must be assumed muted so the recovery
+        // marker + watchdog stay armed.
+        try expect(
+            systemAudioMuteCommandOutcome(commandSucceeded: true, verifiedMuted: true),
+            equals: .muted,
+            "verified mute should report muted"
+        )
+        try expect(
+            systemAudioMuteCommandOutcome(commandSucceeded: true, verifiedMuted: nil),
+            equals: .assumedMuted,
+            "successful command with failed verification must assume muted"
+        )
+        try expect(
+            systemAudioMuteCommandOutcome(commandSucceeded: true, verifiedMuted: false),
+            equals: .failed,
+            "verified-unmuted after the command is a definitive failure"
+        )
+        try expect(
+            systemAudioMuteCommandOutcome(commandSucceeded: false, verifiedMuted: true),
+            equals: .failed,
+            "a failed command is not muted regardless of verification"
+        )
+
+        // Probe decision: only a definitive "output is live" while the
+        // recording still wants the mute arms recovery and mutes.
+        try expect(
+            systemAudioMuteProbeDecision(mutedState: false, unmuteAlreadyRequested: false),
+            equals: .armRecoveryAndMute,
+            "live output during an active recording should mute"
+        )
+        try expect(
+            systemAudioMuteProbeDecision(mutedState: true, unmuteAlreadyRequested: false),
+            equals: .standDown,
+            "a user-set mute must not be stomped"
+        )
+        try expect(
+            systemAudioMuteProbeDecision(mutedState: nil, unmuteAlreadyRequested: false),
+            equals: .standDown,
+            "a failed probe must not risk stomping an unseen user mute"
+        )
+        try expect(
+            systemAudioMuteProbeDecision(mutedState: false, unmuteAlreadyRequested: true),
+            equals: .standDown,
+            "a recording that already ended should not mute"
+        )
+
+        // Mute completion decision: assumed mutes behave exactly like
+        // verified mutes (recovery stays armed); a definitive failure
+        // disarms; a release that raced the command unmutes at once.
+        try expect(
+            systemAudioMuteCommandDecision(outcome: .muted, unmuteAlreadyRequested: false),
+            equals: .stayMuted,
+            "verified mute during recording should hold"
+        )
+        try expect(
+            systemAudioMuteCommandDecision(outcome: .assumedMuted, unmuteAlreadyRequested: false),
+            equals: .stayMuted,
+            "assumed mute must keep recovery armed, not disarm it"
+        )
+        try expect(
+            systemAudioMuteCommandDecision(outcome: .failed, unmuteAlreadyRequested: false),
+            equals: .disarmRecovery,
+            "definitive mute failure should disarm marker and watchdog"
+        )
+        try expect(
+            systemAudioMuteCommandDecision(outcome: .muted, unmuteAlreadyRequested: true),
+            equals: .beginUnmute,
+            "release during the mute command should unmute immediately"
+        )
+        try expect(
+            systemAudioMuteCommandDecision(outcome: .assumedMuted, unmuteAlreadyRequested: true),
+            equals: .beginUnmute,
+            "release during an assumed mute should also unmute immediately"
+        )
+
+        // Unmute request routing per lifecycle phase.
+        try expect(
+            systemAudioUnmuteRequestDecision(phase: .idle),
+            equals: .nothingToDo,
+            "no lifecycle → nothing to unmute"
+        )
+        try expect(
+            systemAudioUnmuteRequestDecision(phase: .probing),
+            equals: .deferUntilCommandSettles,
+            "release during the probe defers to the probe completion"
+        )
+        try expect(
+            systemAudioUnmuteRequestDecision(phase: .muting),
+            equals: .deferUntilCommandSettles,
+            "release during the mute command defers to its completion"
+        )
+        try expect(
+            systemAudioUnmuteRequestDecision(phase: .muted),
+            equals: .beginUnmute,
+            "release while muted unmutes immediately"
+        )
+        try expect(
+            systemAudioUnmuteRequestDecision(phase: .unmuting),
+            equals: .nothingToDo,
+            "release while an unmute is in flight should not double-issue"
+        )
+
         let fm = FileManager.default
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("parakey-mute-marker-\(UUID().uuidString)", isDirectory: true)
@@ -10371,6 +11923,41 @@ private enum ParakeySelfTest {
             state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle, isRecording: false),
             equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
             "second toggle press should stop"
+        )
+    }
+
+    private static func testToggleGatedPressDoesNotFlipToggleState() throws {
+        var state = HotkeyTransitionState()
+        let f5 = hotkeyChoice(forKeycode: 96)
+
+        // A press the app would reject (e.g. a transcription in
+        // flight) must suppress the key but not flip the toggle —
+        // otherwise the next press emits a swallowed .release and
+        // only the third press records.
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle, isRecording: false, canStartRecording: false),
+            equals: .suppressOnly,
+            "gated toggle press should suppress without flipping state"
+        )
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle, isRecording: false, canStartRecording: true),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
+            "press after a gated press should start immediately"
+        )
+        // The stop-side press must NOT be gated: once a recording is
+        // active (canStartRecording is false by definition), the
+        // press still has to stop it.
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .toggle, isRecording: true, canStartRecording: false),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.release]),
+            "gate must not block the toggle press that stops a recording"
+        )
+        // Hold mode ignores the gate entirely — handlePress discarding
+        // the press leaves no state behind in hold mode.
+        try expect(
+            state.transition(for: event(.keyDown, keycode: f5.keycode), hotkey: f5, triggerMode: .hold, isRecording: false, canStartRecording: false),
+            equals: HotkeyTransitionResult(suppress: true, actions: [.press]),
+            "hold-mode press should be unaffected by the gate"
         )
     }
 

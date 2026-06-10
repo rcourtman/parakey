@@ -38,11 +38,13 @@ Parakey uses FluidAudio's Swift SDK and NVIDIA Parakeet TDT v3. The model is com
 
 Parakey has no analytics, event tracking, crash reporter, account system, transcript sync, or cloud transcription endpoint. Audio is captured while the hotkey is active, transcribed locally, then discarded. The app keeps only a rolling in-memory history of five transcripts while running; that history clears on quit.
 
+Pasted text goes through the system pasteboard. Parakey deliberately does not restore the previous clipboard contents — round-tripping them races with clipboard managers — so the last dictation stays on the pasteboard, visible to clipboard managers and Universal Clipboard, until something else is copied.
+
 Documented network calls:
 
-1. First-launch model download from `huggingface.co`.
-2. Optional update check to `api.github.com/repos/rcourtman/parakey/releases/latest`.
-3. User-triggered update apply through Homebrew from the GitHub release archive.
+1. Model download from `huggingface.co`: on first launch, again if the cached model fails its integrity check, and again when the user chooses Reset Speech Model Cache. If `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or `HUGGINGFACEHUB_API_TOKEN` is set in the environment, FluidAudio attaches it as an Authorization header to huggingface.co; most users have none set.
+2. Optional update check to `api.github.com/repos/rcourtman/parakey/releases/latest`; it only notifies. The GET carries a fixed User-Agent header, exactly `parakey-update-check`, and no version, device, or user identifiers.
+3. User-triggered update apply through Homebrew: metadata and tap refresh (`formulae.brew.sh`, the GitHub APIs, `github.com/rcourtman/homebrew-parakey`), then the signed GitHub release archive download.
 
 For support, Copy Diagnostics and Save Diagnostics create a privacy-safe local report with app state, permission state, settings counts, microphone devices, memory, update state, and bounded recent log lines. The report excludes transcript text and text-correction contents.
 

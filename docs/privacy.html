@@ -46,6 +46,10 @@
               <p>The finished text normally goes through the general pasteboard and <span class="kbd">⌘ V</span>. If that setup fails, Parakey falls back to direct Unicode key events.</p>
             </article>
             <article class="card">
+              <h3>Clipboard persistence</h3>
+              <p>Parakey deliberately does not restore your previous clipboard contents — racing to round-trip them fights with clipboard managers. The trade-off: the last dictation stays on the system pasteboard, visible to clipboard managers and Universal Clipboard, until you copy something else.</p>
+            </article>
+            <article class="card">
               <h3>No transcript logs</h3>
               <p>Logs include timing and length metadata only. Transcript content is not written to disk.</p>
             </article>
@@ -70,21 +74,21 @@
               </thead>
               <tbody>
                 <tr>
-                  <td><strong>First launch</strong></td>
+                  <td><strong>Model download</strong></td>
                   <td><code>huggingface.co</code></td>
-                  <td>FluidAudio downloads the Parakeet TDT v3 CoreML model weights, about 600 MB, into the local support cache.</td>
+                  <td>FluidAudio downloads the Parakeet TDT v3 CoreML model weights, about 600 MB, into the local support cache. Runs on first launch, again if the cached model fails its integrity check, and again when you choose Reset Speech Model Cache. If <code>HF_TOKEN</code>, <code>HUGGING_FACE_HUB_TOKEN</code>, or <code>HUGGINGFACEHUB_API_TOKEN</code> is set in the environment, FluidAudio attaches it as an Authorization header to huggingface.co (most users have none set).</td>
                   <td>Required once for local transcription.</td>
                 </tr>
                 <tr>
                   <td><strong>Periodic update check</strong></td>
                   <td><code>api.github.com/repos/rcourtman/parakey/releases/latest</code></td>
-                  <td>Anonymous release lookup every six hours, plus one check shortly after launch.</td>
-                  <td>Disable from Settings.</td>
+                  <td>Release lookup every six hours, plus one check shortly after launch; it only notifies. The GET carries a fixed User-Agent header, exactly <code>parakey-update-check</code> — no version, device, or user identifiers.</td>
+                  <td>Disable update notifications from Settings.</td>
                 </tr>
                 <tr>
                   <td><strong>User-triggered update</strong></td>
-                  <td><code>github.com/rcourtman/parakey/releases/download/...</code></td>
-                  <td>Homebrew downloads the signed release archive when the user chooses to update.</td>
+                  <td><code>github.com/rcourtman/parakey/releases/download/...</code>, <code>formulae.brew.sh</code>, <code>github.com/rcourtman/homebrew-parakey</code>, Homebrew's own update endpoints (github.com / api.github.com)</td>
+                  <td>When the user chooses to update, Homebrew refreshes its metadata and the tap, then downloads the signed release archive.</td>
                   <td>Only runs when the user updates.</td>
                 </tr>
               </tbody>

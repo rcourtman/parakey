@@ -100,9 +100,9 @@ Parakey is local-first:
 
 Network calls are limited to:
 
-- one-time model download from Hugging Face,
-- optional GitHub release checks,
-- user-triggered Homebrew/GitHub update downloads.
+- model download from Hugging Face (first launch, integrity-failure re-download, or user-triggered cache reset),
+- optional GitHub release checks that only notify (fixed `parakey-update-check` User-Agent, no version, device, or user identifiers),
+- user-triggered update downloads through Homebrew (formulae.brew.sh, the GitHub APIs, the tap) and GitHub releases.
 
 ## How It Works
 
@@ -132,7 +132,7 @@ Useful checks:
 ```sh
 swift build
 swift run Parakey --self-test all
-./ship-swift.sh --dry-run
+../ship-swift.sh --dry-run   # release script lives at the repo root
 ```
 
 Before publishing a release, run the manual checklist in
