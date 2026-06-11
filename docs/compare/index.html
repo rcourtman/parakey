@@ -4,12 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Compare Parakey with Other Mac Dictation Options</title>
-    <meta name="description" content="Factual comparison pages for Parakey versus MacWhisper, Apple Dictation, and WhisperKit-based apps.">
+    <meta name="description" content="Side-by-side facts for Parakey, Apple Dictation, Superwhisper, Wispr Flow, and VoiceInk: price, where audio is processed, latency, footprint, languages, and fit.">
     <link rel="canonical" href="https://rcourtman.github.io/parakey/compare/">
     <link rel="icon" href="../favicon.svg" type="image/svg+xml">
     <meta name="theme-color" content="#0d7f5f">
     <meta property="og:title" content="Compare Parakey with Other Mac Dictation Options">
-    <meta property="og:description" content="Factual comparison pages for Parakey versus MacWhisper, Apple Dictation, and WhisperKit-based apps.">
+    <meta property="og:description" content="Side-by-side facts for Parakey, Apple Dictation, Superwhisper, Wispr Flow, and VoiceInk: price, where audio is processed, latency, footprint, languages, and fit.">
     <meta property="og:url" content="https://rcourtman.github.io/parakey/compare/">
     <meta property="og:image" content="https://raw.githubusercontent.com/rcourtman/parakey/main/icon/social-preview.png">
     <meta property="og:type" content="website">
@@ -35,26 +35,130 @@
       <div class="wrap page-title">
         <span class="section-eyebrow">Compare</span>
         <h1>How Parakey fits next to other Mac dictation options</h1>
-        <p>These pages are written for people and agents choosing a Mac speech-to-text workflow. They focus on fit, not winner-takes-all claims.</p>
+        <p>One table, five tools, no adjectives. Parakey's numbers are measured and reproducible; everyone else's come from their own published pages. Per-tool pages below go deeper.</p>
       </div>
+
+      <section>
+        <div class="wrap">
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Parakey</th>
+                  <th>Apple Dictation</th>
+                  <th>Superwhisper</th>
+                  <th>Wispr Flow</th>
+                  <th>VoiceInk</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>How it works</strong></td>
+                  <td>Hold a key, speak, release; the verbatim transcript pastes at the cursor.</td>
+                  <td>Press the Dictation shortcut to start, stop manually; auto-stops after 30 s of silence.</td>
+                  <td>Hotkey recording; optional AI modes reshape the output before insertion.</td>
+                  <td>Hold hotkey; AI-formatted text appears.</td>
+                  <td>Hotkey dictation with optional AI enhancement.</td>
+                </tr>
+                <tr>
+                  <td><strong>Price</strong></td>
+                  <td>Free.</td>
+                  <td>Included with macOS.</td>
+                  <td>Free tier; Pro is $8.49/month, $84.99/year, or $249.99 lifetime.</td>
+                  <td>Free tier of 2,000 words/week on desktop; Pro is $15/month, or $12/month billed annually.</td>
+                  <td>$25&ndash;$49 one-time; free to build from source.</td>
+                </tr>
+                <tr>
+                  <td><strong>Source</strong></td>
+                  <td>Open source, MIT.</td>
+                  <td>Proprietary, built into macOS.</td>
+                  <td>Proprietary.</td>
+                  <td>Proprietary.</td>
+                  <td>Open source, GPL-3.0 per its README.</td>
+                </tr>
+                <tr>
+                  <td><strong>Where audio is processed</strong></td>
+                  <td>On this Mac only; no cloud transcription path exists in the app.</td>
+                  <td>On-device for supported languages; otherwise sent to Apple servers. Keyboard settings shows which applies.</td>
+                  <td>Your choice per model: fully local models or cloud services.</td>
+                  <td>In the cloud &mdash; &ldquo;Transcription always happens in the cloud&rdquo; per its privacy page.</td>
+                  <td>On-device by default; optional cloud providers.</td>
+                </tr>
+                <tr>
+                  <td><strong>Account required</strong></td>
+                  <td>No.</td>
+                  <td>No.</td>
+                  <td>No sign-in documented; Pro activates with a license key.</td>
+                  <td>Yes.</td>
+                  <td>No; the paid binary activates with a license key.</td>
+                </tr>
+                <tr>
+                  <td><strong>Latency, release to text</strong></td>
+                  <td>~100 ms, measured p50 92&ndash;96 ms; <a href="../benchmarks.html">reproducible benchmark</a>.</td>
+                  <td>Not published.</td>
+                  <td>Not published.</td>
+                  <td>Not published; its engineering blog describes a ~700 ms end-to-end target.</td>
+                  <td>Not published.</td>
+                </tr>
+                <tr>
+                  <td><strong>App size</strong></td>
+                  <td>2.5 MB release zip, plus a one-time ~600 MB model cache.</td>
+                  <td>Built in; on-device languages need a model download, size not published.</td>
+                  <td>Not published; local models are 75 MB&ndash;3 GB.</td>
+                  <td>Not published; docs ask for ~500 MB free storage.</td>
+                  <td>13.7 MB download (v1.79 DMG); models extra.</td>
+                </tr>
+                <tr>
+                  <td><strong>Idle footprint</strong></td>
+                  <td>~80 MB RAM, 0% CPU between dictations.</td>
+                  <td>Not published.</td>
+                  <td>Not published.</td>
+                  <td>Not published; 8 GB+ RAM recommended.</td>
+                  <td>Not published; 8 GB RAM recommended.</td>
+                </tr>
+                <tr>
+                  <td><strong>Languages</strong></td>
+                  <td>25 European languages, auto-detected; Settings can pin one of 18.</td>
+                  <td>63 Dictation locales, 48 of them with on-device processing.</td>
+                  <td>100+ via cloud models; local model counts vary.</td>
+                  <td>100+.</td>
+                  <td>No official count; its Whisper models cover about 100.</td>
+                </tr>
+                <tr>
+                  <td><strong>Platforms</strong></td>
+                  <td>Apple Silicon Macs, macOS 14+.</td>
+                  <td>Every Mac.</td>
+                  <td>macOS 13.3+, Windows, iOS; local models work best on Apple Silicon.</td>
+                  <td>macOS 11+ including Intel, Windows, iPhone, Android.</td>
+                  <td>Apple Silicon Macs, macOS 14.4+.</td>
+                </tr>
+                <tr>
+                  <td><strong>Beyond verbatim dictation</strong></td>
+                  <td>Deliberately nothing: local text corrections and opt-in filler-word removal are the whole list.</td>
+                  <td>Auto-punctuation, spoken punctuation and emoji commands.</td>
+                  <td>AI modes, meeting transcription, file transcription, translation.</td>
+                  <td>AI formatting, tone styles, command mode, cross-device dictionary.</td>
+                  <td>AI enhancement modes, per-app Power Mode profiles, file transcription.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="note">
+            <p>Every tool here wins somewhere. Pick the AI-formatting tools if you want your words reshaped, Apple Dictation if you want zero install, VoiceInk if you want one configurable local app. Parakey's case is narrow on purpose: the fastest measured path from key release to pasted text, in the smallest app, with no cloud path to audit.</p>
+          </div>
+          <p>Parakey's figures are measured on an M4 Mac mini and reproducible from the <a href="https://github.com/rcourtman/parakey/tree/main/experiments/swift-bench">benchmark harness</a>. Other tools' figures come from their official sites and docs, checked 11 June 2026. &ldquo;Not published&rdquo; means we could not find an official number, nothing more. MacWhisper sits out this table because it is primarily a file-transcription app; it has its <a href="macwhisper.html">own page</a>. Spotted an error? <a href="https://github.com/rcourtman/parakey/issues">Open an issue</a> and we will fix it.</p>
+          <p>Sources: <a href="https://github.com/rcourtman/parakey">Parakey source</a> and <a href="../benchmarks.html">benchmarks</a>; <a href="https://support.apple.com/guide/mac-help/use-dictation-mh40584/mac">Apple Dictation guide</a>, <a href="https://www.apple.com/macos/feature-availability/">macOS feature availability</a>, and <a href="https://www.apple.com/legal/privacy/data/en/ask-siri-dictation/">Siri &amp; Dictation privacy</a>; <a href="https://superwhisper.com/">Superwhisper</a> site and docs; <a href="https://wisprflow.ai/pricing">Wispr Flow pricing</a> and <a href="https://wisprflow.ai/privacy">privacy</a>; <a href="https://tryvoiceink.com/">VoiceInk</a> site and <a href="https://github.com/Beingpax/VoiceInk">repository</a>.</p>
+        </div>
+      </section>
 
       <section>
         <div class="wrap">
           <div class="grid">
             <article class="card">
-              <h3>Parakey vs MacWhisper</h3>
-              <p>Push-to-talk dictation utility versus a broader transcription app.</p>
-              <p><a href="macwhisper.html">Read comparison &rarr;</a></p>
-            </article>
-            <article class="card">
-              <h3>Parakey vs Apple Dictation</h3>
-              <p>Small focused third-party menu-bar workflow versus the built-in macOS dictation feature.</p>
-              <p><a href="apple-dictation.html">Read comparison &rarr;</a></p>
-            </article>
-            <article class="card">
-              <h3>Parakey vs WhisperKit apps</h3>
-              <p>End-user Parakeet/ANE utility versus apps and projects built around Whisper-family models.</p>
-              <p><a href="whisperkit.html">Read comparison &rarr;</a></p>
+              <h3>Parakey vs Superwhisper</h3>
+              <p>Single-purpose free pipeline on the Neural Engine versus a configurable dictation workspace with paid tiers.</p>
+              <p><a href="superwhisper.html">Read comparison &rarr;</a></p>
             </article>
             <article class="card">
               <h3>Parakey vs Wispr Flow</h3>
@@ -62,9 +166,24 @@
               <p><a href="wispr-flow.html">Read comparison &rarr;</a></p>
             </article>
             <article class="card">
-              <h3>Parakey vs Superwhisper</h3>
-              <p>Single-purpose free pipeline on the Neural Engine versus a configurable dictation workspace with paid tiers.</p>
-              <p><a href="superwhisper.html">Read comparison &rarr;</a></p>
+              <h3>Parakey vs VoiceInk</h3>
+              <p>Two open-source local dictation apps: a fixed minimal pipeline versus a configurable multi-model workspace.</p>
+              <p><a href="voiceink.html">Read comparison &rarr;</a></p>
+            </article>
+            <article class="card">
+              <h3>Parakey vs Apple Dictation</h3>
+              <p>Small focused third-party menu-bar workflow versus the built-in macOS dictation feature.</p>
+              <p><a href="apple-dictation.html">Read comparison &rarr;</a></p>
+            </article>
+            <article class="card">
+              <h3>Parakey vs MacWhisper</h3>
+              <p>Push-to-talk dictation utility versus a broader transcription app.</p>
+              <p><a href="macwhisper.html">Read comparison &rarr;</a></p>
+            </article>
+            <article class="card">
+              <h3>Parakey vs WhisperKit apps</h3>
+              <p>End-user Parakeet/ANE utility versus apps and projects built around Whisper-family models.</p>
+              <p><a href="whisperkit.html">Read comparison &rarr;</a></p>
             </article>
           </div>
         </div>

@@ -24,7 +24,7 @@ Important pages:
 - Benchmarks: https://rcourtman.github.io/parakey/benchmarks.html
 - Benchmark results JSON: https://rcourtman.github.io/parakey/benchmarks/results.json
 - FAQ: https://rcourtman.github.io/parakey/faq.html
-- Compare: https://rcourtman.github.io/parakey/compare/
+- Compare (side-by-side table vs Apple Dictation, Superwhisper, Wispr Flow, and VoiceInk, plus per-tool pages): https://rcourtman.github.io/parakey/compare/
 - Source: https://github.com/rcourtman/parakey
 - Homebrew tap: https://github.com/rcourtman/homebrew-parakey
 

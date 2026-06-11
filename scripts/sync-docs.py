@@ -58,6 +58,27 @@ ICON_STAT_SVGS = [
     ROOT / "icon" / "demo.svg",
 ]
 
+# Compare pages quote competitor pricing and claims. Each page must carry a
+# "checked <Month> <Year>" stamp; --check fails once the oldest stamp ages out
+# so a release forces a re-verify against the cited sources.
+COMPARE_DIR = DOCS / "compare"
+COMPARE_MAX_AGE_DAYS = 180
+COMPARE_CHECKED_RE = re.compile(
+    r"checked (?:\d{1,2} )?"
+    r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+    r" (\d{4})"
+)
+MONTH_NUMBERS = {
+    name: number
+    for number, name in enumerate(
+        (
+            "January February March April May June "
+            "July August September October November December"
+        ).split(),
+        start=1,
+    )
+}
+
 STALE_PATTERNS = [
     (re.compile(r"2\.2 MB"), "old release zip size"),
     (re.compile(r'"softwareVersion": "0\.2\.1"'), "old structured-data version"),
@@ -461,6 +482,31 @@ def stale_copy_errors(paths: list[Path]) -> list[str]:
     return errors
 
 
+def check_compare_freshness(
+    today: date | None = None, compare_dir: Path = COMPARE_DIR
+) -> list[str]:
+    today = today or date.today()
+    errors: list[str] = []
+    for path in sorted(compare_dir.glob("*.html")):
+        text = read_text(path)
+        stamps = COMPARE_CHECKED_RE.findall(text)
+        if not stamps:
+            errors.append(
+                f"{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path.name}: "
+                "competitor claims carry no 'checked <Month> <Year>' stamp"
+            )
+            continue
+        oldest = min(date(int(year), MONTH_NUMBERS[month], 1) for month, year in stamps)
+        if (today - oldest).days > COMPARE_MAX_AGE_DAYS:
+            errors.append(
+                f"{path.relative_to(ROOT) if path.is_relative_to(ROOT) else path.name}: "
+                f"competitor claims last checked {oldest.strftime('%B %Y')}, more than "
+                f"{COMPARE_MAX_AGE_DAYS} days ago — re-verify against the cited sources "
+                "and update the stamp"
+            )
+    return errors
+
+
 def check_install_prompt_sync() -> list[str]:
     errors: list[str] = []
     agents = read_text(DOCS / "install" / "agents.md")
@@ -505,6 +551,21 @@ def run_self_test() -> None:
         else:
             raise SyncError("self-test: sitemap without <lastmod> entries did not fail loudly")
 
+        compare_dir = Path(tmp) / "compare"
+        compare_dir.mkdir()
+        page = compare_dir / "sample.html"
+        page.write_text("<p>Sources: example (checked January 2026).</p>", encoding="utf-8")
+        if check_compare_freshness(today=date(2026, 3, 1), compare_dir=compare_dir):
+            raise SyncError("self-test: fresh compare stamp was flagged")
+        if not check_compare_freshness(today=date(2027, 1, 1), compare_dir=compare_dir):
+            raise SyncError("self-test: stale compare stamp was not flagged")
+        page.write_text("<p>Sources: example (checked 11 June 2026).</p>", encoding="utf-8")
+        if check_compare_freshness(today=date(2026, 7, 1), compare_dir=compare_dir):
+            raise SyncError("self-test: day-carrying compare stamp was not parsed")
+        page.write_text("<p>Sources: example.</p>", encoding="utf-8")
+        if not check_compare_freshness(today=date(2026, 3, 1), compare_dir=compare_dir):
+            raise SyncError("self-test: missing compare stamp was not flagged")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -526,6 +587,7 @@ def main() -> int:
         if args.check:
             errors.extend(stale_copy_errors(list(expected) + EXTRA_STALE_SCAN))
             errors.extend(check_icon_stats(metadata))
+            errors.extend(check_compare_freshness())
             for path, want in expected.items():
                 have = read_text(path) if path.exists() else ""
                 if have != want:

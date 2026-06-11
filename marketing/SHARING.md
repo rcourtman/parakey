@@ -102,6 +102,17 @@ Privacy angle:
 > else): https://rcourtman.github.io/parakey/privacy.html. I maintain
 > it; it's free and MIT.
 
+Comparison ("how is this different from Superwhisper / Wispr Flow /
+VoiceInk?"):
+
+> Mostly scope. Parakey only does push-to-talk dictation — verbatim,
+> on-device, free — where those are fuller workspaces with AI
+> formatting and more. Side-by-side facts (price, where audio is
+> processed, measured latency, footprint) are here, with every
+> competitor claim sourced and dated:
+> https://rcourtman.github.io/parakey/compare/. I maintain Parakey,
+> so read it with that in mind.
+
 ## One-liner boilerplate
 
 For directories and "what is this" replies:
@@ -115,8 +126,9 @@ For directories and "what is this" replies:
 - One account, your own (pseudonymous is fine). Always disclose
   "I maintain it" / "I built this".
 - Answer questions that were actually asked; don't seed them.
-- The compare pages answer "why not Apple Dictation / MacWhisper /
-  WhisperKit" — link them instead of arguing in threads.
+- The compare section answers "why not Superwhisper / Wispr Flow /
+  VoiceInk / Apple Dictation / MacWhisper" — link the table or the
+  per-tool page instead of arguing in threads.
 - Expect "why Homebrew only?" and "Intel support?" — both are honest
   scope decisions: notarised cask keeps install + updates simple, and
   the latency story depends on the ANE.

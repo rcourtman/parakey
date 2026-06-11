@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parakey vs VoiceInk - Two Open-Source Local Mac Dictation Apps</title>
+    <meta name="description" content="Compare Parakey and VoiceInk: a free fixed-pipeline push-to-talk utility versus a configurable multi-model dictation workspace, both open source and local-first.">
+    <link rel="canonical" href="https://rcourtman.github.io/parakey/compare/voiceink.html">
+    <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+    <meta name="theme-color" content="#0d7f5f">
+    <meta property="og:title" content="Parakey vs VoiceInk - Two Open-Source Local Mac Dictation Apps">
+    <meta property="og:description" content="Compare Parakey and VoiceInk: a free fixed-pipeline push-to-talk utility versus a configurable multi-model dictation workspace, both open source and local-first.">
+    <meta property="og:url" content="https://rcourtman.github.io/parakey/compare/voiceink.html">
+    <meta property="og:image" content="https://raw.githubusercontent.com/rcourtman/parakey/main/icon/social-preview.png">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="../"><span class="brand-mark">P</span><span>Parakey</span></a>
+        <div class="nav-links">
+          <a href="../install.html">Install</a>
+          <a href="../privacy.html">Privacy</a>
+          <a href="../benchmarks.html">Benchmarks</a>
+          <a href="../faq.html">FAQ</a>
+          <a href="./">Compare</a>
+          <a href="https://github.com/rcourtman/parakey">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap page-title">
+        <span class="section-eyebrow">Compare</span>
+        <h1>Parakey vs VoiceInk</h1>
+        <p>These are philosophical neighbors: both open source, both local-first, and both can run NVIDIA's Parakeet models through FluidAudio. VoiceInk is a configurable workspace with many models and AI enhancement. Parakey is one fixed pipeline tuned for latency.</p>
+      </div>
+
+      <section>
+        <div class="wrap">
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>Parakey</th>
+                  <th>VoiceInk</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Primary workflow</strong></td>
+                  <td>Hold hotkey, speak, release — the verbatim transcript pastes at the cursor about 100 ms later.</td>
+                  <td>Hotkey dictation with optional AI enhancement, per-app Power Mode profiles, and audio/video file transcription.</td>
+                </tr>
+                <tr>
+                  <td><strong>Engine path</strong></td>
+                  <td>One pinned model: Parakeet TDT v3 through CoreML on the Apple Neural Engine via FluidAudio.</td>
+                  <td>Your choice: Parakeet V2/V3 via FluidAudio, Whisper models via whisper.cpp, Apple Speech on macOS 26+, or optional cloud providers.</td>
+                </tr>
+                <tr>
+                  <td><strong>Privacy posture</strong></td>
+                  <td>No cloud path exists: no account, no telemetry, transcript history in memory only.</td>
+                  <td>Local by default — &ldquo;your voice data never leaves your Mac&rdquo; — with optional cloud transcription and cloud enhancement if you enable them.</td>
+                </tr>
+                <tr>
+                  <td><strong>Price and license</strong></td>
+                  <td>Free and MIT licensed.</td>
+                  <td>$25&ndash;$49 one-time for the signed, auto-updating binary; GPL-3.0 source (per its README) you can build yourself for free.</td>
+                </tr>
+                <tr>
+                  <td><strong>Footprint</strong></td>
+                  <td>2.5 MB app, ~80 MB RAM idle, 0% CPU between dictations; <a href="../benchmarks.html">published benchmark</a>.</td>
+                  <td>13.7 MB download; resource figures not published, 8 GB RAM recommended.</td>
+                </tr>
+                <tr>
+                  <td><strong>Configurability</strong></td>
+                  <td>Deliberately minimal: hotkey, trigger style, language pinning, local text corrections.</td>
+                  <td>Extensive: model management, AI modes with custom prompts, per-app profiles, custom vocabulary, transcription history with audio replay.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="note">
+            <p>Choose VoiceInk if you want one local tool that also handles AI cleanup, per-app behavior, and file transcription, and a one-time price fits. Choose Parakey if you want the smallest possible utility that does exactly one job — both apps can run the same Parakeet model, so this choice is about surface area, not engine.</p>
+          </div>
+          <p>Sources: <a href="https://github.com/rcourtman/parakey">Parakey source</a>, <a href="https://rcourtman.github.io/parakey/benchmarks.html">Parakey benchmarks</a>, <a href="https://tryvoiceink.com/">VoiceInk official site</a> and <a href="https://github.com/Beingpax/VoiceInk">repository</a> (checked June 2026).</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>Parakey and VoiceInk comparison.</span>
+        <span><a href="./">Compare index</a> · <a href="../install.html">Install Parakey</a></span>
+      </div>
+    </footer>
+  </body>
+</html>
