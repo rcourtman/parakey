@@ -87,3 +87,7 @@ console.
 - `marketing/demo/dist/parakey-demo.mp4` — for Reddit and most social
 - `marketing/demo/dist/parakey-demo.webm` — for `<video>` embeds
 - `marketing/demo/dist/parakey-demo.gif`  — for places that disallow video
+
+The docs site embeds copies as `docs/demo-video.{mp4,webm}` plus
+`docs/demo-poster.jpg` for the mobile breakpoint — re-copy them after
+re-rendering.
