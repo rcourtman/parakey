@@ -38,8 +38,24 @@ SYNCED_PATHS = [
     DOCS / "faq.html",
     DOCS / "llms.txt",
     DOCS / "llms-full.txt",
+    DOCS / "demo.svg",
     DOCS / "sitemap.xml",
     METADATA_PATH,
+]
+
+# Hand-written marketing copy that quotes release stats. Not synced, but
+# scanned for the stale patterns below so old numbers fail loudly.
+EXTRA_STALE_SCAN = [
+    ROOT / "marketing" / "SHARING.md",
+]
+
+# Designed SVG assets that carry the release-size stat in hand-laid text.
+# They can't be rewritten mechanically, so --check verifies the current
+# size string appears and fails loudly when a release changes it.
+ICON_STAT_SVGS = [
+    ROOT / "icon" / "hero.svg",
+    ROOT / "icon" / "social-preview.svg",
+    ROOT / "icon" / "demo.svg",
 ]
 
 STALE_PATTERNS = [
@@ -380,6 +396,13 @@ def sync_llms_full(path: Path, metadata: dict[str, object]) -> str:
     return text
 
 
+def sync_demo_svg(path: Path, metadata: dict[str, object]) -> str:
+    del path, metadata
+    # The docs site embeds the same animated demo the README uses, but
+    # GitHub Pages serves only docs/, so mirror the canonical SVG here.
+    return read_text(ROOT / "icon" / "demo.svg")
+
+
 def sync_sitemap(path: Path, metadata: dict[str, object]) -> str:
     text = read_text(path)
     last_updated = str(metadata["last_updated"])
@@ -398,8 +421,24 @@ SYNCERS = {
     DOCS / "faq.html": sync_faq,
     DOCS / "llms.txt": sync_llms,
     DOCS / "llms-full.txt": sync_llms_full,
+    DOCS / "demo.svg": sync_demo_svg,
     DOCS / "sitemap.xml": sync_sitemap,
 }
+
+
+def check_icon_stats(metadata: dict[str, object]) -> list[str]:
+    size = str(metadata["release_zip_size"])
+    errors: list[str] = []
+    for path in ICON_STAT_SVGS:
+        if not path.exists():
+            errors.append(f"{path.relative_to(ROOT)}: missing icon SVG")
+            continue
+        if size not in read_text(path):
+            errors.append(
+                f"{path.relative_to(ROOT)}: release size stat is stale — "
+                f"expected {size!r} (designed asset; update the text by hand)"
+            )
+    return errors
 
 
 def expected_files(metadata: dict[str, object]) -> dict[Path, str]:
@@ -485,7 +524,8 @@ def main() -> int:
         expected = expected_files(metadata)
         errors: list[str] = []
         if args.check:
-            errors.extend(stale_copy_errors(list(expected)))
+            errors.extend(stale_copy_errors(list(expected) + EXTRA_STALE_SCAN))
+            errors.extend(check_icon_stats(metadata))
             for path, want in expected.items():
                 have = read_text(path) if path.exists() else ""
                 if have != want:
@@ -506,7 +546,8 @@ def main() -> int:
                 write_text(path, text)
                 print(f"updated {path.relative_to(ROOT)}")
 
-        errors.extend(stale_copy_errors(list(expected)))
+        errors.extend(stale_copy_errors(list(expected) + EXTRA_STALE_SCAN))
+        errors.extend(check_icon_stats(metadata))
         errors.extend(check_install_prompt_sync())
         if errors:
             for error in errors:

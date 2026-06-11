@@ -570,6 +570,21 @@ section p:last-child,
   padding: 18px 20px;
 }
 
+.demo-figure {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #faf8f2;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.demo-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .card p,
 .fact p {
   color: var(--muted);
