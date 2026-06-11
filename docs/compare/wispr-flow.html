@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parakey vs Wispr Flow - Local vs Cloud Mac Dictation</title>
+    <meta name="description" content="Compare Parakey and Wispr Flow: free on-device push-to-talk dictation for Apple Silicon versus a cloud-transcription subscription with AI formatting across Mac, Windows, and mobile.">
+    <link rel="canonical" href="https://rcourtman.github.io/parakey/compare/wispr-flow.html">
+    <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+    <meta name="theme-color" content="#0d7f5f">
+    <meta property="og:title" content="Parakey vs Wispr Flow - Local vs Cloud Mac Dictation">
+    <meta property="og:description" content="Compare Parakey and Wispr Flow: free on-device push-to-talk dictation for Apple Silicon versus a cloud-transcription subscription with AI formatting across Mac, Windows, and mobile.">
+    <meta property="og:url" content="https://rcourtman.github.io/parakey/compare/wispr-flow.html">
+    <meta property="og:image" content="https://raw.githubusercontent.com/rcourtman/parakey/main/icon/social-preview.png">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="../"><span class="brand-mark">P</span><span>Parakey</span></a>
+        <div class="nav-links">
+          <a href="../install.html">Install</a>
+          <a href="../privacy.html">Privacy</a>
+          <a href="../benchmarks.html">Benchmarks</a>
+          <a href="../faq.html">FAQ</a>
+          <a href="./">Compare</a>
+          <a href="https://github.com/rcourtman/parakey">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap page-title">
+        <span class="section-eyebrow">Compare</span>
+        <h1>Parakey vs Wispr Flow</h1>
+        <p>The main difference is where transcription happens and what it costs. Wispr Flow transcribes in the cloud, adds AI formatting, and runs across Mac, Windows, and mobile on a subscription. Parakey transcribes on-device, pastes verbatim text, and is free.</p>
+      </div>
+
+      <section>
+        <div class="wrap">
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>Parakey</th>
+                  <th>Wispr Flow</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Primary workflow</strong></td>
+                  <td>Hold hotkey, speak, release, paste at cursor — verbatim, about 100 ms after release.</td>
+                  <td>Hold hotkey, speak, and AI-formatted text appears — tone matching, auto-edits, and formatting applied.</td>
+                </tr>
+                <tr>
+                  <td><strong>Where transcription happens</strong></td>
+                  <td>On the Mac. Parakeet TDT v3 through CoreML on the Apple Neural Engine; no network round-trip for transcription.</td>
+                  <td>In the cloud — Wispr's privacy page states "Transcription always happens in the cloud." Privacy Mode prevents retention on their servers, but audio is still processed remotely.</td>
+                </tr>
+                <tr>
+                  <td><strong>Platforms</strong></td>
+                  <td>Apple Silicon Macs, macOS 14 or later.</td>
+                  <td>Mac, Windows, iPhone, and Android, with a shared dictionary across devices.</td>
+                </tr>
+                <tr>
+                  <td><strong>Price</strong></td>
+                  <td>Free and MIT licensed.</td>
+                  <td>Free tier of 2,000 words/week on desktop; Pro is $15/month, or $12/month billed annually.</td>
+                </tr>
+                <tr>
+                  <td><strong>Accounts and telemetry</strong></td>
+                  <td>No account, no telemetry, transcript history in memory only.</td>
+                  <td>Requires an account; without Privacy Mode, data may be used to improve their models per their privacy FAQ.</td>
+                </tr>
+                <tr>
+                  <td><strong>Beyond dictation</strong></td>
+                  <td>Deliberately narrow: verbatim transcription, local text corrections, opt-in filler-word removal.</td>
+                  <td>AI editing and formatting, tone adjustment, command mode, and cross-device personalization.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="note">
+            <p>Choose Wispr Flow if you want AI-shaped output across many devices and a subscription with cloud processing fits your needs. Choose Parakey if you want dictation whose audio never leaves the Mac, with no account and no recurring cost.</p>
+          </div>
+          <p>Sources: <a href="https://github.com/rcourtman/parakey">Parakey source</a>, <a href="https://rcourtman.github.io/parakey/benchmarks.html">Parakey benchmarks</a>, <a href="https://wisprflow.ai/">Wispr Flow official site</a> and its published pricing and privacy pages (checked June 2026).</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>Parakey and Wispr Flow comparison.</span>
+        <span><a href="./">Compare index</a> · <a href="../install.html">Install Parakey</a></span>
+      </div>
+    </footer>
+  </body>
+</html>

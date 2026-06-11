@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parakey vs Superwhisper - Local Mac Dictation Tradeoffs</title>
+    <meta name="description" content="Compare Parakey and Superwhisper: a free single-purpose push-to-talk pipeline on the Apple Neural Engine versus a configurable dictation workspace with model choice, AI modes, and paid tiers.">
+    <link rel="canonical" href="https://rcourtman.github.io/parakey/compare/superwhisper.html">
+    <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+    <meta name="theme-color" content="#0d7f5f">
+    <meta property="og:title" content="Parakey vs Superwhisper - Local Mac Dictation Tradeoffs">
+    <meta property="og:description" content="Compare Parakey and Superwhisper: a free single-purpose push-to-talk pipeline on the Apple Neural Engine versus a configurable dictation workspace with model choice, AI modes, and paid tiers.">
+    <meta property="og:url" content="https://rcourtman.github.io/parakey/compare/superwhisper.html">
+    <meta property="og:image" content="https://raw.githubusercontent.com/rcourtman/parakey/main/icon/social-preview.png">
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="stylesheet" href="../styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary">
+        <a class="brand" href="../"><span class="brand-mark">P</span><span>Parakey</span></a>
+        <div class="nav-links">
+          <a href="../install.html">Install</a>
+          <a href="../privacy.html">Privacy</a>
+          <a href="../benchmarks.html">Benchmarks</a>
+          <a href="../faq.html">FAQ</a>
+          <a href="./">Compare</a>
+          <a href="https://github.com/rcourtman/parakey">GitHub</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="wrap page-title">
+        <span class="section-eyebrow">Compare</span>
+        <h1>Parakey vs Superwhisper</h1>
+        <p>Both can transcribe on-device on Apple Silicon. Superwhisper is a configurable dictation workspace: model choice, AI post-processing modes, and Windows/iOS support, with free and paid tiers. Parakey is a free single-purpose push-to-talk pipeline tuned for one thing — latency.</p>
+      </div>
+
+      <section>
+        <div class="wrap">
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>Parakey</th>
+                  <th>Superwhisper</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Primary workflow</strong></td>
+                  <td>Hold hotkey, speak, release — the verbatim transcript pastes at the cursor about 100 ms later.</td>
+                  <td>Record with a hotkey, then optional AI modes reshape the output (notes, messages, custom prompts) before insertion.</td>
+                </tr>
+                <tr>
+                  <td><strong>Engine path</strong></td>
+                  <td>One pinned model: Parakeet TDT v3 through CoreML on the Apple Neural Engine, decoded in a single pass on key release.</td>
+                  <td>Choice of local Whisper-family models plus optional cloud models and LLM post-processing from multiple providers.</td>
+                </tr>
+                <tr>
+                  <td><strong>Privacy posture</strong></td>
+                  <td>No cloud path exists: no account, no telemetry, transcript history in memory only.</td>
+                  <td>Local models run fully offline; the optional cloud models and cloud AI modes send data out when you choose them.</td>
+                </tr>
+                <tr>
+                  <td><strong>Platforms</strong></td>
+                  <td>Apple Silicon Macs, macOS 14 or later.</td>
+                  <td>macOS, Windows, and iOS; Superwhisper notes Intel Macs work best with its cloud models.</td>
+                </tr>
+                <tr>
+                  <td><strong>Price</strong></td>
+                  <td>Free and MIT licensed.</td>
+                  <td>Free tier with smaller local models; Pro is $8.49/month, $84.99/year, or a $249.99 lifetime license.</td>
+                </tr>
+                <tr>
+                  <td><strong>Configurability</strong></td>
+                  <td>Deliberately minimal: hotkey, trigger style, language pinning, local text corrections.</td>
+                  <td>Extensive: modes, prompts, model management, vocabularies, and per-app behavior.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="note">
+            <p>Choose Superwhisper if you want model choice, AI-shaped output, or Windows and iOS coverage, and the tiers fit your budget. Choose Parakey if you want a free tool that does exactly one job with the lowest possible friction and no cloud path at all.</p>
+          </div>
+          <p>Sources: <a href="https://github.com/rcourtman/parakey">Parakey source</a>, <a href="https://rcourtman.github.io/parakey/benchmarks.html">Parakey benchmarks</a>, <a href="https://superwhisper.com/">Superwhisper official site</a> and its published pricing (checked June 2026).</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span>Parakey and Superwhisper comparison.</span>
+        <span><a href="./">Compare index</a> · <a href="../install.html">Install Parakey</a></span>
+      </div>
+    </footer>
+  </body>
+</html>
