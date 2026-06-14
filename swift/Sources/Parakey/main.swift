@@ -70,6 +70,7 @@ let RECORDING_HUD_ANIMATE_IN_SECONDS: TimeInterval = 0.12
 let RECORDING_HUD_ANIMATE_OUT_SECONDS: TimeInterval = 0.08
 let RECORDING_HUD_BUSY_DELAY_SECONDS: TimeInterval = 0.25
 let DICTATION_ERROR_FLASH_SECONDS: TimeInterval = 1.5  // how long the menu-bar icon flags a dropped dictation before returning to idle
+let AUDIO_START_RETRY_DELAYS_SECONDS: [UInt64] = [1, 3, 8]
 
 let SETTINGS_SUITE = "com.local.parakey"
 let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
@@ -2004,10 +2005,132 @@ private func speechModelFailureDetail(errorDescription: String) -> String {
     """
 }
 
+private func fourCharacterCodeString(forRawOSStatus raw: UInt32) -> String? {
+    let bytes = [
+        UInt8((raw >> 24) & 0xff),
+        UInt8((raw >> 16) & 0xff),
+        UInt8((raw >> 8) & 0xff),
+        UInt8(raw & 0xff),
+    ]
+    guard bytes.allSatisfy({ $0 >= 0x20 && $0 <= 0x7e }) else { return nil }
+    return String(bytes: bytes, encoding: .ascii)
+}
+
+private func formattedOSStatusCode(_ code: Int) -> String {
+    let raw = UInt32(bitPattern: Int32(truncatingIfNeeded: code))
+    let hex = String(format: "0x%08x", raw)
+    if let fourCharacterCode = fourCharacterCodeString(forRawOSStatus: raw) {
+        return "OSStatus \(code) (\(hex), '\(fourCharacterCode)')"
+    }
+    return "OSStatus \(code) (\(hex))"
+}
+
+private func formattedOSStatus(_ status: OSStatus) -> String {
+    formattedOSStatusCode(Int(status))
+}
+
+private func coreAudioOSStatusCode(from error: NSError) -> Int? {
+    let domain = error.domain.lowercased()
+    guard error.domain == NSOSStatusErrorDomain
+        || domain.contains("coreaudio")
+        || domain.contains("avfaudio") else {
+        return nil
+    }
+    return error.code
+}
+
+private func stringValue(fromUserInfoValue value: Any?) -> String? {
+    guard let value else { return nil }
+    let text = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+    return text.isEmpty || text == "nil" ? nil : text
+}
+
+private func failedAudioCallDescription(from error: NSError) -> String? {
+    for key in ["failed call", "failedCall", "AVAudioEngineFailedCall"] {
+        if let text = stringValue(fromUserInfoValue: error.userInfo[key]) {
+            return text
+        }
+    }
+
+    for (key, value) in error.userInfo {
+        let lower = key.lowercased()
+        guard lower.contains("failed"), lower.contains("call") else { continue }
+        if let text = stringValue(fromUserInfoValue: value) {
+            return text
+        }
+    }
+    return nil
+}
+
+private func audioStartupErrorDescription(_ error: Error) -> String {
+    let nsError = error as NSError
+    var lines = [nsError.localizedDescription]
+    if let statusCode = coreAudioOSStatusCode(from: nsError) {
+        lines.append("CoreAudio \(formattedOSStatusCode(statusCode)).")
+    }
+    if let failedCall = failedAudioCallDescription(from: nsError) {
+        lines.append("Failed call: \(failedCall).")
+    }
+    return lines.joined(separator: "\n")
+}
+
+private func singleLineLogDetail(_ text: String) -> String {
+    text.components(separatedBy: .newlines)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: " | ")
+}
+
+private func audioInputFailureDetail(errorDescription: String) -> String {
+    let lower = errorDescription.lowercased()
+    let looksLikeCoreAudioFailure = lower.contains("coreaudio")
+        || lower.contains("avfaudio")
+        || lower.contains("osstatus")
+        || lower.contains("kaustartio")
+    guard looksLikeCoreAudioFailure else { return errorDescription }
+
+    return """
+    \(errorDescription)
+
+    Parakey rebuilt the audio engine and retried microphone startup, but CoreAudio is still refusing to start the input unit. If this began after sleep/wake or an audio-device change, restart CoreAudio with sudo killall coreaudiod or reboot the Mac, then retry audio startup.
+    """
+}
+
 private func startupFailureDetail(stage: StartupFailureStage, errorDescription: String) -> String {
-    stage == .speechModel
-        ? speechModelFailureDetail(errorDescription: errorDescription)
-        : errorDescription
+    switch stage {
+    case .speechModel:
+        return speechModelFailureDetail(errorDescription: errorDescription)
+    case .audioInput:
+        return audioInputFailureDetail(errorDescription: errorDescription)
+    case .hotkeyListener:
+        return errorDescription
+    }
+}
+
+private func startupFailureDetail(stage: StartupFailureStage, error: Error) -> String {
+    let errorDescription = stage == .audioInput
+        ? audioStartupErrorDescription(error)
+        : error.localizedDescription
+    return startupFailureDetail(stage: stage, errorDescription: errorDescription)
+}
+
+private func startupFailureLogDetail(stage: StartupFailureStage, error: Error) -> String {
+    let detail = stage == .audioInput
+        ? audioStartupErrorDescription(error)
+        : String(describing: error)
+    return singleLineLogDetail(detail)
+}
+
+private func audioStartupRetryDelaySeconds(afterFailedAttempt failedAttempt: Int,
+                                           retryDelays: [UInt64] = AUDIO_START_RETRY_DELAYS_SECONDS) -> UInt64? {
+    guard failedAttempt > 0, failedAttempt <= retryDelays.count else { return nil }
+    return retryDelays[failedAttempt - 1]
+}
+
+private func audioStartupRetryStatusTitle(nextAttempt: Int,
+                                          totalAttempts: Int,
+                                          delaySeconds: UInt64) -> String {
+    "Audio input failed; retrying in \(delaySeconds)s (\(nextAttempt)/\(totalAttempts))…"
 }
 
 private struct SetupChecklistRowState: Equatable {
@@ -2043,6 +2166,7 @@ private func speechModelSetupRowState(isSpeechModelReady: Bool,
 private func audioInputSetupRowState(isSpeechModelReady: Bool,
                                      isCoreRuntimeReady: Bool,
                                      isStartupInProgress: Bool,
+                                     startupStatusTitle: String = "Starting audio input…",
                                      failure: StartupFailure?) -> SetupChecklistRowState {
     if let failure, failure.stage == .audioInput {
         return SetupChecklistRowState(detail: failure.detail,
@@ -2060,7 +2184,7 @@ private func audioInputSetupRowState(isSpeechModelReady: Bool,
                                       buttonTitle: nil)
     }
     if isStartupInProgress {
-        return SetupChecklistRowState(detail: "Starting audio input…",
+        return SetupChecklistRowState(detail: startupStatusTitle,
                                       status: "Starting",
                                       buttonTitle: nil)
     }
@@ -2617,7 +2741,7 @@ func writeMonoMix(channels: UnsafePointer<UnsafeMutablePointer<Float>>,
 }
 
 final class AudioCapture: @unchecked Sendable {
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
     private var manuallyMixInputToMono = false
@@ -2675,11 +2799,8 @@ final class AudioCapture: @unchecked Sendable {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            lock.lock()
-            converter = nil
-            converterInputFormat = nil
-            manuallyMixInputToMono = false
-            lock.unlock()
+            clearConverterState()
+            resetEngineInstance()
             throw error
         }
         installConfigurationObserver()
@@ -2689,6 +2810,13 @@ final class AudioCapture: @unchecked Sendable {
     func stopEngine() {
         removeConfigurationObserver()
 
+        clearStoppedCaptureState()
+
+        engine.inputNode.removeTap(onBus: 0)
+        resetEngineInstance()
+    }
+
+    private func clearStoppedCaptureState() {
         lock.lock()
         _isRunning = false
         latestLevel = 0
@@ -2704,9 +2832,20 @@ final class AudioCapture: @unchecked Sendable {
         converterInputFormat = nil
         manuallyMixInputToMono = false
         lock.unlock()
+    }
 
-        engine.inputNode.removeTap(onBus: 0)
+    private func clearConverterState() {
+        lock.lock()
+        converter = nil
+        converterInputFormat = nil
+        manuallyMixInputToMono = false
+        lock.unlock()
+    }
+
+    private func resetEngineInstance() {
         engine.stop()
+        engine.reset()
+        engine = AVAudioEngine()
     }
 
     private func installConfigurationObserver() {
@@ -2897,7 +3036,7 @@ final class AudioCapture: @unchecked Sendable {
                                           &deviceID,
                                           UInt32(MemoryLayout<AudioDeviceID>.size))
         guard status == noErr else {
-            log("AudioCapture: input device switch failed (\(status)), using system default")
+            log("AudioCapture: input device switch failed (\(formattedOSStatus(status))), using system default")
             return
         }
         log("AudioCapture: selected input \(device.name)")
@@ -5150,8 +5289,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 startupStatusTitle = "Starting audio input…"
                 rebuildMenu()
 
-                didTouchAudioEngine = true
-                try audio.startEngine(inputDevicePreference: settings.inputDevice)
+                try await startAudioInputWithRetries(reason: reason,
+                                                     initialStatusTitle: "Starting audio input…")
                 guard !Task.isCancelled, !isTerminating else { return }
 
                 isCoreRuntimeReady = true
@@ -5229,16 +5368,55 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             audio.stopEngine()
         }
 
-        let detail = startupFailureDetail(stage: stage,
-                                          errorDescription: error.localizedDescription)
+        let detail = startupFailureDetail(stage: stage, error: error)
         startupFailure = StartupFailure(stage: stage, detail: detail)
-        log("startup failed (\(reason), \(stage)): \(error)")
+        log("startup failed (\(reason), \(stage)): \(startupFailureLogDetail(stage: stage, error: error))")
         setMenuBarState(.error)
         if !missingPermissions().isEmpty {
             startPermissionReadinessMonitor(reason: reason)
         }
         maybeShowSetupChecklist(reason: "startup failure")
         rebuildMenu()
+    }
+
+    private func startAudioInputWithRetries(reason: String,
+                                            initialStatusTitle: String) async throws {
+        let totalAttempts = AUDIO_START_RETRY_DELAYS_SECONDS.count + 1
+        var lastError: Error?
+
+        for attempt in 1...totalAttempts {
+            try Task.checkCancellation()
+            guard !isTerminating else { throw CancellationError() }
+
+            startupStatusTitle = attempt == 1
+                ? initialStatusTitle
+                : "Starting audio input… (\(attempt)/\(totalAttempts))"
+            rebuildMenu()
+
+            do {
+                didTouchAudioEngine = true
+                try audio.startEngine(inputDevicePreference: settings.inputDevice)
+                return
+            } catch {
+                lastError = error
+                audio.stopEngine()
+                log("audio startup attempt \(attempt)/\(totalAttempts) failed (\(reason)): \(singleLineLogDetail(audioStartupErrorDescription(error)))")
+
+                guard let delay = audioStartupRetryDelaySeconds(afterFailedAttempt: attempt) else {
+                    throw error
+                }
+
+                startupStatusTitle = audioStartupRetryStatusTitle(nextAttempt: attempt + 1,
+                                                                  totalAttempts: totalAttempts,
+                                                                  delaySeconds: delay)
+                rebuildMenu()
+                try await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            }
+        }
+
+        if let lastError {
+            throw lastError
+        }
     }
 
     // MARK: - Sleep/wake runtime recovery
@@ -5325,6 +5503,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func startAudioRuntimeAfterWake(reason: String) {
+        guard !isRestartingAudioInput else {
+            return
+        }
         guard startupTask == nil, !isBusy, !isTerminating else {
             shouldResumeRuntimeAfterWake = true
             recoverRuntimeAfterWakeIfNeeded(reason: reason)
@@ -5335,6 +5516,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         isCoreRuntimeReady = false
         isRecording = false
         pendingAudioRouteRefresh = false
+        isRestartingAudioInput = true
         startupFailure = nil
         startupStatusTitle = "Restarting audio input…"
         hotkey.onPress = nil
@@ -5349,9 +5531,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         rebuildMenu()
 
         Task { @MainActor in
+            defer { isRestartingAudioInput = false }
             do {
-                didTouchAudioEngine = true
-                try audio.startEngine(inputDevicePreference: settings.inputDevice)
+                try await startAudioInputWithRetries(reason: reason,
+                                                     initialStatusTitle: "Restarting audio input…")
                 guard !isTerminating else { return }
                 isCoreRuntimeReady = true
                 startupStatusTitle = "Finishing setup…"
@@ -6467,7 +6650,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let failure = startupFailure {
             return failure.statusTitle
         }
-        if startupTask != nil {
+        if startupTask != nil || isRestartingAudioInput {
             return startupStatusTitle
         }
         if !missingPermissions().isEmpty {
@@ -6506,7 +6689,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let startupText: String
         if let failure = startupFailure {
             startupText = "\(failure.statusTitle): \(failure.detail)"
-        } else if startupTask != nil {
+        } else if startupTask != nil || isRestartingAudioInput {
             startupText = startupStatusTitle
         } else {
             startupText = isCoreRuntimeReady ? "Runtime ready" : "Runtime not ready"
@@ -6799,7 +6982,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func makeAudioInputSetupRow() -> NSView {
         let state = audioInputSetupRowState(isSpeechModelReady: isSpeechModelReady,
                                             isCoreRuntimeReady: isCoreRuntimeReady,
-                                            isStartupInProgress: startupTask != nil,
+                                            isStartupInProgress: startupTask != nil || isRestartingAudioInput,
+                                            startupStatusTitle: startupStatusTitle,
                                             failure: startupFailure)
         return makeSetupChecklistRow(title: "Audio input",
                                      detail: state.detail,
@@ -7334,8 +7518,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         Task { @MainActor in
             defer { isRestartingAudioInput = false }
             do {
-                didTouchAudioEngine = true
-                try audio.startEngine(inputDevicePreference: settings.inputDevice)
+                try await startAudioInputWithRetries(reason: reason,
+                                                     initialStatusTitle: "Restarting audio input…")
                 isCoreRuntimeReady = true
                 completeReadinessIfPossible(reason: reason)
             } catch {
@@ -9689,6 +9873,38 @@ private enum ParakeySelfTest {
             equals: "no input device",
             "non-model startup failures should keep their original detail"
         )
+
+        let coreAudioStopError = NSError(
+            domain: "com.apple.coreaudio.avfaudio",
+            code: 1_937_010_544,
+            userInfo: ["failed call": "PerformCommand(*ioNode, kAUStartIO, NULL, 0)"]
+        )
+        let coreAudioErrorDescription = audioStartupErrorDescription(coreAudioStopError)
+        try expect(
+            coreAudioErrorDescription.contains("OSStatus 1937010544"),
+            equals: true,
+            "CoreAudio startup errors should include the decimal OSStatus"
+        )
+        try expect(
+            coreAudioErrorDescription.contains("0x73746f70"),
+            equals: true,
+            "CoreAudio startup errors should include the hex OSStatus"
+        )
+        try expect(
+            coreAudioErrorDescription.contains("'stop'"),
+            equals: true,
+            "CoreAudio startup errors should include printable four-character codes"
+        )
+        try expect(
+            coreAudioErrorDescription.contains("PerformCommand(*ioNode, kAUStartIO, NULL, 0)"),
+            equals: true,
+            "CoreAudio startup errors should preserve the failed AVFAudio call"
+        )
+        try expect(
+            startupFailureDetail(stage: .audioInput, error: coreAudioStopError).contains("restart CoreAudio"),
+            equals: true,
+            "exhausted CoreAudio startup failures should give OS recovery guidance"
+        )
     }
 
     private static func testPasteSuffixFormatting() throws {
@@ -11504,6 +11720,26 @@ private enum ParakeySelfTest {
     }
 
     private static func testAudioRouteChangeDecision() throws {
+        try expect(
+            audioStartupRetryDelaySeconds(afterFailedAttempt: 1),
+            equals: Optional(1 as UInt64),
+            "first audio startup failure should retry after one second"
+        )
+        try expect(
+            audioStartupRetryDelaySeconds(afterFailedAttempt: 2),
+            equals: Optional(3 as UInt64),
+            "second audio startup failure should retry after three seconds"
+        )
+        try expect(
+            audioStartupRetryDelaySeconds(afterFailedAttempt: 3),
+            equals: Optional(8 as UInt64),
+            "third audio startup failure should retry after eight seconds"
+        )
+        try expect(
+            audioStartupRetryDelaySeconds(afterFailedAttempt: 4),
+            equals: UInt64?.none,
+            "audio startup should stop retrying after the configured backoff schedule"
+        )
         try expect(
             audioRouteChangeAction(isTerminating: true,
                                    isRestartingAudioInput: false,
