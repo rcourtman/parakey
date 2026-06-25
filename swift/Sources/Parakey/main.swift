@@ -2760,7 +2760,8 @@ final class AudioCapture: @unchecked Sendable {
         return _isRunning
     }
 
-    func startEngine(inputDevicePreference: String = "") throws {
+    func startEngine(inputDevicePreference: String = "",
+                     recordingImmediately: Bool = false) throws {
         let input = engine.inputNode
         applyInputDevicePreference(inputDevicePreference, to: input)
         let inputFormat = input.outputFormat(forBus: 0)
@@ -2782,6 +2783,13 @@ final class AudioCapture: @unchecked Sendable {
         converterInputFormat = sourceFormat
         manuallyMixInputToMono = mixToMono
         converter = newConverter
+        if recordingImmediately {
+            recordingGeneration &+= 1
+            samples.removeAll(keepingCapacity: true)
+            latestLevel = 0
+            latestLevelSequence &+= 1
+            _isRunning = true
+        }
         lock.unlock()
         let mixLabel = mixToMono ? " via manual mono mix" : ""
         log("AudioCapture: input \(inputFormat.sampleRate) Hz \(inputFormat.channelCount)ch\(mixLabel) → \(targetFormat.sampleRate) Hz mono")
@@ -2871,15 +2879,6 @@ final class AudioCapture: @unchecked Sendable {
             NotificationCenter.default.removeObserver(configurationObserver)
             self.configurationObserver = nil
         }
-    }
-
-    func beginRecording() {
-        lock.lock(); defer { lock.unlock() }
-        recordingGeneration &+= 1
-        samples.removeAll(keepingCapacity: true)
-        latestLevel = 0
-        latestLevelSequence &+= 1
-        _isRunning = true
     }
 
     /// Stops recording and returns the captured samples.
@@ -5396,6 +5395,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             do {
                 didTouchAudioEngine = true
                 try audio.startEngine(inputDevicePreference: settings.inputDevice)
+                audio.stopEngine()
                 return
             } catch {
                 lastError = error
@@ -5558,6 +5558,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         cancelMaxDurationAutoRelease()
         if isRecording || audio.isRunning {
             _ = audio.endRecording()
+            audio.stopEngine()
         }
         stopRecordingLevelMeter()
         unmuteIfWeMuted()
@@ -5971,6 +5972,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             enterPermissionBlockedState(missing: missing, reason: "hotkey press")
             return
         }
+        do {
+            didTouchAudioEngine = true
+            try audio.startEngine(inputDevicePreference: settings.inputDevice,
+                                  recordingImmediately: true)
+        } catch {
+            audio.stopEngine()
+            recordStartupFailure(stage: .audioInput, error: error, reason: "hotkey press")
+            return
+        }
         isRecording = true
         if setupChecklistWindow?.isVisible == true {
             hotkeyTestSucceeded = true
@@ -5981,7 +5991,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Sounds.playStart()
         }
         muteIfNeededForRecording()
-        audio.beginRecording()
         log("press: recording")
 
         scheduleMaxDurationAutoRelease()
@@ -6002,6 +6011,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         unmuteIfWeMuted()
 
         let samples = audio.endRecording()
+        audio.stopEngine()
         let dur: Double
         switch recordingReleaseAction(capturedSampleCount: samples.count) {
         case .discardTooShort(let duration):
@@ -6090,6 +6100,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         cancelMaxDurationAutoRelease()
         _ = audio.endRecording()
+        audio.stopEngine()
         isRecording = false
         stopRecordingLevelMeter()
         hotkey.resetToggleState()
@@ -6132,9 +6143,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     // Trade-off: the mute is asynchronous relative to recording
-    // start. audio.beginRecording() runs immediately on the press
-    // while the probe + mute land a few milliseconds later, so a
-    // sliver of system audio can bleed into the start of the clip.
+    // start. Audio capture is armed immediately when the engine opens
+    // on press, while the probe + mute land a few milliseconds later,
+    // so a sliver of system audio can bleed into the start of the clip.
     // That beats the alternative — the old synchronous AppleScript
     // calls ran behind the session-wide event tap on the main run
     // loop, stalling every keystroke system-wide (and risking macOS
