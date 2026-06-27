@@ -3636,6 +3636,22 @@ func unicodeInsertionChunks(for text: String, maxUTF16UnitsPerEvent maxUnits: In
     return chunks
 }
 
+private struct KeyboardEventStep: Equatable {
+    let virtualKey: CGKeyCode
+    let keyDown: Bool
+    let flags: CGEventFlags
+}
+
+private func clipboardPasteKeyboardEventSteps(commandKey: CGKeyCode,
+                                              pasteKey: CGKeyCode) -> [KeyboardEventStep] {
+    [
+        KeyboardEventStep(virtualKey: commandKey, keyDown: true, flags: .maskCommand),
+        KeyboardEventStep(virtualKey: pasteKey, keyDown: true, flags: .maskCommand),
+        KeyboardEventStep(virtualKey: pasteKey, keyDown: false, flags: .maskCommand),
+        KeyboardEventStep(virtualKey: commandKey, keyDown: false, flags: []),
+    ]
+}
+
 @MainActor
 enum TextInserter {
     nonisolated static let defaultStrategy = TextInsertionStrategy.clipboardPaste
@@ -3670,6 +3686,7 @@ enum TextInserter {
 
 @MainActor
 private enum ClipboardPasteInserter {
+    private static let virtualKeyCommand: CGKeyCode = 0x37  // left Command
     private static let virtualKeyV: CGKeyCode = 0x09  // ANSI 'v'
 
     static func write(_ text: String, to pb: NSPasteboard) -> Bool {
@@ -3683,18 +3700,34 @@ private enum ClipboardPasteInserter {
             return false
         }
 
-        let src = CGEventSource(stateID: .combinedSessionState)
-        guard
-            let down = CGEvent(keyboardEventSource: src, virtualKey: virtualKeyV, keyDown: true),
-            let up = CGEvent(keyboardEventSource: src, virtualKey: virtualKeyV, keyDown: false)
-        else {
+        let steps = clipboardPasteKeyboardEventSteps(commandKey: virtualKeyCommand,
+                                                     pasteKey: virtualKeyV)
+        guard post(steps) else {
             log("paste event creation failed")
             return false
         }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        return true
+    }
+
+    private static func post(_ steps: [KeyboardEventStep]) -> Bool {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let events = steps.compactMap { step -> CGEvent? in
+            guard let event = CGEvent(keyboardEventSource: source,
+                                      virtualKey: step.virtualKey,
+                                      keyDown: step.keyDown) else {
+                return nil
+            }
+            event.flags = step.flags
+            return event
+        }
+        guard events.count == steps.count else { return false }
+
+        // Post Command as real key events instead of only tagging the V
+        // events with .maskCommand. Sleep/wake can leave session modifier
+        // state unreliable for flag-only synthetic shortcuts.
+        for event in events {
+            event.post(tap: .cghidEventTap)
+        }
         return true
     }
 }
@@ -3722,6 +3755,8 @@ private enum DirectUnicodeInserter {
               let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
             return false
         }
+        down.flags = []
+        up.flags = []
         for event in [down, up] {
             units.withUnsafeBufferPointer { buffer in
                 guard let base = buffer.baseAddress else { return }
@@ -10317,6 +10352,16 @@ private enum ParakeySelfTest {
             unicodeInsertionChunks(for: "abc", maxUTF16UnitsPerEvent: 0),
             equals: [],
             "direct Unicode chunking should reject invalid chunk sizes"
+        )
+        try expect(
+            clipboardPasteKeyboardEventSteps(commandKey: 0x37, pasteKey: 0x09),
+            equals: [
+                KeyboardEventStep(virtualKey: 0x37, keyDown: true, flags: .maskCommand),
+                KeyboardEventStep(virtualKey: 0x09, keyDown: true, flags: .maskCommand),
+                KeyboardEventStep(virtualKey: 0x09, keyDown: false, flags: .maskCommand),
+                KeyboardEventStep(virtualKey: 0x37, keyDown: false, flags: []),
+            ],
+            "clipboard paste should synthesize a full Command+V key sequence"
         )
 
         let pasteboardProbe = MainActor.assumeIsolated {
