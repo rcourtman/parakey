@@ -71,6 +71,8 @@ let RECORDING_HUD_ANIMATE_OUT_SECONDS: TimeInterval = 0.08
 let RECORDING_HUD_BUSY_DELAY_SECONDS: TimeInterval = 0.25
 let DICTATION_ERROR_FLASH_SECONDS: TimeInterval = 1.5  // how long the menu-bar icon flags a dropped dictation before returning to idle
 let AUDIO_START_RETRY_DELAYS_SECONDS: [UInt64] = [1, 3, 8]
+let AUDIO_IDLE_STOP_DELAY_SECONDS: TimeInterval = 5
+let AUDIO_CONFIGURATION_CHANGE_SUPPRESSION_SECONDS: TimeInterval = 1
 let MODEL_DOWNLOAD_HEADROOM_BYTES: Int64 = 500 * 1024 * 1024
 
 let SETTINGS_SUITE = "com.local.parakey"
@@ -2085,6 +2087,12 @@ private func audioRouteChangeAction(isTerminating: Bool,
     return .restartNow
 }
 
+private func audioConfigurationChangeIsSuppressed(now: TimeInterval,
+                                                  suppressedUntil: TimeInterval?) -> Bool {
+    guard let suppressedUntil else { return false }
+    return now < suppressedUntil
+}
+
 private enum WakeRuntimeRecoveryAction: Equatable {
     case ignore
     case deferUntilIdle
@@ -2843,8 +2851,8 @@ final class HotkeyListener {
 //
 // Locking discipline: `lock` protects ALL mutable state shared with
 // the render thread — `samples`, `_isRunning`, `latestLevel`,
-// `latestLevelSequence`, `recordingGeneration`, AND the converter
-// trio (`converter`, `converterInputFormat`,
+// `latestLevelSequence`, `recordingGeneration`, the engine-open flag,
+// AND the converter trio (`converter`, `converterInputFormat`,
 // `manuallyMixInputToMono`). The trio is written on the main thread
 // in startEngine/stopEngine and read in handleTap on AVFoundation's
 // render thread; removeTap(onBus:) does NOT wait for in-flight tap
@@ -2953,6 +2961,7 @@ final class AudioCapture: @unchecked Sendable {
     private var latestLevel: Float = 0
     private var latestLevelSequence: UInt64 = 0
     private var recordingGeneration: UInt64 = 0
+    private var engineStarted = false
     private var configurationObserver: NSObjectProtocol?
 
     var onConfigurationChange: (@Sendable () -> Void)?
@@ -2962,8 +2971,20 @@ final class AudioCapture: @unchecked Sendable {
         return _isRunning
     }
 
+    var isEngineStarted: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return engineStarted
+    }
+
     func startEngine(inputDevicePreference: String = "",
                      recordingImmediately: Bool = false) throws {
+        if isEngineStarted {
+            if recordingImmediately {
+                beginRecording()
+            }
+            return
+        }
+
         let input = engine.inputNode
         applyInputDevicePreference(inputDevicePreference, to: input)
         let inputFormat = input.outputFormat(forBus: 0)
@@ -3013,15 +3034,29 @@ final class AudioCapture: @unchecked Sendable {
             resetEngineInstance()
             throw error
         }
+        lock.lock()
+        engineStarted = true
+        lock.unlock()
         installConfigurationObserver()
         log("AudioCapture: engine started")
+    }
+
+    func startRecording(inputDevicePreference: String = "") throws {
+        if isEngineStarted {
+            beginRecording()
+            return
+        }
+        try startEngine(inputDevicePreference: inputDevicePreference,
+                        recordingImmediately: true)
     }
 
     func stopEngine() {
         removeConfigurationObserver()
 
+        let wasEngineStarted = isEngineStarted
         clearStoppedCaptureState()
 
+        guard wasEngineStarted else { return }
         engine.inputNode.removeTap(onBus: 0)
         resetEngineInstance()
     }
@@ -3033,6 +3068,7 @@ final class AudioCapture: @unchecked Sendable {
         latestLevelSequence &+= 1
         recordingGeneration &+= 1
         samples.removeAll(keepingCapacity: true)
+        engineStarted = false
         // Clear the converter trio under the same lock the render
         // thread snapshots them with — removeTap below does not wait
         // for an in-flight tap callback. A callback that already took
@@ -3056,6 +3092,15 @@ final class AudioCapture: @unchecked Sendable {
         engine.stop()
         engine.reset()
         engine = AVAudioEngine()
+    }
+
+    func beginRecording() {
+        lock.lock(); defer { lock.unlock() }
+        recordingGeneration &+= 1
+        samples.removeAll(keepingCapacity: true)
+        latestLevel = 0
+        latestLevelSequence &+= 1
+        _isRunning = true
     }
 
     private func installConfigurationObserver() {
@@ -3430,6 +3475,11 @@ enum TranscriptCorrector {
 // user corrections always win over filler stripping.
 
 enum FillerWordRemover {
+    private enum CapitalizationRepairTarget: Hashable {
+        case start
+        case afterSentenceTerminator(Int)
+    }
+
     /// Non-word interjections only. "like" and "you know" are excluded
     /// because they have valid non-filler meanings ("I like cats", "you
     /// know who"). Most entries are regex fragments that allow the
@@ -3454,11 +3504,10 @@ enum FillerWordRemover {
         let matches = regex.matches(in: text, range: fullRange)
         guard !matches.isEmpty else { return (text, 0) }
 
-        // Preserve the original first-character casing — if the input
-        // began with a capital (typical sentence start) the result
-        // should too, even if the original capital was on a removed
-        // filler ("Um, hello." → "Hello.", not "hello.").
-        let firstCharWasUpper = text.first?.isUppercase ?? false
+        // Preserve sentence-start casing when the removed filler carried
+        // the capital ("Um, hello." and "First. Um hello.").
+        let capitalizationRepairTargets = capitalizationRepairTargets(for: matches,
+                                                                      in: text)
 
         let mutable = NSMutableString(string: text)
         for match in matches.reversed() {
@@ -3478,19 +3527,116 @@ enum FillerWordRemover {
         //   5. Leading punctuation / whitespace, including "?" and "!"
         //      so a removed sentence-initial filler takes its terminal
         //      punctuation with it ("Um? What?" → "What?")
-        //   6. Trailing whitespace
+        //   6. Orphan punctuation after an existing sentence terminator:
+        //      "x. , y" → "x. y" when removing "Um," after the period.
+        //   7. Trailing whitespace
         result = result.replacingOccurrences(of: #"\s*,(?:\s*,)+"#, with: ",", options: .regularExpression)
+        result = result.replacingOccurrences(of: #"([.!?])\s+[,.;:!?]+\s*"#, with: "$1 ", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\s+([.,!?;:])"#, with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: #",+([.!?;:])"#, with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
         result = result.replacingOccurrences(of: #"^[\s,.;:!?]+"#, with: "", options: .regularExpression)
         result = result.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if firstCharWasUpper, let first = result.first, first.isLowercase {
-            result = first.uppercased() + result.dropFirst()
-        }
+        result = restoringCapitalization(in: result,
+                                         targets: capitalizationRepairTargets)
 
         return (result, matches.count)
+    }
+
+    private static func capitalizationRepairTargets(for matches: [NSTextCheckingResult],
+                                                     in text: String) -> Set<CapitalizationRepairTarget> {
+        Set(matches.compactMap { match in
+            guard let range = Range(match.range, in: text),
+                  text[range].first?.isUppercase == true else {
+                return nil
+            }
+            return capitalizationRepairTarget(for: range, in: text)
+        })
+    }
+
+    private static func capitalizationRepairTarget(for range: Range<String.Index>,
+                                                   in text: String) -> CapitalizationRepairTarget? {
+        var index = range.lowerBound
+        while index > text.startIndex {
+            let previous = text.index(before: index)
+            let character = text[previous]
+            if character.isWhitespace || isBoundaryWrapper(character) {
+                index = previous
+                continue
+            }
+            guard isSentenceTerminator(character) else { return nil }
+            return .afterSentenceTerminator(sentenceTerminatorOrdinal(at: previous,
+                                                                      in: text))
+        }
+        return .start
+    }
+
+    private static func sentenceTerminatorOrdinal(at target: String.Index,
+                                                  in text: String) -> Int {
+        var ordinal = 0
+        var index = text.startIndex
+        while index <= target {
+            if isSentenceTerminator(text[index]) {
+                ordinal += 1
+            }
+            index = text.index(after: index)
+        }
+        return ordinal
+    }
+
+    private static func restoringCapitalization(in text: String,
+                                                targets: Set<CapitalizationRepairTarget>) -> String {
+        guard !targets.isEmpty, !text.isEmpty else { return text }
+
+        let sentenceTargets = Set(targets.compactMap { target -> Int? in
+            guard case .afterSentenceTerminator(let ordinal) = target else { return nil }
+            return ordinal
+        })
+        var result = ""
+        result.reserveCapacity(text.count)
+        var sentenceTerminatorOrdinal = 0
+        var shouldCapitalizeNextWord = targets.contains(.start)
+
+        for character in text {
+            if shouldCapitalizeNextWord {
+                if character.isLowercase {
+                    result += character.uppercased()
+                    shouldCapitalizeNextWord = false
+                    continue
+                }
+                if character.isLetter || character.isNumber {
+                    shouldCapitalizeNextWord = false
+                }
+            }
+
+            result.append(character)
+
+            if isSentenceTerminator(character) {
+                sentenceTerminatorOrdinal += 1
+                if sentenceTargets.contains(sentenceTerminatorOrdinal) {
+                    shouldCapitalizeNextWord = true
+                }
+            } else if shouldCapitalizeNextWord,
+                      !character.isWhitespace,
+                      !isBoundaryWrapper(character),
+                      !isOrphanSeparator(character) {
+                shouldCapitalizeNextWord = false
+            }
+        }
+
+        return result
+    }
+
+    private static func isSentenceTerminator(_ character: Character) -> Bool {
+        character == "." || character == "!" || character == "?"
+    }
+
+    private static func isBoundaryWrapper(_ character: Character) -> Bool {
+        "\"'“”‘’([{".contains(character)
+    }
+
+    private static func isOrphanSeparator(_ character: Character) -> Bool {
+        ",.;:!?".contains(character)
     }
 }
 
@@ -5269,8 +5415,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// still in flight; the in-flight completion honours it.
     private var systemAudioUnmuteRequested = false
     private var maxDurationWorkItem: DispatchWorkItem?
+    private var audioIdleStopWorkItem: DispatchWorkItem?
     private var isRestartingAudioInput = false
     private var pendingAudioRouteRefresh = false
+    private var audioConfigurationChangeSuppressedUntil: TimeInterval?
     private var workspacePowerObservers: [NSObjectProtocol] = []
     private var shouldResumeRuntimeAfterWake = false
     private var didLogDeferredWakeRecovery = false
@@ -5616,7 +5764,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.resetToggleState()
         hotkey.stop()
         if didTouchAudioEngine {
-            audio.stopEngine()
+            stopAudioEngineImmediately()
         }
 
         setMenuBarState(.loading)
@@ -5684,7 +5832,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.resetToggleState()
         hotkey.stop()
         if didTouchAudioEngine {
-            audio.stopEngine()
+            stopAudioEngineImmediately()
         }
 
         let detail = startupFailureDetail(stage: stage, error: error)
@@ -5714,12 +5862,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
             do {
                 didTouchAudioEngine = true
+                suppressAudioConfigurationChangesFromAppEngineUpdate()
                 try audio.startEngine(inputDevicePreference: settings.inputDevice)
-                audio.stopEngine()
+                stopAudioEngineImmediately()
                 return
             } catch {
                 lastError = error
-                audio.stopEngine()
+                stopAudioEngineImmediately()
                 log("audio startup attempt \(attempt)/\(totalAttempts) failed (\(reason)): \(singleLineLogDetail(audioStartupErrorDescription(error)))")
 
                 guard let delay = audioStartupRetryDelaySeconds(afterFailedAttempt: attempt) else {
@@ -5788,7 +5937,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.canStartRecording = nil
         hotkey.resetToggleState()
         hotkey.stop()
-        audio.stopEngine()
+        stopAudioEngineImmediately()
 
         startupFailure = nil
         startupStatusTitle = "Waiting for system wake…"
@@ -5846,7 +5995,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.canStartRecording = nil
         hotkey.resetToggleState()
         hotkey.stop()
-        audio.stopEngine()
+        stopAudioEngineImmediately()
         setMenuBarState(.loading)
         rebuildMenu()
 
@@ -5876,9 +6025,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         cancelMaxDurationAutoRelease()
-        if isRecording || audio.isRunning {
+        if isRecording || audio.isRunning || audio.isEngineStarted {
             _ = audio.endRecording()
-            audio.stopEngine()
+            stopAudioEngineImmediately()
         }
         stopRecordingLevelMeter()
         unmuteIfWeMuted()
@@ -6292,12 +6441,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             enterPermissionBlockedState(missing: missing, reason: "hotkey press")
             return
         }
+        cancelAudioIdleStop()
         do {
             didTouchAudioEngine = true
-            try audio.startEngine(inputDevicePreference: settings.inputDevice,
-                                  recordingImmediately: true)
+            if !audio.isEngineStarted {
+                suppressAudioConfigurationChangesFromAppEngineUpdate()
+            }
+            try audio.startRecording(inputDevicePreference: settings.inputDevice)
         } catch {
-            audio.stopEngine()
+            stopAudioEngineImmediately()
             recordStartupFailure(stage: .audioInput, error: error, reason: "hotkey press")
             return
         }
@@ -6331,7 +6483,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         unmuteIfWeMuted()
 
         let samples = audio.endRecording()
-        audio.stopEngine()
         let dur: Double
         switch recordingReleaseAction(capturedSampleCount: samples.count) {
         case .discardTooShort(let duration):
@@ -6339,6 +6490,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             log("release: clip too short (\(String(format: "%.2f", dur)) s), discarding")
             setMenuBarState(.idle)
             rebuildMenu()
+            if !runDeferredAudioRouteRefreshIfNeeded() {
+                scheduleAudioIdleStop(reason: "short clip")
+            }
             return
         case .transcribe(let duration):
             dur = duration
@@ -6407,8 +6561,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 setMenuBarState(.idle)
             }
             rebuildMenu()
-            runDeferredAudioRouteRefreshIfNeeded()
+            let didRestartAudio = runDeferredAudioRouteRefreshIfNeeded()
             recoverRuntimeAfterWakeIfNeeded(reason: "transcription finished after wake")
+            if !didRestartAudio {
+                scheduleAudioIdleStop(reason: "recording finished")
+            }
         }
     }
 
@@ -6420,7 +6577,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         cancelMaxDurationAutoRelease()
         _ = audio.endRecording()
-        audio.stopEngine()
         isRecording = false
         stopRecordingLevelMeter()
         hotkey.resetToggleState()
@@ -6428,8 +6584,11 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setMenuBarState(.idle)
         rebuildMenu()
         log("recording canceled (\(reason))")
-        if runDeferredRefresh {
-            runDeferredAudioRouteRefreshIfNeeded()
+        let didRestartAudio = runDeferredRefresh
+            ? runDeferredAudioRouteRefreshIfNeeded()
+            : false
+        if !didRestartAudio {
+            scheduleAudioIdleStop(reason: reason)
         }
     }
 
@@ -6451,7 +6610,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             _ = audio.endRecording()
         }
         stopRecordingLevelMeter()
-        audio.stopEngine()
+        stopAudioEngineImmediately()
         isRecording = false
         isBusy = false
         hotkey.resetToggleState()
@@ -7843,7 +8002,65 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         restartAudioInput(reason: "input device change")
     }
 
+    private func suppressAudioConfigurationChangesFromAppEngineUpdate() {
+        let suppressedUntil = Date().timeIntervalSinceReferenceDate
+            + AUDIO_CONFIGURATION_CHANGE_SUPPRESSION_SECONDS
+        audioConfigurationChangeSuppressedUntil = max(audioConfigurationChangeSuppressedUntil ?? 0,
+                                                      suppressedUntil)
+    }
+
+    private func shouldIgnoreAppOwnedAudioConfigurationChange() -> Bool {
+        let now = Date().timeIntervalSinceReferenceDate
+        if audioConfigurationChangeIsSuppressed(now: now,
+                                                suppressedUntil: audioConfigurationChangeSuppressedUntil) {
+            return true
+        }
+        if let suppressedUntil = audioConfigurationChangeSuppressedUntil,
+           now >= suppressedUntil {
+            audioConfigurationChangeSuppressedUntil = nil
+        }
+        return false
+    }
+
+    private func cancelAudioIdleStop() {
+        audioIdleStopWorkItem?.cancel()
+        audioIdleStopWorkItem = nil
+    }
+
+    private func scheduleAudioIdleStop(reason: String) {
+        cancelAudioIdleStop()
+        guard audio.isEngineStarted, !isRecording, !isBusy, !isTerminating else { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.closeIdleAudioInputIfNeeded(reason: reason)
+        }
+        audioIdleStopWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + AUDIO_IDLE_STOP_DELAY_SECONDS, execute: work)
+    }
+
+    private func stopAudioEngineImmediately() {
+        cancelAudioIdleStop()
+        if audio.isEngineStarted {
+            suppressAudioConfigurationChangesFromAppEngineUpdate()
+        }
+        audio.stopEngine()
+    }
+
+    private func closeIdleAudioInputIfNeeded(reason: String) {
+        guard !isRecording, !isBusy, !isTerminating else { return }
+        let wasEngineStarted = audio.isEngineStarted
+        stopAudioEngineImmediately()
+        if wasEngineStarted {
+            log("AudioCapture: idle audio input closed (\(reason))")
+        }
+    }
+
     private func handleAudioConfigurationChange() {
+        if shouldIgnoreAppOwnedAudioConfigurationChange() {
+            log("AudioCapture: app-owned audio configuration change ignored")
+            return
+        }
+
         switch audioRouteChangeAction(isTerminating: isTerminating,
                                       isRestartingAudioInput: isRestartingAudioInput,
                                       isCoreRuntimeReady: isCoreRuntimeReady,
@@ -7867,11 +8084,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func runDeferredAudioRouteRefreshIfNeeded() {
+    @discardableResult
+    private func runDeferredAudioRouteRefreshIfNeeded() -> Bool {
         guard pendingAudioRouteRefresh,
-              !isRecording, !isBusy, startupTask == nil, isCoreRuntimeReady, !isTerminating else { return }
+              !isRecording, !isBusy, startupTask == nil, isCoreRuntimeReady, !isTerminating else { return false }
         pendingAudioRouteRefresh = false
         restartAudioInput(reason: "deferred audio configuration change")
+        return true
     }
 
     private func restartAudioInput(reason: String) {
@@ -7889,7 +8108,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hotkey.stop()
         setMenuBarState(.loading)
         rebuildMenu()
-        audio.stopEngine()
+        stopAudioEngineImmediately()
 
         Task { @MainActor in
             defer { isRestartingAudioInput = false }
@@ -11074,6 +11293,38 @@ private enum ParakeySelfTest {
         try expect(initial.text, equals: "Hello.", "sentence-initial filler should re-capitalise the next word")
         try expect(initial.removedCount, equals: 1, "sentence-initial filler removal count")
 
+        let secondSentence = FillerWordRemover.apply(to: "This is the first sentence. Um this is the second sentence.")
+        try expect(
+            secondSentence.text,
+            equals: "This is the first sentence. This is the second sentence.",
+            "sentence-initial filler after a period should re-capitalise the next word"
+        )
+        try expect(secondSentence.removedCount, equals: 1, "second-sentence filler removal count")
+
+        let secondSentenceWithComma = FillerWordRemover.apply(to: "This is the first sentence. Um, this is the second sentence.")
+        try expect(
+            secondSentenceWithComma.text,
+            equals: "This is the first sentence. This is the second sentence.",
+            "sentence-initial filler after a period should not leave an orphan comma"
+        )
+        try expect(secondSentenceWithComma.removedCount, equals: 1, "second-sentence comma filler removal count")
+
+        let secondSentenceQuestion = FillerWordRemover.apply(to: "This is the first sentence. Um? this is the second sentence.")
+        try expect(
+            secondSentenceQuestion.text,
+            equals: "This is the first sentence. This is the second sentence.",
+            "sentence-initial filler with its own punctuation should take that punctuation with it"
+        )
+        try expect(secondSentenceQuestion.removedCount, equals: 1, "second-sentence question filler removal count")
+
+        let capitalizedMidSentence = FillerWordRemover.apply(to: "This is not a sentence boundary Um this stays lowercase.")
+        try expect(
+            capitalizedMidSentence.text,
+            equals: "This is not a sentence boundary this stays lowercase.",
+            "capitalized fillers away from sentence starts should not force capitalization"
+        )
+        try expect(capitalizedMidSentence.removedCount, equals: 1, "capitalized mid-sentence filler removal count")
+
         // Bare filler with adjacent punctuation collapses to empty.
         let bare = FillerWordRemover.apply(to: "Um.")
         try expect(bare.text, equals: "", "bare filler with trailing punctuation should leave empty string")
@@ -12234,6 +12485,21 @@ private enum ParakeySelfTest {
                                    hasStartupTask: false),
             equals: .restartNow,
             "idle ready route changes should restart audio immediately"
+        )
+        try expect(
+            audioConfigurationChangeIsSuppressed(now: 10, suppressedUntil: nil),
+            equals: false,
+            "configuration changes should not be suppressed without a suppression deadline"
+        )
+        try expect(
+            audioConfigurationChangeIsSuppressed(now: 10, suppressedUntil: 11),
+            equals: true,
+            "configuration changes before the app-owned deadline should be ignored"
+        )
+        try expect(
+            audioConfigurationChangeIsSuppressed(now: 11, suppressedUntil: 11),
+            equals: false,
+            "configuration changes at the suppression deadline should be handled normally"
         )
     }
 
