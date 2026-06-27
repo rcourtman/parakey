@@ -1,0 +1,9 @@
+clip_id	category	language	duration_target	environment	notes
+short-command-001	short-command	en	2-5s	quiet	Example: app command or short sentence.
+note-paragraph-001	paragraph	en	30-90s	quiet	Natural dictation with punctuation.
+tail-word-001	final-word	en	2-8s	quiet	Final word should be semantically important.
+fast-speech-001	fast-speech	en	5-20s	quiet	Faster than comfortable reading speed.
+pause-heavy-001	pauses	en	10-30s	quiet	Natural pauses and restarts.
+filler-heavy-001	fillers	en	10-30s	quiet	Use when testing filler-word removal separately.
+noise-001	background-noise	en	5-30s	mild-noise	Same reference sidecar pattern as other clips.
+multilingual-001	non-english	auto	5-30s	quiet	Use only if multilingual behavior is in scope.

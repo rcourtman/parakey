@@ -26,16 +26,17 @@ Links:
 - Repo: <https://github.com/rcourtman/parakey>
 - Site: <https://rcourtman.github.io/parakey/>
 - Benchmarks: <https://rcourtman.github.io/parakey/benchmarks.html>
-- Install: `brew install --cask rcourtman/parakey/parakey`
+- Download: <https://github.com/rcourtman/parakey/releases/latest/download/Parakey.zip>
+- Homebrew: `brew install --cask rcourtman/parakey/parakey`
 
 ## Claims and where they're backed
 
 - **~100 ms from key release to pasted text** — benchmarks page, methodology included
-- **2.5 MB signed, notarised download** — release asset size; one-time ~600 MB local model
+- **2.5 MB signed, notarised download** — release asset size; about 500-600 MB for the local speech model
 - **~80 MB RAM while idle, 0% CPU between dictations** — site stats
 - **100% local** — no cloud transcription, no telemetry, no account; privacy page documents the full three-call network surface
 - **Free, MIT, native Swift menu-bar app**
-- State the requirements up front (Apple Silicon, macOS 14+, Homebrew) — it costs a sentence and buys trust.
+- State the requirements up front (Apple Silicon, macOS 14+; Homebrew optional for updates) — it costs a sentence and buys trust.
 
 ## Show HN (post once)
 
@@ -48,23 +49,26 @@ I built it because I wanted dictation that feels like a keyboard
 shortcut rather than a mode you enter and leave.
 
 How it works: audio is captured in memory and decoded once on key
-release with NVIDIA's Parakeet TDT v3, through FluidAudio/CoreML on
-the Apple Neural Engine, then pasted at the cursor. The single-pass
+release with the local Parakeet TDT v3 CoreML model through FluidAudio on the
+Apple Neural Engine, then pasted at the cursor. The single-pass
 decode — rather than streaming — is where the latency comes from.
 Benchmarks and methodology:
 https://rcourtman.github.io/parakey/benchmarks.html
 
-Numbers: ~100 ms key-release-to-paste; 2.5 MB notarised app plus a
-one-time ~600 MB model download; ~80 MB RAM idle; 0% CPU between
+Numbers: ~100 ms key-release-to-paste; 2.5 MB notarised app plus about
+500-600 MB for the local speech model; ~80 MB RAM idle; 0% CPU between
 dictations. Transcription makes no network calls, and the full
 network surface (model download, optional update check) is
 documented on the privacy page.
 
-Limitations: Apple Silicon and macOS 14+ only; install is
-Homebrew-only; 18 Latin/Cyrillic-script languages via Parakeet v3;
-no streaming mode.
+Limitations: Apple Silicon and macOS 14+ only; 18
+Latin/Cyrillic-script languages via Parakeet v3; no streaming mode.
 
-MIT licensed. Install: `brew install --cask rcourtman/parakey/parakey`
+MIT licensed. Download:
+https://github.com/rcourtman/parakey/releases/latest/download/Parakey.zip
+
+Or install with Homebrew:
+`brew install --cask rcourtman/parakey/parakey`
 
 **Posting notes.** Post from a personal account (pseudonymous is
 fine; being the author is required for Show HN). Weekday mornings US
@@ -73,6 +77,29 @@ hours and answer technical questions plainly. Expectation-setting:
 most Show HNs get a handful of points and sink — that's a fine
 outcome; the note persists, gets indexed, and keeps answering
 searches for years.
+
+## Launch checklist
+
+Do this once, then stop and measure instead of tweaking copy in a loop:
+
+1. Confirm `main` is deployed to GitHub Pages and the README shows the
+   direct download above Homebrew.
+2. Record a baseline: latest release downloads, total release
+   downloads, repo stars, repo views, unique views, clones, and top
+   referrers.
+3. Post the Show HN as written above, linking the repo or site
+   depending on which preview looks cleaner that day.
+4. Stay available for the first few hours and answer only actual
+   questions. Link the compare table for "why not X?" and the privacy
+   page for trust questions.
+5. After 24 hours and 7 days, record the same metrics. Judge the post
+   by qualified installs and questions, not points alone.
+
+If the direct download link materially outperforms the Homebrew command
+in release downloads, keep direct download first. If questions cluster
+around permissions, model download, or Gatekeeper wording, fix that copy
+once in README + install page + FAQ and rerun `scripts/sync-docs.py
+--check`.
 
 ## Answer material (ongoing, demand-driven)
 
@@ -129,7 +156,7 @@ For directories and "what is this" replies:
 - The compare section answers "why not Superwhisper / Wispr Flow /
   VoiceInk / Apple Dictation / MacWhisper" — link the table or the
   per-tool page instead of arguing in threads.
-- Expect "why Homebrew only?" and "Intel support?" — both are honest
-  scope decisions: notarised cask keeps install + updates simple, and
-  the latency story depends on the ANE.
+- Expect "Intel support?" and "why Homebrew?" — Apple Silicon is an
+  honest scope decision because the latency story depends on the ANE;
+  Homebrew is optional but remains the easiest update path.
 - No second launch post. If the Show HN sinks, let it sink.

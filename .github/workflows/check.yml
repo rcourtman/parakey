@@ -33,9 +33,15 @@ jobs:
           bash -n ship-swift.sh
           bash -n swift/dev-run.sh
           bash -n icon/make-icons.sh
+          bash -n experiments/swift-bench/add-real-dictation-fixture.sh
+          bash -n experiments/swift-bench/fetch-public-speech-fixtures.sh
           bash -n experiments/swift-bench/generate-test-audio.sh
           bash -n experiments/swift-bench/bench-power.sh
           bash -n experiments/swift-bench/run-real-dictation-regression.sh
+          bash -n experiments/swift-bench/run-real-model-comparison.sh
+          bash -n experiments/swift-bench/run-public-model-comparison.sh
+          bash -n experiments/swift-bench/run-release-asr-checks.sh
+          bash -n experiments/swift-bench/run-tail-word-regression.sh
           bash -n scripts/smoke-packaged-app.sh
       - name: Packaged app smoke test
         run: scripts/smoke-packaged-app.sh
@@ -44,7 +50,13 @@ jobs:
       - name: Benchmark helper self-tests
         run: |
           experiments/swift-bench/bench-power.sh --self-test
+          experiments/swift-bench/add-real-dictation-fixture.sh --self-test
+          experiments/swift-bench/fetch-public-speech-fixtures.sh --self-test
           experiments/swift-bench/run-real-dictation-regression.sh --self-test
+          experiments/swift-bench/run-real-model-comparison.sh --self-test
+          experiments/swift-bench/run-public-model-comparison.sh --self-test
+          experiments/swift-bench/run-release-asr-checks.sh --self-test
+          experiments/swift-bench/run-tail-word-regression.sh --self-test
       - name: Model manifest updater self-test
         run: python3 scripts/update-model-manifest.py --self-test
       - name: Docs sync self-test

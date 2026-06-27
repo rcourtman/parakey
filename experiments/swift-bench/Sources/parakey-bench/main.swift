@@ -1,12 +1,12 @@
 // parakey-bench — head-to-head benchmark of Apple SpeechAnalyzer
 // (DictationTranscriber on the Apple Neural Engine, built into
-// macOS 26 Tahoe) vs FluidAudio (Parakeet TDT v3 via CoreML on the
-// ANE) on the same audio. Output is intentionally comparable to
+// macOS 26 Tahoe) vs FluidAudio model variants via CoreML on the
+// ANE on the same audio. Output is intentionally comparable to
 // the sibling `./bench-py.py` (Python parakey-mlx, GPU/Metal), so
 // all three backends can be cross-referenced in one table.
 //
 // Usage:
-//   parakey-bench --file path/to/audio.wav [--trials 5] [--backend apple|v3|110m|fluid|both] [--redact-transcripts]
+//   parakey-bench --file path/to/audio.wav [--trials 5] [--backend apple|v3|unified|nemotron-en|110m|fluid|both] [--redact-transcripts]
 //
 // Audio must be 16 kHz mono Float32 (or convertible to that —
 // AVAudioFile + AVAudioPCMBuffer handles the conversion).
@@ -16,14 +16,18 @@ import AVFoundation
 import Speech
 import FluidAudio
 
+let UNIFIED_MODEL_TRAILING_SILENCE_MS = 250
+let BENCH_SAMPLE_RATE: Double = 16_000
+
 // MARK: - CLI
 
 struct CLIArgs {
     var file: URL
     var trials: Int = 5
-    // "apple" | "v3" | "110m" | "fluid" (= v3 + 110m) | "both" (= all three).
-    // Defaults to "v3": it's the production model and the only Fluid backend
-    // that loads today (110m is broken upstream — see note at construction).
+    // "apple" | "v3" | "unified" | "nemotron-en" | "110m" | "fluid"
+    // (= v3 + candidates + 110m) | "both" (= apple + fluid).
+    // Defaults to "v3": it's the production model. Unified is an
+    // English-only candidate backend; 110m remains broken upstream.
     var backend: String = "v3"
     // Ground-truth transcript for WER. If nil, falls back to a sibling
     // "<file-stem>.txt" (written by generate-test-audio.sh); if neither
@@ -33,6 +37,9 @@ struct CLIArgs {
     // computing latency, memory, and WER. Used for local real-dictation
     // regression reports that should remain privacy-safe by default.
     var redactTranscripts = false
+    // Candidate-model default used for final-word retention studies. Set to
+    // 0 to measure the raw model, or sweep values when tuning a future model.
+    var unifiedTrailingSilenceMs = UNIFIED_MODEL_TRAILING_SILENCE_MS
 }
 
 func parseArgs() -> CLIArgs {
@@ -42,6 +49,7 @@ func parseArgs() -> CLIArgs {
     var backend: String = "v3"
     var ref: String? = nil
     var redactTranscripts = false
+    var unifiedTrailingSilenceMs = UNIFIED_MODEL_TRAILING_SILENCE_MS
     while let arg = iter.next() {
         switch arg {
         case "--file":
@@ -54,20 +62,33 @@ func parseArgs() -> CLIArgs {
             if let v = iter.next() { ref = v }
         case "--redact-transcripts":
             redactTranscripts = true
+        case "--unified-trailing-silence-ms":
+            guard let v = iter.next(), let n = Int(v), n >= 0 else {
+                FileHandle.standardError.write(Data("--unified-trailing-silence-ms requires a non-negative integer\n".utf8))
+                exit(2)
+            }
+            unifiedTrailingSilenceMs = n
         case "-h", "--help":
             print("""
-            usage: parakey-bench --file <wav> [--trials N] [--backend apple|v3|110m|fluid|both] [--ref "text"] [--redact-transcripts]
+            usage: parakey-bench --file <wav> [--trials N] [--backend apple|v3|unified|nemotron-en|110m|fluid|both] [--ref "text"] [--redact-transcripts]
 
               --backend  v3    FluidAudio Parakeet TDT v3 — production model (default)
+                         unified
+                              FluidAudio Parakeet Unified 0.6B offline batch
+                         nemotron-en
+                              FluidAudio Nemotron Speech Streaming English 0.6B, 1120 ms tier
                          110m  FluidAudio Parakeet TDT-CTC 110M (smaller English model;
                                currently fails to load — broken upstream)
-                         fluid v3 + 110m head-to-head
+                         fluid v3 + candidate FluidAudio backends + 110m head-to-head
                          apple Apple SpeechAnalyzer (macOS 26+)
-                         both  apple + v3 + 110m
+                         both  apple + fluid
               --ref      reference transcript for WER; defaults to <file>.txt if present
               --redact-transcripts
                          omit reference and hypothesis text from output while still
                          reporting WER; useful for private real-dictation runs
+              --unified-trailing-silence-ms <n>
+                         append n ms of silence before Unified transcription
+                         (default: \(UNIFIED_MODEL_TRAILING_SILENCE_MS), matching Parakey)
 
             For a clean per-model memory number, run one model per process
             (--backend v3, then --backend 110m) — footprint is cumulative
@@ -83,7 +104,12 @@ func parseArgs() -> CLIArgs {
         FileHandle.standardError.write(Data("--file is required\n".utf8))
         exit(2)
     }
-    return CLIArgs(file: file, trials: trials, backend: backend, ref: ref, redactTranscripts: redactTranscripts)
+    return CLIArgs(file: file,
+                   trials: trials,
+                   backend: backend,
+                   ref: ref,
+                   redactTranscripts: redactTranscripts,
+                   unifiedTrailingSilenceMs: unifiedTrailingSilenceMs)
 }
 
 // MARK: - Audio loading
@@ -334,6 +360,91 @@ final class FluidBackend: ASRBackend {
     }
 }
 
+// ----- FluidAudio Unified (Parakeet Unified → CoreML → ANE) -------------
+//
+// English-only candidate backend. This is not a drop-in replacement for
+// Parakey's production v3 path because it uses FluidAudio's Unified manager
+// instead of `AsrModels` / `AsrManager`, but the benchmark interface is the
+// same: one complete push-to-talk utterance in, one transcript out.
+
+final class UnifiedBatchBackend: ASRBackend {
+    let name = "fluid-ParakeetUnifiedBatch"
+    private let trailingSilenceSeconds: Double
+    private var asr: UnifiedAsrManager!
+
+    init(trailingSilenceMs: Int) {
+        self.trailingSilenceSeconds = Double(trailingSilenceMs) / 1000.0
+    }
+
+    func prepare(warmupSamples: [Float]) async throws {
+        asr = UnifiedAsrManager()
+        try await asr.loadModels()
+        _ = try await run(samples: warmupSamples)
+    }
+
+    func run(samples: [Float]) async throws -> (text: String, elapsed: Double) {
+        try await asr.reset()
+        let paddedSamples = samplesAppendingTrailingSilence(
+            samples,
+            seconds: trailingSilenceSeconds
+        )
+        let t0 = Date()
+        let text = try await asr.transcribe(paddedSamples)
+        return (text, Date().timeIntervalSince(t0))
+    }
+}
+
+// ----- FluidAudio Nemotron Speech Streaming (English → CoreML → ANE) ----
+//
+// English-only candidate backend. Nemotron is a streaming model, but for
+// Parakey-style push-to-talk benchmarking we feed the full utterance and then
+// finish the stream, which exercises the same final transcript path users
+// would care about.
+
+final class NemotronEnglishBackend: ASRBackend {
+    let name = "fluid-NemotronEnglish1120"
+    private var asr: StreamingNemotronAsrManager!
+
+    func prepare(warmupSamples: [Float]) async throws {
+        asr = StreamingNemotronAsrManager(requestedChunkSize: .ms1120)
+        try await asr.loadModels()
+        _ = try await run(samples: warmupSamples)
+    }
+
+    func run(samples: [Float]) async throws -> (text: String, elapsed: Double) {
+        await asr.reset()
+        let buffer = makeFloatPCMBuffer(samples: samples)
+        let t0 = Date()
+        _ = try await asr.process(audioBuffer: buffer)
+        let text = try await asr.finish()
+        return (text.trimmingCharacters(in: .whitespacesAndNewlines),
+                Date().timeIntervalSince(t0))
+    }
+}
+
+func makeFloatPCMBuffer(samples: [Float]) -> AVAudioPCMBuffer {
+    let format = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: BENCH_SAMPLE_RATE,
+        channels: 1,
+        interleaved: false
+    )!
+    let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
+    buf.frameLength = AVAudioFrameCount(samples.count)
+    let dst = buf.floatChannelData!.pointee
+    dst.update(from: samples, count: samples.count)
+    return buf
+}
+
+func samplesAppendingTrailingSilence(_ samples: [Float],
+                                     seconds: Double,
+                                     sampleRate: Double = BENCH_SAMPLE_RATE) -> [Float] {
+    guard seconds > 0, sampleRate > 0, !samples.isEmpty else { return samples }
+    let silenceSampleCount = Int((seconds * sampleRate).rounded())
+    guard silenceSampleCount > 0 else { return samples }
+    return samples + Array(repeating: 0, count: silenceSampleCount)
+}
+
 // MARK: - Word error rate
 //
 // Standard word-level WER: edit distance between normalized token
@@ -374,6 +485,12 @@ func werPercent(reference: String, hypothesis: String) -> Double {
     let hyp = werTokens(hypothesis)
     guard !ref.isEmpty else { return hyp.isEmpty ? 0 : 100 }
     return Double(wordEditDistance(ref, hyp)) / Double(ref.count) * 100
+}
+
+func finalWordRetention(reference: String, hypothesis: String) -> (retained: Bool, expected: String, actualLast: String?)? {
+    guard let expected = werTokens(reference).last else { return nil }
+    let actualLast = werTokens(hypothesis).last
+    return (actualLast == expected, expected, actualLast)
 }
 
 // MARK: - Memory
@@ -448,14 +565,24 @@ func summarize(_ name: String,
         guard let reference else { return "" }
         return " [WER \(String(format: "%.1f%%", werPercent(reference: reference, hypothesis: text)))]"
     }
+    func finalWordTag(_ text: String) -> String {
+        guard let reference,
+              let retention = finalWordRetention(reference: reference, hypothesis: text)
+        else { return "" }
+        if redactTranscripts {
+            return " [final-word retained=\(retention.retained)]"
+        }
+        let actualLast = retention.actualLast ?? "<none>"
+        return " [final-word retained=\(retention.retained) expected=\"\(retention.expected)\" actual-last=\"\(actualLast)\"]"
+    }
     if texts.count == 1, let only = texts.first {
         let display = redactTranscripts ? redactedTextLabel(only) : "\"\(only)\""
-        print("    transcript:\(werTag(only)) \(display)")
+        print("    transcript:\(werTag(only))\(finalWordTag(only)) \(display)")
     } else {
         print("    transcripts (\(texts.count) distinct):")
         for t in texts.sorted() {
             let display = redactTranscripts ? redactedTextLabel(t) : "\"\(t)\""
-            print("      •\(werTag(t)) \(display)")
+            print("      •\(werTag(t))\(finalWordTag(t)) \(display)")
         }
     }
 }
@@ -467,7 +594,11 @@ struct ParakeyBench {
     static func main() async throws {
         let args = parseArgs()
 
-        log("parakey-bench: \(args.file.lastPathComponent), \(args.trials) trials, backend=\(args.backend)")
+        var runSummary = "parakey-bench: \(args.file.lastPathComponent), \(args.trials) trials, backend=\(args.backend)"
+        if args.backend == "unified" || args.backend == "both" {
+            runSummary += ", unified-trailing-silence-ms=\(args.unifiedTrailingSilenceMs)"
+        }
+        log(runSummary)
         let samples = try load16kMono(url: args.file)
         let durSec = Double(samples.count) / 16_000
         log("audio: \(samples.count) samples (~\(String(format: "%.2f", durSec)) s @ 16 kHz mono)")
@@ -493,7 +624,7 @@ struct ParakeyBench {
         // "first inference" for the same shape we'll measure.
         let warmup = samples
 
-        let known = ["apple", "v3", "110m", "fluid", "both"]
+        let known = ["apple", "v3", "unified", "nemotron-en", "110m", "fluid", "both"]
         guard known.contains(args.backend) else {
             FileHandle.standardError.write(Data("unknown --backend \"\(args.backend)\" (expected \(known.joined(separator: "|")))\n".utf8))
             exit(2)
@@ -508,6 +639,12 @@ struct ParakeyBench {
         }
         if args.backend == "v3" || args.backend == "fluid" || args.backend == "both" {
             backends.append(FluidBackend(name: "fluid-ParakeetTDTv3", version: .v3))
+        }
+        if args.backend == "unified" || args.backend == "fluid" || args.backend == "both" {
+            backends.append(UnifiedBatchBackend(trailingSilenceMs: args.unifiedTrailingSilenceMs))
+        }
+        if args.backend == "nemotron-en" || args.backend == "fluid" || args.backend == "both" {
+            backends.append(NemotronEnglishBackend())
         }
         if args.backend == "110m" || args.backend == "fluid" || args.backend == "both" {
             // Kept wired up but off the default path: as of the current

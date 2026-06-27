@@ -12,6 +12,10 @@ cd swift
 - Confirm `/tmp/Parakey-dev.app` launches and the menu-bar item appears.
 - Open **Support -> Setup Checklist...** and confirm model, permissions,
   audio input, and hotkey rows render.
+- On a clean preference profile, confirm setup asks for **Language & model**
+  before downloading a speech model. Choose English and confirm the setup
+  row switches to the English optimized model; reset preferences and repeat
+  with Multilingual.
 - Confirm **Support -> Copy Diagnostics** copies a report with no
   transcript text or text-correction contents.
 - Confirm **Support -> Save Diagnostics...** writes the same privacy-safe
@@ -58,11 +62,18 @@ cd swift
 
 ```sh
 cd experiments/swift-bench
+./run-release-asr-checks.sh --self-test
+./run-release-asr-checks.sh
+./add-real-dictation-fixture.sh --self-test
 ./run-real-dictation-regression.sh --self-test
+./run-real-model-comparison.sh --self-test
+./run-tail-word-regression.sh --self-test
 ./bench-power.sh --self-test
 sudo -v
 ./bench-power.sh --file test-audio/short-clean.wav --backend v3 --trials 1 --out-dir /tmp/parakey-power-results
 ```
 
 The real `bench-power.sh` run requires interactive sudo because
-`powermetrics` requires it.
+`powermetrics` requires it. `run-release-asr-checks.sh` runs private
+real-dictation regressions only when local clips exist under
+`experiments/swift-bench/real-audio/`.

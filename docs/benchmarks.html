@@ -4,12 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Parakey Benchmarks - Apple Neural Engine Dictation Latency</title>
-    <meta name="description" content="Parakey benchmark results comparing FluidAudio Parakeet TDT v3 on the Apple Neural Engine against the prior GPU path on the same audio clips.">
+    <meta name="description" content="Parakey benchmark results for local Parakeet TDT v3 on the Apple Neural Engine, plus candidate-model evaluation checks.">
     <link rel="canonical" href="https://rcourtman.github.io/parakey/benchmarks.html">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <meta name="theme-color" content="#0d7f5f">
     <meta property="og:title" content="Parakey Benchmarks - Apple Neural Engine Dictation Latency">
-    <meta property="og:description" content="Parakey benchmark results comparing FluidAudio Parakeet TDT v3 on the Apple Neural Engine against the prior GPU path on the same audio clips.">
+    <meta property="og:description" content="Parakey benchmark results for local Parakeet TDT v3 on the Apple Neural Engine, plus candidate-model evaluation checks.">
     <meta property="og:url" content="https://rcourtman.github.io/parakey/benchmarks.html">
     <meta property="og:image" content="https://raw.githubusercontent.com/rcourtman/parakey/main/icon/social-preview.png">
     <meta property="og:type" content="website">
@@ -139,6 +139,64 @@
             </table>
           </div>
           <p>Machine-readable results: <a href="benchmarks/results.json">benchmarks/results.json</a>. Reproduction docs: <a href="https://github.com/rcourtman/parakey/tree/main/experiments/swift-bench">experiments/swift-bench</a>.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <span class="section-eyebrow">Candidate models</span>
+          <h2>Candidate model evaluation</h2>
+          <div class="grid">
+            <article class="card">
+              <h3>Tail-word retention</h3>
+              <p>The benchmark harness includes a synthetic regression for short push-to-talk clips where the final word is easy to lose. It compares raw Unified, padded Unified, and production v3 before any candidate model is exposed in the app.</p>
+            </article>
+            <article class="card">
+              <h3>Private corpus</h3>
+              <p>For candidate-model decisions, maintainers can run a local-only v3-vs-Unified comparison over private real-dictation clips. Reports keep transcript text and filenames redacted by default while showing WER, final-word failures, and latency.</p>
+            </article>
+            <article class="card">
+              <h3>Release gate</h3>
+              <p><code>run-release-asr-checks.sh</code> checks production v3 by default. Pass <code>--include-candidate-models</code> to add Unified tail-word and v3-vs-Unified comparisons.</p>
+            </article>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>2026-06-23 public smoke backend</th>
+                  <th>Avg WER</th>
+                  <th>Worst WER</th>
+                  <th>Final-word failures</th>
+                  <th>Avg p50</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>v3</code></td>
+                  <td>1.4%</td>
+                  <td>7.0%</td>
+                  <td>0</td>
+                  <td>100.7 ms</td>
+                </tr>
+                <tr>
+                  <td><code>apple</code></td>
+                  <td>11.7%</td>
+                  <td>18.2%</td>
+                  <td>0</td>
+                  <td>384.8 ms</td>
+                </tr>
+                <tr>
+                  <td><code>nemotron-en</code></td>
+                  <td>5.3%</td>
+                  <td>11.3%</td>
+                  <td>0</td>
+                  <td>1032.7 ms</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>Apple SpeechAnalyzer and Nemotron English both stayed behind Parakeet TDT v3 on this smoke corpus, so neither is a production replacement.</p>
         </div>
       </section>
 

@@ -20,6 +20,19 @@
       "label": "FluidAudio Swift SDK, Parakeet TDT 0.6B v3, CoreML",
       "hardware": "Apple Neural Engine"
     },
+    "unified": {
+      "label": "Candidate only: FluidAudio Swift SDK, Parakeet Unified 0.6B English offline batch, CoreML",
+      "hardware": "Apple Neural Engine",
+      "candidate_padding_ms": 250
+    },
+    "apple": {
+      "label": "Candidate only: Apple SpeechAnalyzer + DictationTranscriber",
+      "hardware": "Apple Neural Engine"
+    },
+    "nemotron_en": {
+      "label": "Candidate only: FluidAudio Swift SDK, Nemotron Speech Streaming English 0.6B 1120 ms tier, CoreML",
+      "hardware": "Apple Neural Engine"
+    },
     "parakey_mlx": {
       "label": "Prior parakeet_mlx path through MLX",
       "hardware": "GPU"
@@ -55,9 +68,61 @@
       "speed_ratio": 1.97
     }
   ],
+  "model_decision_checks": {
+    "tail_word_regression": {
+      "script": "experiments/swift-bench/run-tail-word-regression.sh",
+      "purpose": "Synthetic final-word retention regression for short push-to-talk clips",
+      "candidate_unified_padding_ms": 250
+    },
+    "private_real_dictation_comparison": {
+      "script": "experiments/swift-bench/run-real-model-comparison.sh",
+      "purpose": "Local-only v3-vs-Unified candidate comparison over private human dictation fixtures",
+      "reported_metrics": [
+        "average WER",
+        "worst WER",
+        "final-word failures",
+        "p50 latency"
+      ],
+      "redacted_by_default": true
+    },
+    "public_candidate_smoke_2026_06_23": {
+      "script": "experiments/swift-bench/run-real-dictation-regression.sh",
+      "purpose": "Public 5-clip smoke comparison for production v3, Apple SpeechAnalyzer, and Nemotron English",
+      "trials_per_clip": 3,
+      "results": [
+        {
+          "backend": "v3",
+          "avg_wer_percent": 1.4,
+          "worst_wer_percent": 7.0,
+          "final_word_failures": 0,
+          "avg_p50_ms": 100.7
+        },
+        {
+          "backend": "apple",
+          "avg_wer_percent": 11.7,
+          "worst_wer_percent": 18.2,
+          "final_word_failures": 0,
+          "avg_p50_ms": 384.8
+        },
+        {
+          "backend": "nemotron-en",
+          "avg_wer_percent": 5.3,
+          "worst_wer_percent": 11.3,
+          "final_word_failures": 0,
+          "avg_p50_ms": 1032.7,
+          "runtime_warning": "CoreML E5RT shape-inference warning emitted on each public clip"
+        }
+      ]
+    },
+    "release_gate": {
+      "script": "experiments/swift-bench/run-release-asr-checks.sh",
+      "runs_private_real_audio_when_present": true,
+      "candidate_models_require_flag": "--include-candidate-models"
+    }
+  },
   "notes": [
     "The benchmark measures compute latency, not energy use.",
     "Both tested backends produced essentially identical transcripts on the synthetic audio.",
-    "Apple SpeechAnalyzer wiring exists in the benchmark but is currently blocked by a CLI Info.plist and entitlement gap."
+    "Unified English is candidate-only and is not exposed in the app unless future benchmarks and real dictation tests prove it improves on v3."
   ]
 }

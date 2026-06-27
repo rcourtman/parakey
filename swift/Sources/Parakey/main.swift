@@ -71,6 +71,7 @@ let RECORDING_HUD_ANIMATE_OUT_SECONDS: TimeInterval = 0.08
 let RECORDING_HUD_BUSY_DELAY_SECONDS: TimeInterval = 0.25
 let DICTATION_ERROR_FLASH_SECONDS: TimeInterval = 1.5  // how long the menu-bar icon flags a dropped dictation before returning to idle
 let AUDIO_START_RETRY_DELAYS_SECONDS: [UInt64] = [1, 3, 8]
+let MODEL_DOWNLOAD_HEADROOM_BYTES: Int64 = 500 * 1024 * 1024
 
 let SETTINGS_SUITE = "com.local.parakey"
 let CORRECTIONS_FILE_UTI = "com.local.parakey.corrections"
@@ -273,6 +274,80 @@ let DICTATION_LANGUAGE_DISPLAY: [DictationLanguage: String] = [
     .serbian: "Serbian",
 ]
 
+enum SpeechModelProfile: String, CaseIterable {
+    case multilingualV3 = "multilingual_v3"
+    // Deprecated production option. Kept only so old saved preferences
+    // can be read and migrated back to the supported v3 model.
+    case englishUnified = "english_unified"
+
+    static let productionDefault: SpeechModelProfile = .multilingualV3
+
+    var isProductionSupported: Bool {
+        self == .multilingualV3
+    }
+
+    var productionProfile: SpeechModelProfile {
+        isProductionSupported ? self : Self.productionDefault
+    }
+
+    var displayName: String {
+        switch self {
+        case .multilingualV3:
+            return "Multilingual (Parakeet TDT v3)"
+        case .englishUnified:
+            return "English optimized (Parakeet Unified, deprecated)"
+        }
+    }
+
+    var shortName: String {
+        switch self {
+        case .multilingualV3:
+            return "Parakeet TDT v3"
+        case .englishUnified:
+            return "Parakeet Unified"
+        }
+    }
+
+    var aboutModelText: String {
+        switch self {
+        case .multilingualV3:
+            return "FluidAudio · Parakeet TDT v3 multilingual (CoreML / ANE)"
+        case .englishUnified:
+            return "FluidAudio · Parakeet Unified English (deprecated)"
+        }
+    }
+
+    var setupReadyDetail: String {
+        "\(shortName) is loaded locally."
+    }
+
+    var cacheResetDetail: String {
+        switch self {
+        case .multilingualV3:
+            return "Parakey will delete the local Parakeet TDT v3 model cache, unload the current speech model, and download a fresh verified copy before dictation is available again."
+        case .englishUnified:
+            return "Parakey will delete the local Parakeet TDT v3 model cache, unload the current speech model, and download a fresh verified copy before dictation is available again."
+        }
+    }
+
+    var estimatedDownloadBytes: Int64 {
+        700 * 1024 * 1024
+    }
+
+    var downloadSizeText: String {
+        "about 500-700 MB"
+    }
+}
+
+func productionSpeechModelProfile(rawValue: String?) -> SpeechModelProfile {
+    guard let rawValue,
+          let profile = SpeechModelProfile(rawValue: rawValue),
+          profile.isProductionSupported else {
+        return .productionDefault
+    }
+    return profile
+}
+
 enum RecentTranscriptLimit: String, CaseIterable {
     case off
     case last1 = "1"
@@ -335,8 +410,8 @@ func normalizedSkippedUpdateVersions(_ values: [String]) -> [String] {
 enum UpdateCheckSource: String, Equatable {
     case automatic
     case manual
-    /// Check fired because the user re-enabled "Check for Updates" in
-    /// the settings menu — user-initiated like .manual but silent like
+    /// Check fired because the user re-enabled automatic update checks
+    /// in the settings menu — user-initiated like .manual but silent like
     /// .automatic, so diagnostics record it as its own source.
     case settingsToggle = "settings_toggle"
 
@@ -1014,6 +1089,95 @@ func isExistingSpeechModelCacheDirectorySafeForRemoval(
     return currentPath == cachePath
 }
 
+func speechModelCacheBaseDirectory() -> URL {
+    MLModelConfigurationUtils.defaultModelsDirectory()
+}
+
+func speechModelCacheDirectory(for _: SpeechModelProfile) -> URL {
+    AsrModels.defaultCacheDirectory(for: .v3)
+}
+
+func speechModelDownloadRequiredBytes(for profile: SpeechModelProfile,
+                                      headroomBytes: Int64 = MODEL_DOWNLOAD_HEADROOM_BYTES) -> Int64 {
+    profile.estimatedDownloadBytes + headroomBytes
+}
+
+func speechModelDiskSpaceFailureDetail(profile: SpeechModelProfile,
+                                       availableBytes: Int64?,
+                                       requiredBytes: Int64) -> String? {
+    guard let availableBytes, availableBytes >= 0, availableBytes < requiredBytes else {
+        return nil
+    }
+    return """
+    Parakey needs \(profile.downloadSizeText) of free disk space to download \(profile.shortName), plus room for CoreML to prepare it.
+
+    Available: \(formattedByteCount(UInt64(availableBytes)))
+    Needed: \(formattedByteCount(UInt64(requiredBytes)))
+
+    Free some disk space, then retry loading the speech model. Audio is not uploaded.
+    """
+}
+
+func availableImportantDiskSpaceBytes(containing url: URL) -> Int64? {
+    let fm = FileManager.default
+    var probe = url.standardizedFileURL
+    while !fm.fileExists(atPath: probe.path), probe.path != "/" {
+        probe.deleteLastPathComponent()
+    }
+    guard let values = try? probe.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+          let capacity = values.volumeAvailableCapacityForImportantUsage else {
+        return nil
+    }
+    return Int64(capacity)
+}
+
+func speechModelCacheExists(for profile: SpeechModelProfile) -> Bool {
+    FileManager.default.fileExists(atPath: speechModelCacheDirectory(for: profile).path)
+}
+
+func assertSufficientDiskSpaceForSpeechModelDownload(profile: SpeechModelProfile) throws {
+    let requiredBytes = speechModelDownloadRequiredBytes(for: profile)
+    let availableBytes = availableImportantDiskSpaceBytes(containing: speechModelCacheBaseDirectory())
+    guard let detail = speechModelDiskSpaceFailureDetail(profile: profile,
+                                                        availableBytes: availableBytes,
+                                                        requiredBytes: requiredBytes) else {
+        return
+    }
+    throw NSError(domain: "Parakey",
+                  code: -8,
+                  userInfo: [NSLocalizedDescriptionKey: detail])
+}
+
+func removeSpeechModelCacheDirectory(_ cacheDir: URL) async throws -> Bool {
+    guard isSafeSpeechModelCacheDirectory(cacheDir) else {
+        throw NSError(
+            domain: "Parakey",
+            code: -3,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Refusing to remove unexpected speech model cache path: \(cacheDir.path)"
+            ]
+        )
+    }
+
+    return try await Task.detached(priority: .userInitiated) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: cacheDir.path) else {
+            return false
+        }
+        guard isExistingSpeechModelCacheDirectorySafeForRemoval(cacheDir) else {
+            throw NSError(
+                domain: "Parakey",
+                code: -4,
+                userInfo: [
+                    NSLocalizedDescriptionKey: "Refusing to remove unsafe speech model cache path: \(cacheDir.path)"
+                ]
+            )
+        }
+        try fm.removeItem(at: cacheDir)
+        return true
+    }.value
+}
+
 private func isExistingPlainDirectory(_ path: String) -> Bool {
     var st = stat()
     guard lstat(path, &st) == 0 else { return false }
@@ -1513,6 +1677,8 @@ final class Settings: @unchecked Sendable {
     private static let keyTranscriptCorrections = "transcript_corrections"
     private static let keyTranscriptCorrectionsSyncFile = "transcript_corrections_sync_file"
     private static let keyDictationLanguage = "dictation_language"
+    private static let keySpeechModelProfile = "speech_model_profile"
+    private static let keyInitialSpeechModelChoiceRequired = "initial_speech_model_choice_required"
     private static let keyRemoveFillerWords = "remove_filler_words"
     private static let keyActiveRunMarker = "active_run_marker"
 
@@ -1824,6 +1990,31 @@ final class Settings: @unchecked Sendable {
         set { defaults.set(newValue.rawValue, forKey: Self.keyDictationLanguage) }
     }
 
+    var speechModelProfile: SpeechModelProfile {
+        get {
+            productionSpeechModelProfile(rawValue: defaults.string(forKey: Self.keySpeechModelProfile))
+        }
+        set { defaults.set(newValue.productionProfile.rawValue, forKey: Self.keySpeechModelProfile) }
+    }
+
+    @discardableResult
+    func normalizeSpeechModelProfileForCurrentBuild() -> Bool {
+        var changed = false
+        if let raw = defaults.string(forKey: Self.keySpeechModelProfile) {
+            let normalized = productionSpeechModelProfile(rawValue: raw)
+            if normalized.rawValue != raw {
+                defaults.set(SpeechModelProfile.productionDefault.rawValue,
+                             forKey: Self.keySpeechModelProfile)
+                changed = true
+            }
+        }
+        if defaults.object(forKey: Self.keyInitialSpeechModelChoiceRequired) != nil {
+            defaults.removeObject(forKey: Self.keyInitialSpeechModelChoiceRequired)
+            changed = true
+        }
+        return changed
+    }
+
     var removeFillerWords: Bool {
         get { defaults.bool(forKey: Self.keyRemoveFillerWords) }
         set { defaults.set(newValue, forKey: Self.keyRemoveFillerWords) }
@@ -1983,6 +2174,16 @@ private func speechModelFailureDetail(errorDescription: String) -> String {
         "host",
         "url",
     ].contains { lower.contains($0) }
+    let looksLikeDiskSpaceFailure = [
+        "disk space",
+        "free some disk",
+        "available:",
+        "needed:",
+    ].contains { lower.contains($0) }
+
+    if looksLikeDiskSpaceFailure {
+        return errorDescription
+    }
 
     if looksLikeIntegrityFailure {
         return """
@@ -2139,7 +2340,8 @@ private struct SetupChecklistRowState: Equatable {
     let buttonTitle: String?
 }
 
-private func speechModelSetupRowState(isSpeechModelReady: Bool,
+private func speechModelSetupRowState(profile: SpeechModelProfile,
+                                      isSpeechModelReady: Bool,
                                       isStartupInProgress: Bool,
                                       startupStatusTitle: String,
                                       failure: StartupFailure?) -> SetupChecklistRowState {
@@ -2149,7 +2351,7 @@ private func speechModelSetupRowState(isSpeechModelReady: Bool,
                                       buttonTitle: "Retry")
     }
     if isSpeechModelReady {
-        return SetupChecklistRowState(detail: "Parakeet TDT v3 is loaded locally.",
+        return SetupChecklistRowState(detail: profile.setupReadyDetail,
                                       status: "Ready",
                                       buttonTitle: nil)
     }
@@ -3080,27 +3282,52 @@ private final class AudioConverterInputProvider: @unchecked Sendable {
 // ever break: it refuses (and, in DEBUG, asserts on) a re-entrant
 // call instead of corrupting ANE state.
 
+private enum LoadedSpeechEngine {
+    case parakeetV3(AsrManager)
+}
+
 actor TranscriptionWorker {
-    private var asr: AsrManager?
+    private var engine: LoadedSpeechEngine?
+    private var loadedProfile: SpeechModelProfile?
     private(set) var ready = false
     /// Reentrancy backstop — see the comment above. True for the full
     /// duration of transcribe(), including across its await.
     private var inFlight = false
 
-    func load(progressHandler: DownloadUtils.ProgressHandler? = nil) async throws {
-        if ready, asr != nil {
-            log("ASR: already ready")
+    func load(profile requestedProfile: SpeechModelProfile,
+              progressHandler: DownloadUtils.ProgressHandler? = nil) async throws {
+        let profile = requestedProfile.productionProfile
+        if requestedProfile != profile {
+            log("ASR: ignoring unsupported speech model \(requestedProfile.shortName); using \(profile.shortName)")
+        }
+        if ready, engine != nil, loadedProfile == profile {
+            log("ASR: \(profile.shortName) already ready")
             return
         }
 
-        log("ASR: downloading + verifying + loading Parakeet TDT v3 CoreML weights…")
+        if engine != nil {
+            await unload()
+        }
+
+        log("ASR: downloading + verifying + loading \(profile.shortName) CoreML weights…")
         let t0 = Date()
+        engine = .parakeetV3(try await loadParakeetV3(progressHandler: progressHandler))
+        loadedProfile = profile
+        ready = true
+        log("ASR: \(profile.shortName) ready in \(String(format: "%.2f", Date().timeIntervalSince(t0))) s")
+    }
+
+    private func loadParakeetV3(progressHandler: DownloadUtils.ProgressHandler?) async throws -> AsrManager {
+        if !speechModelCacheExists(for: .multilingualV3) {
+            try assertSufficientDiskSpaceForSpeechModelDownload(profile: .multilingualV3)
+        }
         var modelDirectory = try await AsrModels.download(version: .v3,
                                                           progressHandler: progressHandler)
         do {
             try ModelIntegrity.verifyParakeetV3Model(at: modelDirectory)
         } catch {
             log("ASR: model integrity check failed; redownloading once: \(error.localizedDescription)")
+            try assertSufficientDiskSpaceForSpeechModelDownload(profile: .multilingualV3)
             modelDirectory = try await AsrModels.download(force: true,
                                                           version: .v3,
                                                           progressHandler: progressHandler)
@@ -3109,13 +3336,11 @@ actor TranscriptionWorker {
         let models = try await AsrModels.load(from: modelDirectory,
                                               version: .v3,
                                               progressHandler: progressHandler)
-        asr = AsrManager(config: .default, models: models)
-        ready = true
-        log("ASR: ready in \(String(format: "%.2f", Date().timeIntervalSince(t0))) s")
+        return AsrManager(config: .default, models: models)
     }
 
     func transcribe(samples: [Float], language: Language? = nil) async throws -> String {
-        guard let asr else { throw NSError(domain: "Parakey", code: -2) }
+        guard let engine else { throw NSError(domain: "Parakey", code: -2) }
         guard !inFlight else {
             log("ASR: transcribe re-entered while another transcription is in flight — refusing (ParakeyApp.isBusy should make this impossible)")
             assertionFailure("TranscriptionWorker.transcribe re-entered across a suspension point")
@@ -3123,13 +3348,17 @@ actor TranscriptionWorker {
         }
         inFlight = true
         defer { inFlight = false }
-        var state = try TdtDecoderState()
-        let result = try await asr.transcribe(samples, decoderState: &state, language: language)
-        return result.text
+        switch engine {
+        case .parakeetV3(let asr):
+            var state = try TdtDecoderState()
+            let result = try await asr.transcribe(samples, decoderState: &state, language: language)
+            return result.text
+        }
     }
 
-    func unload() {
-        asr = nil
+    func unload() async {
+        engine = nil
+        loadedProfile = nil
         ready = false
         log("ASR: unloaded")
     }
@@ -3338,6 +3567,16 @@ func speechModelStartupStatusTitle(_ progress: DownloadUtils.DownloadProgress) -
         return "Downloading speech model… \(percent)% (\(completedFiles)/\(totalFiles))"
     case .compiling:
         return "Preparing speech model…"
+    }
+}
+
+func speechModelStartupProgressValue(_ progress: DownloadUtils.DownloadProgress) -> Double? {
+    switch progress.phase {
+    case .downloading(_, let totalFiles):
+        guard totalFiles > 0 else { return nil }
+        return min(max(progress.fractionCompleted / 0.5, 0), 1)
+    case .listing, .compiling:
+        return nil
     }
 }
 
@@ -4974,10 +5213,13 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var isSpeechModelReady = false
     private var isTerminating = false
     private var isResettingSpeechModelCache = false
+    private var isSwitchingSpeechModel = false
+    private var fallbackSpeechModelProfileAfterStartupFailure: SpeechModelProfile?
     private var startupTask: Task<Void, Never>?
     private var updateCheckLoopTask: Task<Void, Never>?
     private var manualUpdateCheckTask: Task<Void, Never>?
     private var startupStatusTitle = "Loading speech model…"
+    private var speechModelStartupProgressFraction: Double?
     private var startupFailure: StartupFailure?
     private var didTouchAudioEngine = false
     private var permissionReadinessTimer: Timer?
@@ -5134,6 +5376,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if settings.normalizeSpeechModelProfileForCurrentBuild() {
+            log("ASR: reset unsupported saved speech model selection to \(settings.speechModelProfile.shortName)")
+        }
+
         recoverStaleTCCAfterUpgrade()
         let previousExitNotice = previousExitNoticeAction(previousRunWasActive: settings.hasActiveRunMarker)
         recoverStaleSystemAudioMuteIfNeeded()
@@ -5262,6 +5508,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         prepareForStartupAttempt()
+        let speechModelProfile = settings.speechModelProfile
 
         // Load ASR FIRST, then audio + hotkey. Reversing this order
         // makes the first-launch CoreML compile of the ANE Encoder
@@ -5276,13 +5523,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
 
             do {
-                try await asr.load { [weak self] progress in
+                try await asr.load(profile: speechModelProfile) { [weak self] progress in
                     Task { @MainActor in
                         self?.updateSpeechModelStartupProgress(progress)
                     }
                 }
                 guard !Task.isCancelled, !isTerminating else { return }
+                fallbackSpeechModelProfileAfterStartupFailure = nil
                 isSpeechModelReady = true
+                speechModelStartupProgressFraction = nil
 
                 stage = .audioInput
                 startupStatusTitle = "Starting audio input…"
@@ -5322,6 +5571,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         didLogDeferredWakeRecovery = false
         startupFailure = nil
         startupStatusTitle = "Loading speech model…"
+        speechModelStartupProgressFraction = nil
 
         hotkey.onPress = nil
         hotkey.onRelease = nil
@@ -5341,12 +5591,46 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateSpeechModelStartupProgress(_ progress: DownloadUtils.DownloadProgress) {
         guard startupTask != nil, !isTerminating else { return }
         let next = speechModelStartupStatusTitle(progress)
-        guard next != startupStatusTitle else { return }
+        let nextProgressFraction = speechModelStartupProgressValue(progress)
+        guard next != startupStatusTitle
+            || nextProgressFraction != speechModelStartupProgressFraction else { return }
         startupStatusTitle = next
+        speechModelStartupProgressFraction = nextProgressFraction
         rebuildMenu()
     }
 
     private func recordStartupFailure(stage: StartupFailureStage, error: Error, reason: String) {
+        if stage == .speechModel,
+           let fallback = fallbackSpeechModelProfileAfterStartupFailure,
+           fallback != settings.speechModelProfile,
+           !isTerminating {
+            let failedProfile = settings.speechModelProfile
+            fallbackSpeechModelProfileAfterStartupFailure = nil
+            settings.speechModelProfile = fallback
+            isSwitchingSpeechModel = true
+            isCoreRuntimeReady = false
+            isSpeechModelReady = false
+            isReady = false
+            isRecording = false
+            isBusy = false
+            startupFailure = nil
+            startupStatusTitle = "Falling back to \(fallback.shortName)…"
+            speechModelStartupProgressFraction = nil
+            setMenuBarState(.loading)
+            log("ASR: \(failedProfile.shortName) failed to load during switch; falling back to \(fallback.shortName): \(startupFailureLogDetail(stage: stage, error: error))")
+            rebuildMenu()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isTerminating else { return }
+                Task { @MainActor in
+                    await self.asr.unload()
+                    self.isSwitchingSpeechModel = false
+                    self.startStartup(reason: "speech model fallback")
+                }
+            }
+            return
+        }
+
+        fallbackSpeechModelProfileAfterStartupFailure = nil
         isCoreRuntimeReady = false
         if stage == .speechModel {
             isSpeechModelReady = false
@@ -5354,6 +5638,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         isReady = false
         isRecording = false
         isBusy = false
+        speechModelStartupProgressFraction = nil
         stopRecordingLevelMeter()
 
         hotkey.onPress = nil
@@ -6480,6 +6765,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             status.toolTip = failure.detail
         }
         menu.addItem(status)
+        if shouldShowSpeechModelProgressRow {
+            menu.addItem(buildSpeechModelProgressItem())
+        }
 
         menu.addItem(.separator())
 
@@ -6601,13 +6889,6 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         checkUpdates.isEnabled = !isCheckingForUpdates && !isTerminating
         sub.addItem(checkUpdates)
 
-        let checkToggle = NSMenuItem(title: "Check for updates and notify me",
-                                     action: #selector(toggleCheckForUpdates(_:)),
-                                     keyEquivalent: "")
-        checkToggle.target = self
-        checkToggle.state = settings.checkForUpdates ? .on : .off
-        sub.addItem(checkToggle)
-
         sub.addItem(.separator())
 
         let about = NSMenuItem(title: "About Parakey",
@@ -6639,11 +6920,43 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             && !isTerminating
             && startupTask == nil
             && !isResettingSpeechModelCache
-        resetModel.toolTip = "Delete the local speech model cache and download a fresh verified copy."
+            && !isSwitchingSpeechModel
+        resetModel.toolTip = "Delete the speech model cache and download a fresh verified copy."
         sub.addItem(resetModel)
 
         parent.submenu = sub
         return parent
+    }
+
+    private var shouldShowSpeechModelProgressRow: Bool {
+        startupFailure == nil
+            && ((startupTask != nil && !isSpeechModelReady)
+                || isSwitchingSpeechModel
+                || isResettingSpeechModelCache)
+    }
+
+    private func buildSpeechModelProgressItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        let progress = NSProgressIndicator(frame: NSRect(x: 14, y: 7, width: 232, height: 10))
+        progress.style = .bar
+        progress.controlSize = .small
+        progress.minValue = 0
+        progress.maxValue = 1
+        progress.usesThreadedAnimation = true
+        progress.toolTip = startupStatusTitle
+
+        if let speechModelStartupProgressFraction {
+            progress.isIndeterminate = false
+            progress.doubleValue = speechModelStartupProgressFraction
+        } else {
+            progress.isIndeterminate = true
+            progress.startAnimation(nil)
+        }
+
+        view.addSubview(progress)
+        item.view = view
+        return item
     }
 
     private func menuStatusTitle() -> String {
@@ -6661,7 +6974,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let failure = startupFailure {
             return failure.statusTitle
         }
-        if startupTask != nil || isRestartingAudioInput {
+        if startupTask != nil || isRestartingAudioInput || isSwitchingSpeechModel {
             return startupStatusTitle
         }
         if !missingPermissions().isEmpty {
@@ -6700,7 +7013,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let startupText: String
         if let failure = startupFailure {
             startupText = "\(failure.statusTitle): \(failure.detail)"
-        } else if startupTask != nil || isRestartingAudioInput {
+        } else if startupTask != nil || isRestartingAudioInput || isSwitchingSpeechModel {
             startupText = startupStatusTitle
         } else {
             startupText = isCoreRuntimeReady ? "Runtime ready" : "Runtime not ready"
@@ -6749,6 +7062,10 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             launchAtLoginText = "unknown"
         }
 
+        let speechModelProfile = settings.speechModelProfile
+        let languageSettingText = DICTATION_LANGUAGE_DISPLAY[settings.dictationLanguage]
+            ?? settings.dictationLanguage.rawValue
+
         let logLines: [String]
         do {
             logLines = try recentDiagnosticLogLines()
@@ -6776,7 +7093,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settingLines: [
                 "Hotkey: \(hotkey.hotkey.name)",
                 "Trigger mode: \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)",
-                "Language: \(DICTATION_LANGUAGE_DISPLAY[settings.dictationLanguage] ?? settings.dictationLanguage.rawValue)",
+                "Speech model: \(speechModelProfile.displayName)",
+                "Language: \(languageSettingText)",
                 "Paste behavior: \(PASTE_SUFFIX_DISPLAY[settings.pasteSuffix] ?? settings.pasteSuffix.rawValue)",
                 "Remove filler words: \(settings.removeFillerWords)",
                 "Recent transcripts: \(RECENT_TRANSCRIPT_LIMIT_DISPLAY[settings.recentTranscriptLimit] ?? settings.recentTranscriptLimit.rawValue) (\(history.count) in memory)",
@@ -6812,7 +7130,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func maybeShowSetupChecklist(reason: String) {
         guard !didOfferSetupChecklistThisLaunch else { return }
-        guard startupFailure != nil || !missingPermissions().isEmpty else { return }
+        guard startupFailure != nil
+            || !missingPermissions().isEmpty else { return }
         didOfferSetupChecklistThisLaunch = true
         log("setup checklist shown (\(reason))")
         showSetupChecklist()
@@ -6968,7 +7287,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private var setupChecklistIsComplete: Bool {
-        isSpeechModelReady && isReady && missingPermissions().isEmpty
+        isSpeechModelReady
+            && isReady
+            && missingPermissions().isEmpty
     }
 
     private func setupChecklistSummary() -> String {
@@ -6978,8 +7299,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func makeSpeechModelSetupRow() -> NSView {
-        let state = speechModelSetupRowState(isSpeechModelReady: isSpeechModelReady,
-                                             isStartupInProgress: startupTask != nil,
+        let state = speechModelSetupRowState(profile: settings.speechModelProfile,
+                                             isSpeechModelReady: isSpeechModelReady,
+                                             isStartupInProgress: startupTask != nil || isSwitchingSpeechModel,
                                              startupStatusTitle: startupStatusTitle,
                                              failure: startupFailure)
 
@@ -7095,9 +7417,9 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func setupStatusColor(_ status: String) -> NSColor {
         switch status {
-        case "Granted", "Ready", "Detected":
+        case "Granted", "Ready", "Detected", "Set":
             return .systemGreen
-        case "Missing", "Needs retry":
+        case "Missing", "Needs retry", "Required":
             return .systemOrange
         default:
             return .secondaryLabelColor
@@ -7208,8 +7530,8 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         sub.addItem(buildHotkeySettingsItem())
         sub.addItem(buildTriggerSettingsItem())
-        sub.addItem(buildInputDeviceItem())
         sub.addItem(buildDictationLanguageSettingsItem())
+        sub.addItem(buildInputDeviceItem())
 
         parent.submenu = sub
         return parent
@@ -7260,6 +7582,14 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sounds.target = self
         sounds.state = settings.playFeedbackSounds ? .on : .off
         sub.addItem(sounds)
+
+        let automaticUpdates = NSMenuItem(title: "Automatically check for updates",
+                                          action: #selector(toggleCheckForUpdates(_:)),
+                                          keyEquivalent: "")
+        automaticUpdates.target = self
+        automaticUpdates.state = settings.checkForUpdates ? .on : .off
+        automaticUpdates.toolTip = "Periodically checks GitHub for a newer release and only notifies you."
+        sub.addItem(automaticUpdates)
 
         let launchAtLogin = NSMenuItem(title: "Launch at Login",
                                        action: #selector(toggleLaunchAtLogin(_:)),
@@ -7355,7 +7685,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func buildDictationLanguageSettingsItem() -> NSMenuItem {
-        let langParent = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
+        let langParent = NSMenuItem(title: "Language Hint", action: nil, keyEquivalent: "")
         let langSub = NSMenu()
         langSub.autoenablesItems = false
         for lang in DictationLanguage.allCases {
@@ -8686,15 +9016,15 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
               !isBusy,
               startupTask == nil,
               !isResettingSpeechModelCache,
+              !isSwitchingSpeechModel,
               !isTerminating else { return }
 
         showAppForModal()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Reset Speech Model Cache?"
-        alert.informativeText = """
-            Parakey will delete the local Parakeet TDT v3 model cache, unload the current speech model, and download a fresh verified copy before dictation is available again.
-            """
+        let profile = settings.speechModelProfile
+        alert.informativeText = profile.cacheResetDetail
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -8702,44 +9032,18 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
         isResettingSpeechModelCache = true
         prepareForStartupAttempt()
         startupStatusTitle = "Resetting speech model cache…"
-        log("ASR: speech model cache reset started")
+        log("ASR: \(profile.shortName) cache reset started")
         rebuildMenu()
 
         Task { @MainActor in
             await asr.unload()
-            let cacheDir = AsrModels.defaultCacheDirectory(for: .v3)
+            let cacheDir = speechModelCacheDirectory(for: profile)
             do {
-                guard isSafeSpeechModelCacheDirectory(cacheDir) else {
-                    throw NSError(
-                        domain: "Parakey",
-                        code: -3,
-                        userInfo: [
-                            NSLocalizedDescriptionKey: "Refusing to remove unexpected speech model cache path: \(cacheDir.path)"
-                        ]
-                    )
-                }
-                let didRemoveCache = try await Task.detached(priority: .userInitiated) {
-                    let fm = FileManager.default
-                    guard fm.fileExists(atPath: cacheDir.path) else {
-                        return false
-                    }
-                    guard isExistingSpeechModelCacheDirectorySafeForRemoval(cacheDir) else {
-                        throw NSError(
-                            domain: "Parakey",
-                            code: -4,
-                            userInfo: [
-                                NSLocalizedDescriptionKey: "Refusing to remove unsafe speech model cache path: \(cacheDir.path)"
-                            ]
-                        )
-                    }
-                    try fm.removeItem(at: cacheDir)
-                    return true
-                }.value
-
+                let didRemoveCache = try await removeSpeechModelCacheDirectory(cacheDir)
                 if didRemoveCache {
-                    log("ASR: removed speech model cache \(privacySafeLogPath(cacheDir))")
+                    log("ASR: removed \(profile.shortName) cache \(privacySafeLogPath(cacheDir))")
                 } else {
-                    log("ASR: speech model cache reset requested; cache was already absent")
+                    log("ASR: \(profile.shortName) cache reset requested; cache was already absent")
                 }
                 isResettingSpeechModelCache = false
                 startStartup(reason: "speech model cache reset")
@@ -8773,7 +9077,7 @@ final class ParakeyApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
             Hotkey:  \(hotkey.hotkey.name)
             Mode:    \(TRIGGER_DISPLAY[settings.triggerMode] ?? settings.triggerMode.rawValue)
-            Model:   FluidAudio · Parakeet TDT v3 (CoreML / ANE)
+            Model:   \(settings.speechModelProfile.aboutModelText)
 
             Local-only dictation. No cloud transcription, no telemetry.
             Network: model download, optional update check and install.
@@ -9541,6 +9845,8 @@ private enum ParakeySelfTest {
                 memoryLines: ["Resident: 100 MB"],
                 permissionLines: ["Microphone: granted", "Accessibility: granted", "Input Monitoring: granted"],
                 settingLines: [
+                    "Speech model: Multilingual (Parakeet TDT v3)",
+                    "Language: Auto-detect",
                     "Recent transcripts: Last 5 (1 in memory)",
                     "Text corrections: 1 configured",
                     "Text correction sync: configured",
@@ -9557,6 +9863,8 @@ private enum ParakeySelfTest {
                    "diagnostics report should not include text correction contents")
         try expect(report.contains("Text corrections: 1 configured"), equals: true,
                    "diagnostics report should include correction counts")
+        try expect(report.contains("Speech model: Multilingual (Parakeet TDT v3)"), equals: true,
+                   "diagnostics report should include the speech model")
         try expect(report.contains("Recent log lines:"), equals: true,
                    "diagnostics report should include the recent log section")
         try expect(report.contains("Privacy: transcript text and text-correction contents are not included."),
@@ -9797,7 +10105,29 @@ private enum ParakeySelfTest {
         )
 
         try expect(
-            speechModelSetupRowState(isSpeechModelReady: false,
+            productionSpeechModelProfile(rawValue: nil),
+            equals: .multilingualV3,
+            "missing speech model setting should use the production default"
+        )
+        try expect(
+            productionSpeechModelProfile(rawValue: SpeechModelProfile.multilingualV3.rawValue),
+            equals: .multilingualV3,
+            "stored v3 speech model should remain valid"
+        )
+        try expect(
+            productionSpeechModelProfile(rawValue: SpeechModelProfile.englishUnified.rawValue),
+            equals: .multilingualV3,
+            "deprecated Unified speech model setting should migrate back to v3"
+        )
+        try expect(
+            productionSpeechModelProfile(rawValue: "unknown_model"),
+            equals: .multilingualV3,
+            "unknown speech model setting should migrate back to v3"
+        )
+
+        try expect(
+            speechModelSetupRowState(profile: .multilingualV3,
+                                     isSpeechModelReady: false,
                                      isStartupInProgress: true,
                                      startupStatusTitle: "Downloading speech model… 50%",
                                      failure: nil),
@@ -9807,7 +10137,8 @@ private enum ParakeySelfTest {
             "setup checklist should show speech model progress"
         )
         try expect(
-            speechModelSetupRowState(isSpeechModelReady: false,
+            speechModelSetupRowState(profile: .multilingualV3,
+                                     isSpeechModelReady: false,
                                      isStartupInProgress: false,
                                      startupStatusTitle: "Loading speech model…",
                                      failure: StartupFailure(stage: .speechModel, detail: "download failed")),
@@ -9815,6 +10146,17 @@ private enum ParakeySelfTest {
                                            status: "Needs retry",
                                            buttonTitle: "Retry"),
             "setup checklist should offer retry for speech model failures"
+        )
+        try expect(
+            speechModelSetupRowState(profile: .multilingualV3,
+                                     isSpeechModelReady: true,
+                                     isStartupInProgress: false,
+                                     startupStatusTitle: "Loading speech model…",
+                                     failure: nil),
+            equals: SetupChecklistRowState(detail: "Parakeet TDT v3 is loaded locally.",
+                                           status: "Ready",
+                                           buttonTitle: nil),
+            "setup checklist should show the speech model when ready"
         )
         try expect(
             audioInputSetupRowState(isSpeechModelReady: true,
@@ -9878,6 +10220,11 @@ private enum ParakeySelfTest {
             speechModelFailureDetail(errorDescription: "download timed out").contains("audio is not uploaded"),
             equals: true,
             "speech model download failures should preserve the local-audio privacy boundary"
+        )
+        try expect(
+            speechModelFailureDetail(errorDescription: "Free some disk space, then retry loading the speech model."),
+            equals: "Free some disk space, then retry loading the speech model.",
+            "disk-space failures should not add unrelated reset-cache guidance"
         )
         try expect(
             startupFailureDetail(stage: .audioInput, errorDescription: "no input device"),
@@ -10873,6 +11220,58 @@ private enum ParakeySelfTest {
             equals: "Preparing speech model…",
             "compile phase should be visible without exposing model internals"
         )
+        try expect(
+            speechModelStartupProgressValue(.init(fractionCompleted: 0,
+                                                  phase: .listing)),
+            equals: nil,
+            "listing phase should show indeterminate model progress"
+        )
+        try expect(
+            speechModelStartupProgressValue(.init(fractionCompleted: 0.25,
+                                                  phase: .downloading(completedFiles: 2, totalFiles: 4))),
+            equals: 0.5,
+            "download phase should expose normalized model progress"
+        )
+        try expect(
+            speechModelStartupProgressValue(.init(fractionCompleted: 0.5,
+                                                  phase: .downloading(completedFiles: 0, totalFiles: 0))),
+            equals: nil,
+            "cached model load should show indeterminate model progress"
+        )
+        try expect(
+            speechModelStartupProgressValue(.init(fractionCompleted: 1,
+                                                  phase: .compiling(modelName: "Encoder.mlmodelc"))),
+            equals: nil,
+            "compile phase should show indeterminate model progress"
+        )
+        let requiredBytes = speechModelDownloadRequiredBytes(for: .multilingualV3,
+                                                             headroomBytes: 100)
+        try expect(
+            requiredBytes,
+            equals: 700 * 1024 * 1024 + 100,
+            "speech model download requirement should include model estimate plus headroom"
+        )
+        try expect(
+            speechModelDiskSpaceFailureDetail(profile: .multilingualV3,
+                                              availableBytes: requiredBytes - 1,
+                                              requiredBytes: requiredBytes)?.contains("Free some disk space"),
+            equals: true,
+            "low disk-space failures should explain how to recover"
+        )
+        try expect(
+            speechModelDiskSpaceFailureDetail(profile: .multilingualV3,
+                                              availableBytes: requiredBytes,
+                                              requiredBytes: requiredBytes),
+            equals: nil,
+            "disk-space check should pass once required space is available"
+        )
+        try expect(
+            speechModelDiskSpaceFailureDetail(profile: .multilingualV3,
+                                              availableBytes: nil,
+                                              requiredBytes: requiredBytes),
+            equals: nil,
+            "unknown disk-space readings should not block model startup"
+        )
     }
 
     private static func testModelIntegrity() throws {
@@ -10986,7 +11385,7 @@ private enum ParakeySelfTest {
         try expect(rejectedSymlinkHashRead, equals: true,
                    "model integrity hashing should not follow leaf symlinks")
 
-        let localParakeetV3Cache = AsrModels.defaultCacheDirectory(for: .v3)
+        let localParakeetV3Cache = speechModelCacheDirectory(for: .multilingualV3)
         if fm.fileExists(atPath: localParakeetV3Cache.path) {
             try ModelIntegrity.verifyParakeetV3Model(at: localParakeetV3Cache)
         }
@@ -11066,14 +11465,14 @@ private enum ParakeySelfTest {
             "speech model cache reset should reject symlinked parent directories before deletion"
         )
         try expect(
-            isSafeSpeechModelCacheDirectory(AsrModels.defaultCacheDirectory(for: .v3)),
+            isSafeSpeechModelCacheDirectory(speechModelCacheDirectory(for: .multilingualV3)),
             equals: true,
             "FluidAudio v3 cache path should remain inside FluidAudio Application Support"
         )
-        let defaultCache = AsrModels.defaultCacheDirectory(for: .v3)
-        if fm.fileExists(atPath: defaultCache.path) {
+        let defaultV3Cache = speechModelCacheDirectory(for: .multilingualV3)
+        if fm.fileExists(atPath: defaultV3Cache.path) {
             try expect(
-                isExistingSpeechModelCacheDirectorySafeForRemoval(defaultCache),
+                isExistingSpeechModelCacheDirectorySafeForRemoval(defaultV3Cache),
                 equals: true,
                 "existing FluidAudio v3 cache path should remain removable"
             )

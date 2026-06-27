@@ -54,8 +54,12 @@
               <p>No. Parakey requires Apple Silicon and macOS 14 or later.</p>
             </article>
             <article class="card">
+              <h3>How do I install it?</h3>
+              <p>Download the notarised <a href="https://github.com/rcourtman/parakey/releases/latest/download/Parakey.zip">Parakey.zip</a> from GitHub Releases, or use <code>brew install --cask rcourtman/parakey/parakey</code> if you prefer Homebrew updates.</p>
+            </article>
+            <article class="card">
               <h3>What model does it use?</h3>
-              <p>Parakeet TDT v3 through FluidAudio, compiled for CoreML and running on the Apple Neural Engine.</p>
+              <p>FluidAudio with the local multilingual Parakeet TDT v3 CoreML model on the Apple Neural Engine.</p>
             </article>
             <article class="card">
               <h3>Is it a file transcription app?</h3>
@@ -86,8 +90,8 @@
               <p>Copy Diagnostics and Save Diagnostics create a privacy-safe diagnostics report with app state, permission state, settings counts, microphone devices, memory, update state, and bounded recent log lines; no transcript text or text-correction contents.</p>
             </article>
             <article class="card">
-              <h3>Why does it ship only one model?</h3>
-              <p>Parakey pins Parakeet TDT v3 because it is the fastest path measured on the Apple Neural Engine by the project's <a href="benchmarks.html">benchmark harness</a>, and one pinned model keeps the app small and its behavior predictable. Candidate models are re-evaluated against the same harness rather than added as options.</p>
+              <h3>Which speech model should I use?</h3>
+              <p>Use the built-in Parakeet TDT v3 model. Parakey no longer exposes model switching unless a future model is proven better in benchmarks and real dictation tests.</p>
             </article>
             <article class="card">
               <h3>How does it compare to other dictation apps?</h3>

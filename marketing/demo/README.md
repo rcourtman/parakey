@@ -67,7 +67,7 @@ captions belong instead of pretending to be terminal output.
 | 6.094       | PASTE — 94 ms after release. Text snaps into editor. Chip flips to a green `✓ pasted in 94 ms`. |
 | 6.1 – 8.0   | Result holds. Editor full, chip showing the speed claim.                      |
 | 8.0 – 8.6   | Chip fades out.                                                               |
-| 9.7 – 10.4  | Caption fades in: `Local on-device dictation. No cloud transcription.` plus the subtitle `2.2 MB download · ~80 MB RAM idle · ~94 ms end-to-end`. |
+| 9.7 – 10.4  | Caption fades in: `Local on-device dictation. No cloud transcription.` plus the subtitle `2.5 MB download · ~80 MB RAM idle · ~94 ms end-to-end`. |
 | 10.4 – 14.0 | Hold final frame.                                                              |
 
 The 94 ms gap, the live counter, and the timing of the text reveal are

@@ -7,7 +7,7 @@
       "when": "First launch until the model weights are cached locally; again if the local cache fails its integrity check and is re-downloaded; again when the user chooses Reset Speech Model Cache",
       "destination": "huggingface.co",
       "purpose": "FluidAudio downloads the Parakeet TDT v3 CoreML model weights",
-      "approximate_size": "600 MB",
+      "approximate_size": "500-600 MB",
       "user_triggered": false,
       "can_disable": false,
       "data_sent": "Standard HTTPS request metadata; no dictation audio. If HF_TOKEN, HUGGING_FACE_HUB_TOKEN, or HUGGINGFACEHUB_API_TOKEN is set in the environment, FluidAudio attaches it as an Authorization header to huggingface.co; most users do not have these set"
@@ -22,18 +22,18 @@
       "data_sent": "GET with a fixed User-Agent header, exactly parakey-update-check; no version, device, or user identifiers, and no transcript, microphone audio, settings, or usage counts"
     },
     {
-      "name": "update_apply",
-      "when": "Only when the user chooses to update through the menu or Homebrew",
+      "name": "user_triggered_install_or_update",
+      "when": "Only when the user downloads the app directly, installs through Homebrew, or chooses to update through the menu or Homebrew",
       "destination": [
         "github.com/rcourtman/parakey/releases/download/...",
         "github.com/rcourtman/homebrew-parakey",
         "formulae.brew.sh",
         "Homebrew's own update endpoints (github.com / api.github.com)"
       ],
-      "purpose": "User-triggered Homebrew flow: tap and metadata refresh (formulae.brew.sh, GitHub APIs, the tap repository), then download of the signed release archive",
+      "purpose": "User-triggered install/update flow: direct browser download of the signed GitHub release archive, or Homebrew tap and metadata refresh followed by the same signed release archive",
       "user_triggered": true,
       "can_disable": true,
-      "data_sent": "Homebrew update/install request metadata; no dictation audio"
+      "data_sent": "Browser or Homebrew request metadata; no dictation audio"
     }
   ],
   "local_storage": {

@@ -13,6 +13,7 @@ cd "$(dirname "$SCRIPT_PATH")"
 FILE=""
 BACKEND="v3"
 TRIALS="20"
+UNIFIED_TRAILING_SILENCE_MS="250"
 SAMPLE_MS="250"
 OUTDIR="power-results"
 REDACT_TRANSCRIPTS=1
@@ -27,8 +28,10 @@ usage() {
 usage: ./bench-power.sh --file <audio> [options]
 
 Options:
-  --backend <name>       parakey-bench backend: v3, apple, 110m, fluid, both (default: v3)
+  --backend <name>       parakey-bench backend: v3, unified, apple, 110m, fluid, both (default: v3)
   --trials <n>           measured transcription trials (default: 20)
+  --unified-trailing-silence-ms <n>
+                         Unified-only trailing silence in ms (default: 250)
   --sample-ms <n>        powermetrics sample interval in ms (default: 250)
   --out-dir <path>       report directory (default: power-results)
   --show-transcripts     include reference/hypothesis text in the bench log
@@ -126,6 +129,7 @@ write_power_report() {
         echo "- Audio: $(path_label "$FILE")"
         echo "- Backend: $BACKEND"
         echo "- Trials: $TRIALS"
+        echo "- Unified trailing silence: ${UNIFIED_TRAILING_SILENCE_MS} ms"
         echo "- powermetrics sample interval: ${SAMPLE_MS} ms"
         echo "- Transcript output: $(transcript_output_label)"
         echo "- Fixture paths: $(fixture_paths_label)"
@@ -183,6 +187,7 @@ run_self_test() {
     OUTDIR="$self_tmp/out"
     BACKEND="v3"
     TRIALS="2"
+    UNIFIED_TRAILING_SILENCE_MS="250"
     SAMPLE_MS="100"
     REDACT_TRANSCRIPTS=1
     REDACT_PATHS=1
@@ -246,6 +251,11 @@ while [[ $# -gt 0 ]]; do
             TRIALS="$2"
             shift 2
             ;;
+        --unified-trailing-silence-ms)
+            need_value "$@"
+            UNIFIED_TRAILING_SILENCE_MS="$2"
+            shift 2
+            ;;
         --sample-ms)
             need_value "$@"
             SAMPLE_MS="$2"
@@ -301,6 +311,11 @@ if ! [[ "$TRIALS" =~ ^[0-9]+$ ]] || [[ "$TRIALS" -lt 1 ]]; then
     exit 2
 fi
 
+if ! [[ "$UNIFIED_TRAILING_SILENCE_MS" =~ ^[0-9]+$ ]]; then
+    echo "--unified-trailing-silence-ms must be a non-negative integer" >&2
+    exit 2
+fi
+
 if ! [[ "$SAMPLE_MS" =~ ^[0-9]+$ ]] || [[ "$SAMPLE_MS" -lt 50 ]]; then
     echo "--sample-ms must be an integer >= 50" >&2
     exit 2
@@ -342,7 +357,7 @@ trap cleanup EXIT INT TERM
 
 prepare_bench_file
 
-bench_args=( ".build/release/parakey-bench" "--file" "$bench_file" "--backend" "$BACKEND" "--trials" "$TRIALS" )
+bench_args=( ".build/release/parakey-bench" "--file" "$bench_file" "--backend" "$BACKEND" "--trials" "$TRIALS" "--unified-trailing-silence-ms" "$UNIFIED_TRAILING_SILENCE_MS" )
 if [[ "$REDACT_TRANSCRIPTS" -eq 1 ]]; then
     bench_args+=( "--redact-transcripts" )
 fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the Swift benchmark over private real-dictation fixtures.
+# Run the Swift benchmark over an audio fixture directory.
 #
 # Expected layout by default:
 #
@@ -10,8 +10,8 @@
 #     noisy-room.txt
 #
 # Each .txt sidecar is the reference transcript for the audio with the
-# same stem. Reports default to redacted transcript output and land under
-# real-results/, which is ignored by git.
+# same stem. Reports default to private/redacted transcript output and land
+# under real-results/, which is ignored by git.
 
 set -euo pipefail
 
@@ -22,9 +22,11 @@ INPUT_DIR="real-audio"
 OUTDIR="real-results"
 BACKEND="v3"
 TRIALS="5"
+UNIFIED_TRAILING_SILENCE_MS="250"
 ALLOW_MISSING_REF=0
 REDACT_TRANSCRIPTS=1
 REDACT_PATHS=1
+CORPUS_KIND="private"
 SELF_TEST=0
 
 usage() {
@@ -32,17 +34,20 @@ usage() {
 usage: ./run-real-dictation-regression.sh [options]
 
 Options:
-  --input-dir <path>       directory with private audio + .txt sidecars (default: real-audio)
+  --input-dir <path>       directory with audio + .txt sidecars (default: real-audio)
   --out-dir <path>         report directory (default: real-results)
-  --backend <name>         parakey-bench backend: v3, apple, 110m, fluid, both (default: v3)
+  --backend <name>         parakey-bench backend: v3, unified, apple, 110m, fluid, both (default: v3)
   --trials <n>             measured trials per clip (default: 5)
+  --unified-trailing-silence-ms <n>
+                           Unified-only trailing silence in ms (default: 250)
   --allow-missing-ref      run clips without .txt sidecars, skipping WER
   --show-transcripts       include reference/hypothesis text in the report
   --show-paths             include local fixture filenames and paths in the report
+  --public-corpus          label the report as licensed public speech instead of private fixtures
   --self-test              run parser and report-redaction self-tests
   -h, --help               show this help
 
-Supported input extensions: wav, aiff, aif, caf, m4a, mp3.
+Supported input extensions: wav, aiff, aif, caf, m4a, mp3, flac.
 Audio is normalized through afconvert into a temporary 16 kHz Float32
 WAV before benchmarking; parakey-bench then does the final mono
 conversion with AVAudioConverter.
@@ -81,6 +86,36 @@ fixture_paths_label() {
     fi
 }
 
+report_title() {
+    if [[ "$CORPUS_KIND" == "public" ]]; then
+        printf 'Parakey Public-Speech Regression'
+    else
+        printf 'Parakey Real-Dictation Regression'
+    fi
+}
+
+backend_uses_unified() {
+    [[ "$BACKEND" == "unified" || "$BACKEND" == "both" ]]
+}
+
+report_note() {
+    if [[ "$CORPUS_KIND" == "public" ]]; then
+        cat <<'MSG'
+> This report is generated from licensed public speech fixtures. References,
+> hypotheses, fixture filenames, and paths may be included because the corpus
+> is intentionally public; use private real-dictation fixtures for product-
+> specific push-to-talk behavior.
+MSG
+    else
+        cat <<'MSG'
+> This report is generated from private local fixtures. The default
+> redacted mode keeps reference text, hypothesis text, filenames, and
+> local paths out of the report while preserving WER, latency, and
+> memory numbers.
+MSG
+    fi
+}
+
 clip_id_for() {
     local index="$1"
     local stem="$2"
@@ -96,20 +131,20 @@ write_report_header() {
     local timestamp="$2"
     local clip_count="$3"
     {
-        echo "# Parakey Real-Dictation Regression"
+        echo "# $(report_title)"
         echo
         echo "- Date: $timestamp"
         echo "- Input directory: $(path_label "$INPUT_DIR")"
         echo "- Backend: $BACKEND"
         echo "- Trials per clip: $TRIALS"
+        if backend_uses_unified; then
+            echo "- Unified trailing silence: ${UNIFIED_TRAILING_SILENCE_MS} ms"
+        fi
         echo "- Transcript output: $(transcript_output_label)"
         echo "- Fixture paths: $(fixture_paths_label)"
         echo "- Clips: $clip_count"
         echo
-        echo "> This report is generated from private local fixtures. The default"
-        echo "> redacted mode keeps reference text, hypothesis text, filenames, and"
-        echo "> local paths out of the report while preserving WER, latency, and"
-        echo "> memory numbers."
+        report_note
     } >"$report"
 }
 
@@ -175,6 +210,7 @@ run_self_test() {
     OUTDIR="$tmpdir/out"
     BACKEND="v3"
     TRIALS="2"
+    UNIFIED_TRAILING_SILENCE_MS="250"
     REDACT_TRANSCRIPTS=1
     REDACT_PATHS=1
 
@@ -183,6 +219,14 @@ run_self_test() {
     local clip_id
     clip_id="$(clip_id_for 1 "$secret_stem")"
     write_report_header "$report" "20260101T000000Z" 1
+    assert_not_contains "$report" "Unified trailing silence"
+
+    BACKEND="unified"
+    write_report_header "$report" "20260101T000000Z" 1
+    assert_contains "$report" "- Unified trailing silence: 250 ms"
+    BACKEND="v3"
+    write_report_header "$report" "20260101T000000Z" 1
+
     write_clip_section_header "$report" "$clip_number" "$clip_id" "$secret_stem" "$secret_dir/$secret_stem.wav" "$secret_dir/$secret_stem.txt"
     {
         echo "parakey-bench: $clip_id.wav, 1 trials, backend=v3"
@@ -232,6 +276,11 @@ while [[ $# -gt 0 ]]; do
             TRIALS="$2"
             shift 2
             ;;
+        --unified-trailing-silence-ms)
+            need_value "$@"
+            UNIFIED_TRAILING_SILENCE_MS="$2"
+            shift 2
+            ;;
         --allow-missing-ref)
             ALLOW_MISSING_REF=1
             shift
@@ -242,6 +291,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --show-paths)
             REDACT_PATHS=0
+            shift
+            ;;
+        --public-corpus)
+            CORPUS_KIND="public"
             shift
             ;;
         --self-test)
@@ -280,6 +333,11 @@ if ! [[ "$TRIALS" =~ ^[0-9]+$ ]] || [[ "$TRIALS" -lt 1 ]]; then
     exit 2
 fi
 
+if ! [[ "$UNIFIED_TRAILING_SILENCE_MS" =~ ^[0-9]+$ ]]; then
+    echo "--unified-trailing-silence-ms must be a non-negative integer" >&2
+    exit 2
+fi
+
 if ! command -v afconvert >/dev/null 2>&1; then
     echo "afconvert is required to normalize audio" >&2
     exit 1
@@ -290,7 +348,7 @@ while IFS= read -r clip; do
     clips+=( "$clip" )
 done < <(
     find "$INPUT_DIR" -type f \
-        \( -iname '*.wav' -o -iname '*.aiff' -o -iname '*.aif' -o -iname '*.caf' -o -iname '*.m4a' -o -iname '*.mp3' \) \
+        \( -iname '*.wav' -o -iname '*.aiff' -o -iname '*.aif' -o -iname '*.caf' -o -iname '*.m4a' -o -iname '*.mp3' -o -iname '*.flac' \) \
         | sort
 )
 
@@ -344,7 +402,7 @@ for clip in "${clips[@]}"; do
         cp "$ref" "$tmpdir/$clip_id.txt"
     fi
 
-    bench_args=( ".build/release/parakey-bench" "--file" "$normalized" "--backend" "$BACKEND" "--trials" "$TRIALS" )
+    bench_args=( ".build/release/parakey-bench" "--file" "$normalized" "--backend" "$BACKEND" "--trials" "$TRIALS" "--unified-trailing-silence-ms" "$UNIFIED_TRAILING_SILENCE_MS" )
     if [[ "$REDACT_TRANSCRIPTS" -eq 1 ]]; then
         bench_args+=( "--redact-transcripts" )
     fi

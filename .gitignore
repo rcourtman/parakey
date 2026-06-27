@@ -9,6 +9,9 @@ swift/dist/
 *.log
 *.log.[0-9]*
 
+# Local tool config
+.claude/
+
 # Python cache files from script syntax checks
 __pycache__/
 

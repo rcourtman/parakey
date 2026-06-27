@@ -1,6 +1,6 @@
 # swift-bench
 
-Head-to-head ASR benchmark of three transcription backends running
+Head-to-head ASR benchmark of production and candidate transcription backends running
 against the same WAV files on the same Mac, so they can be compared
 in like-for-like units.
 
@@ -16,7 +16,9 @@ the production app.
 
 | Tag | Stack | Where it runs |
 |---|---|---|
-| **`fluid`** | FluidAudio Swift SDK → Parakeet TDT 0.6 B **v3** → CoreML | Apple Neural Engine |
+| **`v3`** | FluidAudio Swift SDK → Parakeet TDT 0.6 B **v3** → CoreML | Apple Neural Engine |
+| **`unified`** | FluidAudio Swift SDK → Parakeet Unified 0.6 B offline batch → CoreML | Apple Neural Engine |
+| **`nemotron-en`** | FluidAudio Swift SDK → Nemotron Speech Streaming English 0.6 B, 1120 ms tier → CoreML | Apple Neural Engine |
 | **`apple`** | `Speech.SpeechAnalyzer` + `DictationTranscriber` (built into macOS 26 Tahoe) | Apple Neural Engine |
 | **`parakey-mlx`** | parakey's current path: `parakeet_mlx` → MLX → Metal | GPU |
 
@@ -35,9 +37,14 @@ cd experiments/swift-bench
 #    ~/Library/Application Support/FluidAudio/).
 swift build
 
-# 3a. Swift backends (fluid + apple — apple is currently blocked, see
-#     "Known limitations" below).
-./.build/debug/parakey-bench --file test-audio/short-clean.wav --backend fluid --trials 5
+# 3a. Swift backends.
+./.build/debug/parakey-bench --file test-audio/short-clean.wav --backend v3 --trials 5
+./.build/debug/parakey-bench --file test-audio/short-clean.wav --backend unified --trials 5
+
+# Unified uses a 250 ms candidate padding default in this benchmark.
+# Set it to 0 to measure the raw model, or sweep values with
+# run-tail-word-regression.sh when evaluating a future model.
+./.build/debug/parakey-bench --file test-audio/short-clean.wav --backend unified --trials 5 --unified-trailing-silence-ms 0
 
 # 3b. Python / MLX backend, same audio.
 ../../.venv/bin/python bench-py.py --file test-audio/short-clean.wav --trials 5
@@ -47,6 +54,11 @@ The Swift benchmark pins FluidAudio to the same revision as the
 production app. Temporarily change `Package.swift` only when evaluating
 an upstream FluidAudio bump, then restore or intentionally update both
 manifests together.
+
+`Package.resolved` is committed for the benchmark for the same reason
+as the app: dependency changes should be visible in review. When
+updating FluidAudio, commit the app and benchmark manifests plus both
+resolved files together.
 
 ## Private real-dictation regression
 
@@ -65,20 +77,162 @@ real-audio/
 Then run:
 
 ```sh
-./run-real-dictation-regression.sh --backend v3 --trials 5
+./run-real-model-comparison.sh --trials 3
 ```
 
-The script normalizes audio through `afconvert`, runs the Swift bench
-for each clip, and writes an ignored report under `real-results/`.
-Transcript text, fixture filenames, and local paths are redacted by
-default while WER, latency, and memory numbers remain visible. Pass
-`--show-transcripts` and `--show-paths` only for local reports you do not
-intend to share.
+The comparison script normalizes audio through `afconvert`, runs v3 and
+Unified against every clip, and writes ignored Markdown/TSV reports under
+`real-results/` with average WER, worst WER, final-word failures, and p50
+latency by backend. Transcript text, fixture filenames, and local paths are
+redacted by default while WER, latency, and retention numbers remain
+visible. Pass `--show-transcripts` and `--show-paths` only for local
+reports you do not intend to share.
+
+To add a local recording and reference sidecar without hand-copying files:
+
+```sh
+./add-real-dictation-fixture.sh --id short-note-001 --audio ~/Desktop/short-note.m4a --reference-file ~/Desktop/short-note.txt
+```
+
+For single-backend debugging:
+
+```sh
+./run-real-dictation-regression.sh --backend v3 --trials 5
+./run-real-dictation-regression.sh --backend unified --trials 5 --unified-trailing-silence-ms 250
+```
 
 For a quick non-ASR check of argument parsing and report redaction:
 
 ```sh
+./add-real-dictation-fixture.sh --self-test
+./run-real-model-comparison.sh --self-test
 ./run-real-dictation-regression.sh --self-test
+```
+
+## Public speech regression
+
+Private clips are the best product signal, but they cannot be shared or
+reproduced by another maintainer. For a reproducible public check, fetch a
+bounded LibriSpeech subset into ignored local fixtures:
+
+```sh
+./fetch-public-speech-fixtures.sh --source librispeech --split dev-clean --count 25
+```
+
+The fetcher downloads the OpenSLR archive, verifies the upstream MD5 checksum,
+extracts the selected FLAC clips, converts them to 16 kHz Float32 WAV with
+`afconvert`, and writes same-stem `.txt` references plus `manifest.tsv` under
+`public-audio/librispeech-dev-clean/`.
+
+Then run the production v3 regression with public-corpus reporting:
+
+```sh
+./run-real-dictation-regression.sh --input-dir public-audio/librispeech-dev-clean --out-dir public-results --backend v3 --public-corpus --show-transcripts --show-paths --trials 3
+```
+
+For candidate-model evaluation, run the same v3-vs-Unified comparison
+with public-corpus reporting:
+
+```sh
+./run-public-model-comparison.sh --trials 3
+```
+
+Or run a specific candidate backend against the public fixtures:
+
+```sh
+./run-real-dictation-regression.sh --input-dir public-audio/librispeech-dev-clean --out-dir public-results --backend apple --public-corpus --show-transcripts --show-paths --trials 3
+./run-real-dictation-regression.sh --input-dir public-audio/librispeech-dev-clean --out-dir public-results --backend nemotron-en --public-corpus --show-transcripts --show-paths --trials 3
+```
+
+Or fetch and compare in one command:
+
+```sh
+./run-public-model-comparison.sh --fetch --count 50 --trials 3
+```
+
+Reports land under ignored `public-results/` and include source paths and
+transcripts by default because the fixture corpus is public. LibriSpeech is
+read English audiobook speech under CC BY 4.0, so treat it as a stable
+reproducible benchmark, not as a replacement for local push-to-talk dictation
+clips.
+
+### 2026-06-23 candidate smoke results
+
+Five LibriSpeech dev-clean clips, three trials per clip:
+
+| Backend | Avg WER | Worst WER | Final-word failures | Avg p50 |
+|---|---:|---:|---:|---:|
+| `v3` | 1.4% | 7.0% | 0 | 100.7 ms |
+| `apple` | 11.7% | 18.2% | 0 | 384.8 ms |
+| `nemotron-en` | 5.3% | 11.3% | 0 | 1032.7 ms |
+
+Neither Apple SpeechAnalyzer nor Nemotron English beat Parakeet TDT v3 on
+this public smoke corpus. Nemotron also emitted a CoreML shape-inference
+warning on each clip, so it should remain candidate-only unless a future
+FluidAudio/model revision changes those numbers.
+
+## Tail-word retention regression
+
+The Unified candidate model has a specific failure mode worth tracking separately:
+short push-to-talk clips can lose the final word when the recording stops
+close to the last phoneme. The app no longer exposes Unified, but this
+script remains useful when evaluating whether a future English model should
+become user-facing.
+
+```sh
+./run-tail-word-regression.sh
+```
+
+The default run synthesizes two local TTS phrases, trims natural trailing
+silence, cuts 100 ms, 150 ms, and 200 ms from the end, and compares v3
+against Unified with 0 ms and 250 ms trailing silence. It writes ignored
+Markdown and TSV reports under `tail-results/`. The candidate threshold
+requires Unified at 250 ms to retain the final word on the known
+regression cases and keep max WER at or below 20% before further evaluation.
+
+To tune the number instead of only checking the current candidate value:
+
+```sh
+./run-tail-word-regression.sh --unified-trailing-ms-list 0,100,150,200,250,300,500
+```
+
+To test a post-release capture grace experiment, sweep grace separately
+from synthetic model padding. A 100 ms grace means the generated fixture
+puts 100 ms of the cut tail back into the recording before inference.
+
+```sh
+./run-tail-word-regression.sh --capture-grace-ms-list 0,50,100,150 --unified-trailing-ms-list 250
+```
+
+For a quick non-ASR check of parser and threshold logic:
+
+```sh
+./run-tail-word-regression.sh --self-test
+```
+
+## Release ASR checks
+
+Before a release that changes ASR code, FluidAudio, audio
+capture, or transcription post-processing, run the release wrapper:
+
+```sh
+./run-release-asr-checks.sh
+```
+
+It runs helper self-tests, production v3 private real-dictation regressions
+if `real-audio/` contains local clips, and production v3 public speech
+regressions if `public-audio/librispeech-dev-clean/` has been fetched.
+If you want the release check to fail when no local corpus is available:
+
+```sh
+./run-release-asr-checks.sh --require-real-audio
+./run-release-asr-checks.sh --require-public-audio
+```
+
+To also run Unified candidate tail-word and v3-vs-Unified comparisons:
+
+```sh
+./run-release-asr-checks.sh --include-candidate-models
 ```
 
 ## Power measurement

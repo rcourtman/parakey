@@ -82,7 +82,7 @@
                 <tr>
                   <td><strong>Model download</strong></td>
                   <td><code>huggingface.co</code></td>
-                  <td>FluidAudio downloads the Parakeet TDT v3 CoreML model weights, about 600 MB, into the local support cache. Runs on first launch, again if the cached model fails its integrity check, and again when you choose Reset Speech Model Cache. If <code>HF_TOKEN</code>, <code>HUGGING_FACE_HUB_TOKEN</code>, or <code>HUGGINGFACEHUB_API_TOKEN</code> is set in the environment, FluidAudio attaches it as an Authorization header to huggingface.co (most users have none set).</td>
+                  <td>FluidAudio downloads the Parakeet TDT v3 CoreML model weights, about 500-600 MB, into the local support cache. Runs on first launch, again if the cached model fails its integrity check, and again when you choose Reset Speech Model Cache. If <code>HF_TOKEN</code>, <code>HUGGING_FACE_HUB_TOKEN</code>, or <code>HUGGINGFACEHUB_API_TOKEN</code> is set in the environment, FluidAudio attaches it as an Authorization header to huggingface.co (most users have none set).</td>
                   <td>Required once for local transcription.</td>
                 </tr>
                 <tr>
@@ -92,10 +92,10 @@
                   <td>Disable update notifications from Settings.</td>
                 </tr>
                 <tr>
-                  <td><strong>User-triggered update</strong></td>
+                  <td><strong>User-triggered install/update</strong></td>
                   <td><code>github.com/rcourtman/parakey/releases/download/...</code>, <code>formulae.brew.sh</code>, <code>github.com/rcourtman/homebrew-parakey</code>, Homebrew's own update endpoints (github.com / api.github.com)</td>
-                  <td>When the user chooses to update, Homebrew refreshes its metadata and the tap, then downloads the signed release archive.</td>
-                  <td>Only runs when the user updates.</td>
+                  <td>When the user downloads Parakey directly, the browser fetches the signed GitHub release archive. When the user chooses to install or update through Homebrew, Homebrew refreshes its metadata and the tap, then downloads the same signed release archive.</td>
+                  <td>Only runs when the user installs or updates.</td>
                 </tr>
               </tbody>
             </table>

@@ -7,7 +7,7 @@ Briefing for AI coding agents working on this repo. Complements
 
 Parakey is a **single-file Swift menu-bar app** for push-to-talk
 dictation on Apple Silicon Macs. The whole app is
-`swift/Sources/Parakey/main.swift` (~9,350 lines). The `ParakeyApp`
+`swift/Sources/Parakey/main.swift` (currently about 12k lines). The `ParakeyApp`
 @MainActor class owns the menu bar, settings UI, recording loop,
 and update flow; surrounding it in the same file are the
 single-responsibility types it composes (`Settings`, `Permissions`,
@@ -162,7 +162,7 @@ that's a setup gap, not a bug to work around.
 
 ## Conventions
 
-- **One app file.** `main.swift` is the whole app (~9,350 lines).
+- **One app file.** `main.swift` is the whole app (currently about 12k lines).
   Resist splitting it into separate `.swift` files unless a piece is
   genuinely decoupled and testable in isolation (which, given the
   AVFoundation / AppKit / ApplicationServices / FluidAudio
@@ -258,9 +258,9 @@ Substitutes for the questions telemetry would answer:
 Anything added to this list expands the privacy surface and must be
 documented here:
 
-1. **First-launch model download** — FluidAudio fetches the Parakeet
-   TDT v3 CoreML weights from Hugging Face (`huggingface.co`).
-   One-time, ~600 MB, cached to
+1. **Speech model download** — FluidAudio fetches the Parakeet TDT v3
+   CoreML weights from Hugging Face (`huggingface.co`). The model
+   downloads on first launch, is about 500-600 MB, and is cached to
    `~/Library/Application Support/FluidAudio/`.
 2. **Update check** —
    `api.github.com/repos/rcourtman/parakey/releases/latest`, every

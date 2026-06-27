@@ -28,14 +28,14 @@ with the dev build.
 
 ## Speech Model Fails To Load
 
-Parakey downloads the Parakeet TDT v3 CoreML model once and verifies the
+Parakey downloads the Parakeet TDT v3 CoreML speech model and verifies the
 cached files on startup. If the download is interrupted or the cache becomes
 incomplete, use **Support -> Reset Speech Model Cache...**. Parakey will
 delete only the local model cache and download a fresh verified copy.
 
 If the failure mentions a network timeout or connection problem, check the
 network and retry. Audio is not uploaded; the network is used only for the
-one-time model download and optional update checks.
+model download and optional update checks.
 
 ## Hotkey Stops Working
 

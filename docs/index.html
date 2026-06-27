@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Parakey - Local Push-to-Talk Dictation for Apple Silicon Macs</title>
-    <meta name="description" content="Parakey is a free, local, push-to-talk dictation app for Apple Silicon Macs. It runs Parakeet TDT v3 through CoreML on the Apple Neural Engine with no cloud transcription or telemetry.">
+    <meta name="description" content="Parakey is a free, local, push-to-talk dictation app for Apple Silicon Macs. It runs the local Parakeet TDT v3 CoreML model on the Apple Neural Engine with no cloud transcription or telemetry.">
     <link rel="canonical" href="https://rcourtman.github.io/parakey/">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
     <meta name="theme-color" content="#0d7f5f">
@@ -22,7 +22,7 @@
         "@id": "https://rcourtman.github.io/parakey/#software",
         "name": "Parakey",
         "alternateName": "Parakey push-to-talk dictation",
-        "description": "Free MIT-licensed menu-bar app for push-to-talk dictation on Apple Silicon Macs. Speech recognition runs locally with Parakeet TDT v3 through CoreML on the Apple Neural Engine; no cloud transcription or telemetry.",
+        "description": "Free MIT-licensed menu-bar app for private push-to-talk dictation into any Mac app. Speech recognition runs locally with Parakeet CoreML models on the Apple Neural Engine; no cloud transcription, account, subscription, or telemetry.",
         "operatingSystem": "macOS 14 Sonoma or later",
         "applicationCategory": "UtilitiesApplication",
         "applicationSubCategory": "Speech recognition, dictation, transcription",
@@ -39,10 +39,10 @@
         "softwareRequirements": [
           "Apple Silicon Mac with M1 or newer",
           "macOS 14 Sonoma or later",
-          "Homebrew for cask installation"
+          "Homebrew optional for cask installation and updates"
         ],
         "memoryRequirements": "About 80 MB RAM while idle",
-        "storageRequirements": "2.5 MB signed release zip plus a one-time ~600 MB speech model cache",
+        "storageRequirements": "2.5 MB signed release zip plus about 500-600 MB for the local speech model cache",
         "processorRequirements": "Apple Silicon with Apple Neural Engine",
         "screenshot": "https://raw.githubusercontent.com/rcourtman/parakey/main/icon/social-preview.png",
         "publishingPrinciples": "https://rcourtman.github.io/parakey/llms.txt",
@@ -74,15 +74,16 @@
     <main>
       <div class="wrap hero">
         <div class="hero-copy">
-          <h1>Local push-to-talk dictation for Apple Silicon Macs.</h1>
-          <p>Hold a key, speak, release. Parakey pastes the transcript at the cursor in about 100 ms using Parakeet TDT v3 through CoreML on the Apple Neural Engine.</p>
-          <div class="install-line" aria-label="Install command">
+          <h1>Private dictation into any Mac app.</h1>
+          <p>Hold a key, speak, release. Parakey pastes text at the cursor in about 100 ms with no account, no subscription, and no cloud transcription. Apple Silicon, macOS 14+.</p>
+          <div class="actions">
+            <a class="button" href="https://github.com/rcourtman/parakey/releases/latest/download/Parakey.zip">Download Parakey.zip</a>
+            <a class="button secondary" href="install.html">Install options</a>
+            <a class="button secondary" href="compare/">Compare tools</a>
+          </div>
+          <div class="install-line" aria-label="Homebrew install command">
             <span class="prompt" aria-hidden="true">$</span>
             <code>brew install --cask rcourtman/parakey/parakey</code>
-          </div>
-          <div class="actions">
-            <a class="button" href="install.html">Install Parakey</a>
-            <a class="button secondary" href="benchmarks.html">View benchmarks</a>
           </div>
           <div class="stat-row" aria-label="Parakey summary">
             <div class="stat"><strong>~100 ms</strong><span>key release to pasted text</span></div>
@@ -194,7 +195,7 @@
             </article>
             <article class="card">
               <h3>Use something else when you need</h3>
-              <p>Intel Mac support, macOS before Tahoe, batch file transcription, speaker labels, long-form transcript editing, cloud models, team features, or integrations with notes databases.</p>
+              <p>Intel Mac support, macOS before 14 Sonoma, batch file transcription, speaker labels, long-form transcript editing, cloud models, team features, or integrations with notes databases.</p>
             </article>
           </div>
         </div>
@@ -206,8 +207,8 @@
           <h2>Evidence and install paths</h2>
           <div class="facts">
             <div class="fact"><strong>Benchmarked</strong><span>FluidAudio on the Apple Neural Engine is measured against the prior GPU path on the same WAV clips.</span></div>
-            <div class="fact"><strong>Auditable</strong><span>The app is a single Swift source file plus release scripts and a public Homebrew Cask tap.</span></div>
-            <div class="fact"><strong>Private by design</strong><span>The full network surface is documented: model download, update check, and user-triggered update apply.</span></div>
+            <div class="fact"><strong>Auditable</strong><span>The app is a single Swift source file plus release scripts, signed GitHub release assets, and a public Homebrew Cask tap.</span></div>
+            <div class="fact"><strong>Private by design</strong><span>The full network surface is documented: model download, update check, and user-triggered install/update downloads.</span></div>
             <div class="fact"><strong>Agent-readable</strong><span>Install instructions, benchmark results, privacy facts, and comparison pages are available as plain HTML, Markdown, JSON, and text.</span></div>
           </div>
         </div>
